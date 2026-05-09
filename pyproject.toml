@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "recon-graphrag"
+version = "0.1.0"
+description = "Domain-agnostic GraphRAG SDK built on Neo4j — extraction, community detection, and multi-mode retrieval"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "recon-graphrag contributors"}]
+keywords = ["graphrag", "neo4j", "knowledge-graph", "retrieval", "rag"]
+
+dependencies = [
+    "neo4j>=5.11",
+    "neo4j-graphrag>=1.15.0",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+openai = ["openai>=1.0"]
+ollama = ["ollama"]
+all = ["openai>=1.0", "ollama"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[tool.setuptools.packages.find]
+include = ["recon_graphrag*"]
