@@ -2,23 +2,34 @@
 
 __version__ = "0.1.0"
 
-# Types
-from recon_graphrag.types import SearchResult, IndexConfig
+# Pipelines
+from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
 
-# Graph store
-from recon_graphrag.graph_store import GraphStore, Neo4jGraphStore
+# Retrieval
+from recon_graphrag.retrieval.search import GraphRAG
+from recon_graphrag.retrieval.base import BaseRetriever
+from recon_graphrag.retrieval.local import LocalSearchRetriever
+from recon_graphrag.retrieval.global_search import GlobalSearchRetriever
+from recon_graphrag.retrieval.drift import DriftSearchRetriever
 
 # Providers
-from recon_graphrag.providers import create_llm, create_embedder
+from recon_graphrag.llm import create_llm, BaseLLM
+from recon_graphrag.embeddings import create_embedder, BaseEmbedder, ModelParamsEmbedder
+
+# Graph store
+from recon_graphrag.graph import GraphStore, Neo4jGraphStore, IndexManager
 
 # Schema
-from recon_graphrag.schema import GraphSchema, NodeType, PropertyType, RelationshipType, build_schema
+from recon_graphrag.extraction.schema import (
+    GraphSchema,
+    NodeType,
+    PropertyType,
+    RelationshipType,
+    build_schema,
+)
 
-# Pipeline
-from recon_graphrag.pipeline import GraphBuilderPipeline
-
-# Indexes
-from recon_graphrag.indexes import IndexManager
+# Models
+from recon_graphrag.models.types import SearchResult, IndexConfig
 
 # Communities
 from recon_graphrag.communities import (
@@ -28,42 +39,42 @@ from recon_graphrag.communities import (
     CommunityPipeline,
 )
 
-# Retrieval
-from recon_graphrag.retrieval import (
-    GraphRAG,
-    LocalSearchRetriever,
-    GlobalSearchRetriever,
-    DriftSearchRetriever,
-)
+# Config
+from recon_graphrag.config.settings import PipelineConfig
 
 __all__ = [
-    # Types
-    "SearchResult",
-    "IndexConfig",
-    # Graph store
-    "GraphStore",
-    "Neo4jGraphStore",
+    # Pipelines
+    "GraphBuilderPipeline",
+    # Retrieval
+    "GraphRAG",
+    "BaseRetriever",
+    "LocalSearchRetriever",
+    "GlobalSearchRetriever",
+    "DriftSearchRetriever",
     # Providers
     "create_llm",
     "create_embedder",
+    "BaseLLM",
+    "BaseEmbedder",
+    "ModelParamsEmbedder",
+    # Graph store
+    "GraphStore",
+    "Neo4jGraphStore",
+    "IndexManager",
     # Schema
     "GraphSchema",
     "NodeType",
     "PropertyType",
     "RelationshipType",
     "build_schema",
-    # Pipeline
-    "GraphBuilderPipeline",
-    # Indexes
-    "IndexManager",
+    # Models
+    "SearchResult",
+    "IndexConfig",
     # Communities
     "CommunityDetector",
     "CommunitySummarizer",
     "CommunityEmbedder",
     "CommunityPipeline",
-    # Retrieval
-    "GraphRAG",
-    "LocalSearchRetriever",
-    "GlobalSearchRetriever",
-    "DriftSearchRetriever",
+    # Config
+    "PipelineConfig",
 ]

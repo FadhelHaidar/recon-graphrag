@@ -1,6 +1,6 @@
 """Movie industry domain schema for film analysis and recommendations."""
 
-from recon_graphrag.schema import GraphSchema, NodeType, PropertyType, RelationshipType
+from recon_graphrag.extraction.schema import GraphSchema, NodeType, PropertyType, RelationshipType
 
 MOVIE_SCHEMA = GraphSchema(
     node_types=[
@@ -65,6 +65,16 @@ MOVIE_SCHEMA = GraphSchema(
                 PropertyType(name="verdict", type="STRING"),
             ],
         ),
+        NodeType(
+            label="Genre",
+            description="Film categories like Sci-Fi, Noir, or Comedy.",
+            properties=[PropertyType(name="name", type="STRING")],
+        ),
+        NodeType(
+            label="Occupation",
+            description="Professional roles like Cinematographer or Composer.",
+            properties=[PropertyType(name="name", type="STRING")],
+        ),
     ],
     relationship_types=[
         RelationshipType(label="DIRECTED", description="Person directed a movie"),
@@ -77,18 +87,38 @@ MOVIE_SCHEMA = GraphSchema(
         RelationshipType(label="REVIEWED", description="Movie received a review"),
         RelationshipType(label="COLLABORATED", description="Person collaborated with another person"),
         RelationshipType(label="SIMILAR_TO", description="Movie is similar to another movie"),
+        RelationshipType(label="COMPOSED_MUSIC", description="Person composed the score for a movie"),
+        RelationshipType(label="SHOT_BY", description="Cinematographer who filmed the movie"),
+        RelationshipType(label="HAS_GENRE", description="Movie belongs to a specific genre"),
+        RelationshipType(label="HAS_OCCUPATION", description="Person has a professional occupation"),
     ],
-    patterns=[
+        patterns=[
+        # --- Existing Core Patterns ---
         ("Person", "DIRECTED", "Movie"),
         ("Person", "ACTED_IN", "Movie"),
         ("Studio", "PRODUCED", "Movie"),
-        ("Movie", "WON_AWARD", "Award"),
         ("Movie", "EXPLORES", "Theme"),
         ("Movie", "SET_IN", "Location"),
         ("Movie", "BELONGS_TO", "Franchise"),
         ("Movie", "REVIEWED", "Review"),
         ("Person", "COLLABORATED", "Person"),
         ("Movie", "SIMILAR_TO", "Movie"),
+
+        # --- New Vital Patterns for Retrieval Depth ---
+        
+        # 1. Promote Genre to a Node-to-Node relationship
+        ("Movie", "HAS_GENRE", "Genre"),
+
+        # 2. Add Technical/Creative Roles (Crucial for the "Zimmer" link)
+        ("Person", "COMPOSED_MUSIC", "Movie"),  # Connects Composers to Films
+        ("Person", "SHOT_BY", "Movie"),          # Connects Cinematographers to Films
+
+        # 3. Person-to-Award (Crucial: Actors win awards, not just Movies!)
+        ("Person", "WON_AWARD", "Award"),
+        ("Movie", "WON_AWARD", "Award"),
+
+        # 4. Role Categorization (Optional but helpful for filtering)
+        ("Person", "HAS_OCCUPATION", "Occupation"), 
     ],
 )
 
@@ -96,10 +126,11 @@ MOVIE_SCHEMA = GraphSchema(
 COMMUNITY_RELATIONSHIP_TYPES = [
     "DIRECTED",
     "ACTED_IN",
-    "PRODUCED",
-    "WON_AWARD",
-    "EXPLORES",
-    "SET_IN",
-    "BELONGS_TO",
-    "COLLABORATED",
+    "COMPOSED_MUSIC",  # Added: Ties films by sound/style
+    "SHOT_BY",         # Added: Ties films by visual language
+    "HAS_GENRE",     # Added: Vital for thematic clustering
+    "BELONGS_TO",    # Franchise logic is strong glue
+    "PRODUCED",      # Studio style (e.g., the "A24 feel")
+    "EXPLORES",      # Thematic commonality
+    "COLLABORATED",  # Direct person-to-person ties
 ]

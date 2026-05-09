@@ -13,11 +13,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-from neo4j_graphrag.llm import LLMInterface
-from neo4j_graphrag.embeddings import Embedder
-
-from recon_graphrag.graph_store import GraphStore
-from recon_graphrag.types import SearchResult
+from recon_graphrag.llm.base import BaseLLM
+from recon_graphrag.embeddings.base import BaseEmbedder
+from recon_graphrag.graph.base import GraphStore
+from recon_graphrag.models.types import SearchResult
+from recon_graphrag.retrieval.base import BaseRetriever
 
 
 DEFAULT_MAP_PROMPT = """Based on this report segment, answer the question.
@@ -45,14 +45,14 @@ Remove redundancy, resolve contradictions, and organize the key insights.
 Final Answer:"""
 
 
-class GlobalSearchRetriever:
+class GlobalSearchRetriever(BaseRetriever):
     """Global search: find relevant communities → map-reduce over summaries."""
 
     def __init__(
         self,
         graph_store: GraphStore,
-        llm: LLMInterface,
-        embedder: Embedder,
+        llm: BaseLLM,
+        embedder: BaseEmbedder,
         map_prompt: Optional[str] = None,
         reduce_prompt: Optional[str] = None,
         vector_index_name: str = "community-embeddings",

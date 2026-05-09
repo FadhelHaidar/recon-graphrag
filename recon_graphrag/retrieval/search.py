@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
-from neo4j_graphrag.llm import LLMInterface
-from neo4j_graphrag.embeddings import Embedder
-
-from recon_graphrag.graph_store import GraphStore
-from recon_graphrag.types import SearchResult
+from recon_graphrag.llm.base import BaseLLM
+from recon_graphrag.embeddings.base import BaseEmbedder
+from recon_graphrag.graph.base import GraphStore
+from recon_graphrag.models.types import SearchResult
 from recon_graphrag.retrieval.local import LocalSearchRetriever
 from recon_graphrag.retrieval.global_search import GlobalSearchRetriever
 from recon_graphrag.retrieval.drift import DriftSearchRetriever
@@ -28,8 +25,8 @@ class GraphRAG:
     def __init__(
         self,
         graph_store: GraphStore,
-        llm: LLMInterface,
-        embedder: Embedder,
+        llm: BaseLLM,
+        embedder: BaseEmbedder,
     ):
         self.local = LocalSearchRetriever(graph_store, llm, embedder)
         self.global_ = GlobalSearchRetriever(graph_store, llm, embedder)

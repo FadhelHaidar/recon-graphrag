@@ -16,8 +16,8 @@ from neo4j_graphrag.embeddings import Embedder
 from neo4j_graphrag.experimental.pipeline.kg_builder import SimpleKGPipeline
 from neo4j_graphrag.experimental.components.schema import GraphSchema
 
-from recon_graphrag.graph_store import GraphStore
-from recon_graphrag.indexes import IndexManager
+from recon_graphrag.graph.base import GraphStore
+from recon_graphrag.graph.index_manager import IndexManager
 from recon_graphrag.communities.embeddings import CommunityEmbedder
 
 
@@ -51,10 +51,18 @@ class GraphBuilderPipeline:
 
         Steps 4-6 must be run separately via CommunityPipeline.
         """
+        print("Step 1: Extracting entities and relationships...")
         pipeline = self._build_pipeline()
         result = await pipeline.run_async(text=text, document_metadata=metadata)
+        print(f"  Extraction complete: {result}")
 
+        print("Step 1b: Backfilling missing description properties...")
+        self._backfill_descriptions()
+
+        print("Step 2: Resolving duplicate entities...")
         await self._resolve_entities()
+
+        print("Step 3: Embedding entities...")
         await self._embed_entities()
 
         return result
@@ -69,6 +77,16 @@ class GraphBuilderPipeline:
             from_file=False,
             perform_entity_resolution=False,
             neo4j_database=neo4j_database,
+        )
+
+    def _backfill_descriptions(self):
+        """Set description = '' on __Entity__ nodes missing the property.
+
+        Prevents Neo4j warnings when queries reference e.description / node.description
+        on nodes whose schema doesn't define a description property.
+        """
+        self.graph_store.execute_query(
+            "MATCH (e:__Entity__) WHERE e.description IS NULL SET e.description = ''"
         )
 
     async def _resolve_entities(self):

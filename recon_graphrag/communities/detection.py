@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from recon_graphrag.graph_store import GraphStore
+from recon_graphrag.graph.base import GraphStore
 
 
 DEFAULT_GRAPH_NAME = "entity-graph"
@@ -39,15 +39,17 @@ class CommunityDetector:
         """Run Leiden and create Community nodes.
 
         Steps:
-        1. Drop existing projection if it exists
-        2. Project the entity graph (undirected)
-        3. Run gds.leiden.stream with hierarchical levels
-        4. Create Community nodes + IN_COMMUNITY relationships
-        5. Build PARENT_COMMUNITY hierarchy between levels
-        6. Clean up the GDS projection
+        1. Clean up existing communities
+        2. Drop existing projection if it exists
+        3. Project the entity graph (undirected)
+        4. Run gds.leiden.stream with hierarchical levels
+        5. Create Community nodes + IN_COMMUNITY relationships
+        6. Build PARENT_COMMUNITY hierarchy between levels
+        7. Clean up the GDS projection
 
         Returns list of {community_id, level, entity_count}.
         """
+        self._cleanup_communities()
         self._drop_projection()
         self._project_graph()
         try:
@@ -59,6 +61,9 @@ class CommunityDetector:
 
         return self._get_community_stats()
 
+    def _cleanup_communities(self):
+        self.graph_store.execute_query("MATCH (c:Community) DETACH DELETE c")
+
     def _project_graph(self):
         count = self.graph_store.execute_query(
             "MATCH (e:__Entity__) RETURN count(e) AS cnt"
@@ -68,9 +73,22 @@ class CommunityDetector:
                 "No __Entity__ nodes found. Run ingestion before community detection."
             )
 
+        # Only project relationship types that exist in the graph
+        existing = self.graph_store.execute_query(
+            "MATCH ()-[r]->() RETURN DISTINCT type(r) AS t"
+        )
+        existing_types = {r["t"] for r in existing}
+        valid_types = [rt for rt in self.relationship_types if rt in existing_types]
+
+        if not valid_types:
+            raise RuntimeError(
+                f"None of the requested relationship types {self.relationship_types} "
+                f"exist in the graph. Found: {sorted(existing_types)}"
+            )
+
         rel_config = ", ".join(
             f"{rel}: {{orientation: 'UNDIRECTED'}}"
-            for rel in self.relationship_types
+            for rel in valid_types
         )
         query = f"""
         CALL gds.graph.project(
@@ -83,15 +101,10 @@ class CommunityDetector:
         self.graph_store.execute_query(query, {"graph_name": self.graph_name})
 
     def _drop_projection(self):
-        exists = self.graph_store.execute_query(
-            "CALL gds.graph.exists($graph_name) YIELD exists",
+        self.graph_store.execute_query(
+            "CALL gds.graph.drop($graph_name, false)",
             {"graph_name": self.graph_name},
         )
-        if exists and exists[0].get("exists"):
-            self.graph_store.execute_query(
-                "CALL gds.graph.drop($graph_name)",
-                {"graph_name": self.graph_name},
-            )
 
     def _run_leiden(self) -> list[dict]:
         query = """
@@ -168,7 +181,8 @@ class CommunityDetector:
         query = """
         MATCH (c:Community)
         OPTIONAL MATCH (c)<-[:IN_COMMUNITY]-(e:__Entity__)
-        RETURN c.id AS community_id, c.level AS level, count(e) AS entity_count
+        WITH c, count(e) AS entity_count
+        RETURN c.id AS community_id, c.level AS level, entity_count
         ORDER BY c.level, entity_count DESC
         """
         return self.graph_store.execute_query(query)

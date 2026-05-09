@@ -12,7 +12,7 @@ from typing import Optional
 from neo4j_graphrag.llm import LLMInterface
 from neo4j_graphrag.llm.types import LLMResponse
 
-from recon_graphrag.graph_store import GraphStore
+from recon_graphrag.graph.base import GraphStore
 
 
 DEFAULT_SUMMARY_PROMPT = """Summarize the following cluster of related entities and their connections.
@@ -56,16 +56,16 @@ class CommunitySummarizer:
             cid = comm["id"]
             print(f"  Summarizing community {cid} ({comm['entity_count']} entities)...")
             try:
-                summary = await self.summarize_community(cid)
+                summary = await self.summarize_community(cid, level)
                 self._store_summary(cid, summary)
                 results.append({"id": cid, "summary": summary})
             except Exception as e:
                 print(f"  Error summarizing community {cid}: {e}")
         return results
 
-    async def summarize_community(self, community_id: str) -> str:
+    async def summarize_community(self, community_id: str, level: int = 0) -> str:
         """Summarize a single community by collecting its entity/relationship context."""
-        context = self._fetch_community_context(community_id)
+        context = self._fetch_community_context(community_id, level)
         if not context.strip():
             return ""
 
@@ -77,12 +77,23 @@ class CommunitySummarizer:
         query = """
         MATCH (c:Community {level: $level})
         OPTIONAL MATCH (c)<-[:IN_COMMUNITY]-(e:__Entity__)
-        RETURN c.id AS id, count(e) AS entity_count
+        WITH c, count(e) AS entity_count
+        RETURN c.id AS id, entity_count
         ORDER BY entity_count DESC
         """
         return self.graph_store.execute_query(query, {"level": level})
 
-    def _fetch_community_context(self, community_id: str) -> str:
+    def _fetch_community_context(self, community_id: str, level: int = 0) -> str:
+        """Fetch context for a community.
+
+        Level 0: entities and intra-community relationships.
+        Level > 0: child community summaries (bottom-up aggregation).
+        """
+        if level == 0:
+            return self._fetch_entity_context(community_id)
+        return self._fetch_child_summary_context(community_id)
+
+    def _fetch_entity_context(self, community_id: str) -> str:
         """Fetch all entities and intra-community relationships as text."""
         query = """
         MATCH (c:Community {id: $cid})<-[:IN_COMMUNITY]-(e:__Entity__)
@@ -108,6 +119,25 @@ class CommunitySummarizer:
                 other_name = other.get("name", "") or other.get("description", "")
                 lines.append(f"  {name} --[{record['rel_type']}]--> {other_name}")
 
+        return "\n".join(lines)
+
+    def _fetch_child_summary_context(self, community_id: str) -> str:
+        """Fetch child community summaries for higher-level communities."""
+        query = """
+        MATCH (child:Community)-[:PARENT_COMMUNITY]->(c:Community {id: $cid})
+        WHERE child.summary IS NOT NULL
+        RETURN child.id AS id, child.summary AS summary, child.level AS level
+        ORDER BY child.level, child.id
+        """
+        results = self.graph_store.execute_query(query, {"cid": community_id})
+        if not results:
+            return ""
+
+        lines = []
+        for record in results:
+            lines.append(f"--- Sub-community {record['id']} (level {record['level']}) ---")
+            lines.append(record["summary"])
+            lines.append("")
         return "\n".join(lines)
 
     def _store_summary(self, community_id: str, summary: str):

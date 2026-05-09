@@ -12,7 +12,7 @@ from typing import Optional
 from neo4j_graphrag.llm import LLMInterface
 from neo4j_graphrag.embeddings import Embedder
 
-from recon_graphrag.graph_store import GraphStore
+from recon_graphrag.graph.base import GraphStore
 from recon_graphrag.communities.detection import CommunityDetector
 from recon_graphrag.communities.summarization import CommunitySummarizer
 from recon_graphrag.communities.embeddings import CommunityEmbedder
@@ -41,11 +41,12 @@ class CommunityPipeline:
         self.theta = theta
         self.summary_prompt = summary_prompt
 
-    async def build(self, level: int = 0) -> dict:
+    async def build(self, level: Optional[int] = None) -> dict:
         """Run steps 4-6: detect communities, summarize, and embed.
 
         Args:
-            level: Community hierarchy level to summarize and embed.
+            level: Specific community hierarchy level to summarize and embed.
+                If None, processes all levels.
 
         Returns:
             Dict with stats from each step.
@@ -62,22 +63,29 @@ class CommunityPipeline:
         community_stats = detector.detect()
         print(f"  Found {len(community_stats)} communities")
 
-        # Step 5: Summarize communities
-        print("Step 5: Summarizing communities...")
+        levels = [level] if level is not None else sorted({s["level"] for s in community_stats})
+        total_summaries = 0
+
         summarizer = CommunitySummarizer(
             self.graph_store,
             self.llm,
             prompt_template=self.summary_prompt,
         )
-        summaries = await summarizer.summarize_all(level=level)
-        print(f"  Summarized {len(summaries)} communities")
-
-        # Step 6: Embed community summaries
-        print("Step 6: Embedding community summaries...")
         embedder = CommunityEmbedder(self.graph_store, self.embedder)
-        await embedder.embed_communities(level=level)
+
+        for lvl in levels:
+            # Step 5: Summarize communities
+            print(f"Step 5: Summarizing communities (level {lvl})...")
+            summaries = await summarizer.summarize_all(level=lvl)
+            print(f"  Summarized {len(summaries)} communities at level {lvl}")
+
+            # Step 6: Embed community summaries
+            print(f"Step 6: Embedding community summaries (level {lvl})...")
+            await embedder.embed_communities(level=lvl)
+
+            total_summaries += len(summaries)
 
         return {
             "communities": len(community_stats),
-            "summaries": len(summaries),
+            "summaries": total_summaries,
         }
