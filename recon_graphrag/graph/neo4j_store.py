@@ -37,7 +37,7 @@ class Neo4jGraphStore:
     ) -> list[dict]:
         with self._driver.session(
             database=self._database,
-            notifications_disabled_categories=["DEPRECATION"],
+            notifications_disabled_categories=["DEPRECATION", "UNRECOGNIZED", "HINT"],
         ) as session:
             result = session.run(query, parameters or {})
             return [dict(record) for record in result]

@@ -39,15 +39,17 @@ class CommunityDetector:
         """Run Leiden and create Community nodes.
 
         Steps:
-        1. Drop existing projection if it exists
-        2. Project the entity graph (undirected)
-        3. Run gds.leiden.stream with hierarchical levels
-        4. Create Community nodes + IN_COMMUNITY relationships
-        5. Build PARENT_COMMUNITY hierarchy between levels
-        6. Clean up the GDS projection
+        1. Clean up existing communities
+        2. Drop existing projection if it exists
+        3. Project the entity graph (undirected)
+        4. Run gds.leiden.stream with hierarchical levels
+        5. Create Community nodes + IN_COMMUNITY relationships
+        6. Build PARENT_COMMUNITY hierarchy between levels
+        7. Clean up the GDS projection
 
         Returns list of {community_id, level, entity_count}.
         """
+        self._cleanup_communities()
         self._drop_projection()
         self._project_graph()
         try:
@@ -58,6 +60,9 @@ class CommunityDetector:
             self._drop_projection()
 
         return self._get_community_stats()
+
+    def _cleanup_communities(self):
+        self.graph_store.execute_query("MATCH (c:Community) DETACH DELETE c")
 
     def _project_graph(self):
         count = self.graph_store.execute_query(
@@ -176,7 +181,8 @@ class CommunityDetector:
         query = """
         MATCH (c:Community)
         OPTIONAL MATCH (c)<-[:IN_COMMUNITY]-(e:__Entity__)
-        RETURN c.id AS community_id, c.level AS level, count(e) AS entity_count
+        WITH c, count(e) AS entity_count
+        RETURN c.id AS community_id, c.level AS level, entity_count
         ORDER BY c.level, entity_count DESC
         """
         return self.graph_store.execute_query(query)
