@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from recon_graphrag.graph_store import GraphStore
+from recon_graphrag.graph.base import GraphStore
 
 
 DEFAULT_GRAPH_NAME = "entity-graph"
@@ -68,9 +68,22 @@ class CommunityDetector:
                 "No __Entity__ nodes found. Run ingestion before community detection."
             )
 
+        # Only project relationship types that exist in the graph
+        existing = self.graph_store.execute_query(
+            "MATCH ()-[r]->() RETURN DISTINCT type(r) AS t"
+        )
+        existing_types = {r["t"] for r in existing}
+        valid_types = [rt for rt in self.relationship_types if rt in existing_types]
+
+        if not valid_types:
+            raise RuntimeError(
+                f"None of the requested relationship types {self.relationship_types} "
+                f"exist in the graph. Found: {sorted(existing_types)}"
+            )
+
         rel_config = ", ".join(
             f"{rel}: {{orientation: 'UNDIRECTED'}}"
-            for rel in self.relationship_types
+            for rel in valid_types
         )
         query = f"""
         CALL gds.graph.project(
@@ -83,15 +96,10 @@ class CommunityDetector:
         self.graph_store.execute_query(query, {"graph_name": self.graph_name})
 
     def _drop_projection(self):
-        exists = self.graph_store.execute_query(
-            "CALL gds.graph.exists($graph_name) YIELD exists",
+        self.graph_store.execute_query(
+            "CALL gds.graph.drop($graph_name, false)",
             {"graph_name": self.graph_name},
         )
-        if exists and exists[0].get("exists"):
-            self.graph_store.execute_query(
-                "CALL gds.graph.drop($graph_name)",
-                {"graph_name": self.graph_name},
-            )
 
     def _run_leiden(self) -> list[dict]:
         query = """

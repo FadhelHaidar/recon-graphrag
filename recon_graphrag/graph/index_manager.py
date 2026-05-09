@@ -13,8 +13,8 @@ from neo4j_graphrag.experimental.components.resolver import (
     SinglePropertyExactMatchResolver,
 )
 
-from recon_graphrag.graph_store import GraphStore
-from recon_graphrag.types import IndexConfig
+from recon_graphrag.graph.base import GraphStore
+from recon_graphrag.models.types import IndexConfig
 
 
 class IndexManager:
@@ -24,16 +24,25 @@ class IndexManager:
         self,
         graph_store: GraphStore,
         embedder: Optional[Embedder] = None,
-        embedding_dim: int = 1536,
+        embedding_dim: Optional[int] = None,
         index_config: Optional[IndexConfig] = None,
     ):
         self.graph_store = graph_store
         self.embedder = embedder
-        self.embedding_dim = embedding_dim
         self.config = index_config or IndexConfig()
+
+        if embedding_dim is not None:
+            self.embedding_dim = embedding_dim
+        elif embedder is not None:
+            from recon_graphrag.embeddings.base import detect_embedding_dim
+
+            self.embedding_dim = detect_embedding_dim(embedder) or 1536
+        else:
+            self.embedding_dim = 1536
 
     def create_indexes(self):
         """Create all required vector and fulltext indexes."""
+        self._drop_indexes()
         self.graph_store.create_vector_index(
             name=self.config.chunk_vector_index,
             label=self.config.chunk_label,
@@ -57,6 +66,19 @@ class IndexManager:
             label=self.config.entity_label,
             node_properties=["name"],
         )
+
+    def _drop_indexes(self):
+        """Drop existing indexes so they can be recreated with updated settings."""
+        for name in [
+            self.config.chunk_vector_index,
+            self.config.entity_vector_index,
+            self.config.community_vector_index,
+            self.config.entity_fulltext_index,
+        ]:
+            try:
+                self.graph_store.execute_query(f"DROP INDEX `{name}` IF EXISTS")
+            except Exception:
+                pass
 
     async def resolve_entities(self):
         """Run entity resolution to merge duplicate __Entity__ nodes.

@@ -12,12 +12,13 @@ from __future__ import annotations
 
 from typing import Optional
 
-from neo4j_graphrag.llm import LLMInterface
-from neo4j_graphrag.embeddings import Embedder
 from neo4j_graphrag.retrievers import HybridCypherRetriever
 
-from recon_graphrag.graph_store import GraphStore
-from recon_graphrag.types import SearchResult
+from recon_graphrag.llm.base import BaseLLM
+from recon_graphrag.embeddings.base import BaseEmbedder
+from recon_graphrag.graph.base import GraphStore
+from recon_graphrag.models.types import SearchResult
+from recon_graphrag.retrieval.base import BaseRetriever
 
 
 DEFAULT_RETRIEVAL_QUERY = """
@@ -51,14 +52,14 @@ Cite specific entities and findings when possible.
 Answer:"""
 
 
-class LocalSearchRetriever:
+class LocalSearchRetriever(BaseRetriever):
     """Local search: find entities matching query, traverse subgraph, generate answer."""
 
     def __init__(
         self,
         graph_store: GraphStore,
-        llm: LLMInterface,
-        embedder: Embedder,
+        llm: BaseLLM,
+        embedder: BaseEmbedder,
         retrieval_query: Optional[str] = None,
         answer_prompt: Optional[str] = None,
         vector_index_name: str = "entity-embeddings",

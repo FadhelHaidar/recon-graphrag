@@ -12,7 +12,7 @@ from typing import Optional
 from neo4j_graphrag.llm import LLMInterface
 from neo4j_graphrag.llm.types import LLMResponse
 
-from recon_graphrag.graph_store import GraphStore
+from recon_graphrag.graph.base import GraphStore
 
 
 DEFAULT_SUMMARY_PROMPT = """Summarize the following cluster of related entities and their connections.

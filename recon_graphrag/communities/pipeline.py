@@ -12,7 +12,7 @@ from typing import Optional
 from neo4j_graphrag.llm import LLMInterface
 from neo4j_graphrag.embeddings import Embedder
 
-from recon_graphrag.graph_store import GraphStore
+from recon_graphrag.graph.base import GraphStore
 from recon_graphrag.communities.detection import CommunityDetector
 from recon_graphrag.communities.summarization import CommunitySummarizer
 from recon_graphrag.communities.embeddings import CommunityEmbedder

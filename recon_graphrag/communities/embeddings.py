@@ -10,7 +10,7 @@ from typing import Optional
 
 from neo4j_graphrag.embeddings import Embedder
 
-from recon_graphrag.graph_store import GraphStore
+from recon_graphrag.graph.base import GraphStore
 
 
 class CommunityEmbedder:
@@ -86,7 +86,8 @@ class CommunityEmbedder:
         MATCH (e:__Entity__)
         WHERE e.embedding IS NULL
         RETURN elementId(e) AS id, labels(e) AS labels,
-               e.name AS name, e.description AS description
+               e.name AS name,
+               CASE WHEN e.description IS NOT NULL THEN e.description ELSE '' END AS description
         LIMIT 500
         """
         return self.graph_store.execute_query(query)
