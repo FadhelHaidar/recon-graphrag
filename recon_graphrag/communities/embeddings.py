@@ -6,10 +6,9 @@ then upserts them into the graph for semantic retrieval.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from neo4j_graphrag.embeddings import Embedder
 
+from recon_graphrag.communities.detection import DEFAULT_GRAPH_NAME
 from recon_graphrag.graph.base import GraphStore
 
 
@@ -20,9 +19,11 @@ class CommunityEmbedder:
         self,
         graph_store: GraphStore,
         embedder: Embedder,
+        graph_name: str = DEFAULT_GRAPH_NAME,
     ):
         self.graph_store = graph_store
         self.embedder = embedder
+        self.graph_name = graph_name
 
     async def embed_communities(self, level: int = 0):
         """Generate embeddings for all community summaries at a given level.
@@ -38,10 +39,14 @@ class CommunityEmbedder:
         ids, embeddings = [], []
         for comm in communities:
             try:
-                embedding = await self.embedder.async_embed_query(comm["summary"])
+                text = self._community_to_text(comm)
+                embedding = await self.embedder.async_embed_query(text)
                 ids.append(comm["id"])
                 embeddings.append(embedding)
-                print(f"  Embedded community {comm['community_id']}")
+                print(
+                    f"  Embedded community {comm['community_id']} "
+                    f"level {comm['level']}"
+                )
             except Exception as e:
                 print(f"  Error embedding community {comm['community_id']}: {e}")
 
@@ -75,11 +80,17 @@ class CommunityEmbedder:
 
     def _get_communities_without_embeddings(self, level: int) -> list[dict]:
         query = """
-        MATCH (c:Community {level: $level})
+        MATCH (c:Community {graph_name: $graph_name, level: $level})
         WHERE c.summary IS NOT NULL AND c.embedding IS NULL
-        RETURN elementId(c) AS id, c.id AS community_id, c.summary AS summary
+        RETURN elementId(c) AS id,
+               c.id AS community_id,
+               c.level AS level,
+               c.summary AS summary
         """
-        return self.graph_store.execute_query(query, {"level": level})
+        return self.graph_store.execute_query(
+            query,
+            {"graph_name": self.graph_name, "level": level},
+        )
 
     def _get_entities_without_embeddings(self) -> list[dict]:
         query = """
@@ -91,6 +102,14 @@ class CommunityEmbedder:
         LIMIT 500
         """
         return self.graph_store.execute_query(query)
+
+    @staticmethod
+    def _community_to_text(community: dict) -> str:
+        return (
+            f"Community level: {community['level']}\n"
+            f"Community id: {community['community_id']}\n\n"
+            f"Summary:\n{community['summary']}"
+        )
 
     @staticmethod
     def _entity_to_text(entity: dict) -> str:
