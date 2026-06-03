@@ -17,9 +17,10 @@ from typing import Optional
 
 from neo4j_graphrag.retrievers import HybridCypherRetriever
 
-from recon_graphrag.llm.base import BaseLLM
+from recon_graphrag.communities.detection import DEFAULT_GRAPH_NAME
 from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graph.base import GraphStore
+from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.models.types import SearchResult
 from recon_graphrag.retrieval.base import BaseRetriever
 
@@ -36,7 +37,12 @@ OPTIONAL MATCH (node)<-[:FROM_CHUNK]-(chunk:Chunk)
 WITH node, score, connections, collect(DISTINCT chunk.text) AS source_texts
 OPTIONAL MATCH (node)-[:IN_COMMUNITY]->(c:Community)
 WITH node, score, connections, source_texts,
-     collect(DISTINCT {id: c.id, summary: c.summary}) AS communities
+     collect(DISTINCT {
+        id: c.id,
+        level: c.level,
+        graph_name: c.graph_name,
+        summary: c.summary
+     }) AS communities
 RETURN node.name + ' (' + labels(node)[-1] + ')' AS title,
        [c IN connections WHERE c.rel IS NOT NULL |
            c.entity + ' -[' + c.rel + ']-> ' + c.neighbor] AS relationships,
@@ -77,6 +83,8 @@ class DriftSearchRetriever(BaseRetriever):
         answer_prompt: Optional[str] = None,
         vector_index_name: str = "entity-embeddings",
         fulltext_index_name: str = "entity-names",
+        graph_name: str = DEFAULT_GRAPH_NAME,
+        community_level: int = 0,
     ):
         self.graph_store = graph_store
         self.llm = llm
@@ -85,6 +93,8 @@ class DriftSearchRetriever(BaseRetriever):
         self.answer_prompt = answer_prompt or DEFAULT_ANSWER_PROMPT
         self.vector_index_name = vector_index_name
         self.fulltext_index_name = fulltext_index_name
+        self.graph_name = graph_name
+        self.community_level = community_level
         self._retriever = self._build_retriever()
 
     def _build_retriever(self) -> HybridCypherRetriever:
@@ -103,11 +113,12 @@ class DriftSearchRetriever(BaseRetriever):
         query: str,
         top_k: int = 10,
         community_top_k: int = 3,
+        community_level: Optional[int] = None,
     ) -> SearchResult:
         """Run DRIFT search.
 
         1. Vector search on entities → seed entities
-        2. Extract community IDs from seed entities
+        2. Extract community keys from seed entities
         3. Fetch community summaries
         4. Fetch other entities in those communities (bridging)
         5. Combine all context → LLM answer
@@ -115,15 +126,16 @@ class DriftSearchRetriever(BaseRetriever):
         retriever_result = self._retriever.search(query_text=query, top_k=top_k)
 
         entity_context = self._format_entity_context(retriever_result)
-        community_ids = self._extract_community_ids(retriever_result)
+        target_level = self.community_level if community_level is None else community_level
+        community_keys = self._extract_community_keys(retriever_result, target_level)
 
         community_context = ""
         bridging_context = ""
-        if community_ids:
-            communities = self._fetch_community_summaries(community_ids, community_top_k)
+        if community_keys:
+            communities = self._fetch_community_summaries(community_keys, community_top_k)
             community_context = self._format_communities(communities)
 
-            bridging_entities = self._fetch_community_entities(community_ids)
+            bridging_entities = self._fetch_community_entities(community_keys)
             bridging_context = self._format_bridging_entities(bridging_entities)
 
         answer = await self._generate_answer(
@@ -151,43 +163,69 @@ class DriftSearchRetriever(BaseRetriever):
                 parts.append(section)
         return "\n\n".join(parts)
 
-    def _extract_community_ids(self, retriever_result) -> list[str]:
-        """Extract unique community IDs from retriever results."""
-        ids = set()
+    def _extract_community_keys(
+        self,
+        retriever_result,
+        community_level: Optional[int] = None,
+    ) -> list[dict]:
+        """Extract unique graph-scoped community keys from retriever results."""
+        keys = set()
         for item in retriever_result.items:
             content = item.content
             if isinstance(content, dict):
                 for comm in content.get("communities", []):
-                    if comm.get("id"):
-                        ids.add(comm["id"])
-        return list(ids)
+                    if not isinstance(comm, dict):
+                        continue
+                    cid = comm.get("id")
+                    level = comm.get("level")
+                    graph_name = comm.get("graph_name")
+                    if cid is None or level is None or graph_name != self.graph_name:
+                        continue
+                    if community_level is not None and level != community_level:
+                        continue
+                    keys.add((str(cid), int(level)))
+
+        return [{"id": cid, "level": level} for cid, level in keys]
 
     def _fetch_community_summaries(
-        self, community_ids: list[str], top_k: int
+        self, community_keys: list[dict], top_k: int
     ) -> list[dict]:
         query = """
-        MATCH (c:Community)
-        WHERE c.id IN $ids AND c.summary IS NOT NULL
+        UNWIND $keys AS key
+        MATCH (c:Community {
+            graph_name: $graph_name,
+            id: key.id,
+            level: key.level
+        })
+        WHERE c.summary IS NOT NULL
         RETURN c.id AS id, c.summary AS summary, c.level AS level
         ORDER BY c.level ASC
         LIMIT $top_k
         """
         return self.graph_store.execute_query(
-            query, {"ids": community_ids, "top_k": top_k}
+            query,
+            {"keys": community_keys, "graph_name": self.graph_name, "top_k": top_k},
         )
 
-    def _fetch_community_entities(self, community_ids: list[str]) -> list[dict]:
-        """Fetch entities in specified communities (excluding already-seen seed entities)."""
+    def _fetch_community_entities(self, community_keys: list[dict]) -> list[dict]:
+        """Fetch entities in specified communities."""
         query = """
-        MATCH (c:Community)<-[:IN_COMMUNITY]-(e:__Entity__)
-        WHERE c.id IN $ids
+        UNWIND $keys AS key
+        MATCH (c:Community {
+            graph_name: $graph_name,
+            id: key.id,
+            level: key.level
+        })<-[:IN_COMMUNITY]-(e:__Entity__)
         OPTIONAL MATCH (e)-[r]-(other:__Entity__)
-        WHERE (other)-[:IN_COMMUNITY]->(c) AND id(e) < id(other)
+        WHERE (other)-[:IN_COMMUNITY]->(c) AND elementId(e) < elementId(other)
         RETURN DISTINCT e.name AS name, labels(e) AS labels,
                collect(DISTINCT type(r) + ' -> ' + coalesce(other.name, other.description)) AS rels
         LIMIT 50
         """
-        return self.graph_store.execute_query(query, {"ids": community_ids})
+        return self.graph_store.execute_query(
+            query,
+            {"keys": community_keys, "graph_name": self.graph_name},
+        )
 
     @staticmethod
     def _format_communities(communities: list[dict]) -> str:
@@ -195,7 +233,7 @@ class DriftSearchRetriever(BaseRetriever):
             return "No community context available."
         parts = []
         for comm in communities:
-            parts.append(f"Segment {comm['id']}:\n{comm['summary']}")
+            parts.append(f"Segment {comm['id']} (level {comm['level']}):\n{comm['summary']}")
         return "\n\n".join(parts)
 
     @staticmethod
