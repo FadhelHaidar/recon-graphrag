@@ -12,6 +12,7 @@ from typing import Optional
 from neo4j_graphrag.llm import LLMInterface
 from neo4j_graphrag.llm.types import LLMResponse
 
+from recon_graphrag.communities.detection import DEFAULT_GRAPH_NAME
 from recon_graphrag.graph.base import GraphStore
 
 
@@ -39,10 +40,12 @@ class CommunitySummarizer:
         graph_store: GraphStore,
         llm: LLMInterface,
         prompt_template: Optional[str] = None,
+        graph_name: str = DEFAULT_GRAPH_NAME,
     ):
         self.graph_store = graph_store
         self.llm = llm
         self.prompt_template = prompt_template or DEFAULT_SUMMARY_PROMPT
+        self.graph_name = graph_name
 
     async def summarize_all(self, level: int = 0) -> list[dict]:
         """Summarize all communities at a given hierarchy level."""
@@ -57,14 +60,16 @@ class CommunitySummarizer:
             print(f"  Summarizing community {cid} ({comm['entity_count']} entities)...")
             try:
                 summary = await self.summarize_community(cid, level)
-                self._store_summary(cid, summary)
-                results.append({"id": cid, "summary": summary})
+                if not summary.strip():
+                    continue
+                self._store_summary(cid, level, summary)
+                results.append({"id": cid, "level": level, "summary": summary})
             except Exception as e:
                 print(f"  Error summarizing community {cid}: {e}")
         return results
 
     async def summarize_community(self, community_id: str, level: int = 0) -> str:
-        """Summarize a single community by collecting its entity/relationship context."""
+        """Summarize a single community by collecting its context."""
         context = self._fetch_community_context(community_id, level)
         if not context.strip():
             return ""
@@ -75,39 +80,61 @@ class CommunitySummarizer:
 
     def _get_communities(self, level: int) -> list[dict]:
         query = """
-        MATCH (c:Community {level: $level})
+        MATCH (c:Community {graph_name: $graph_name, level: $level})
         OPTIONAL MATCH (c)<-[:IN_COMMUNITY]-(e:__Entity__)
-        WITH c, count(e) AS entity_count
-        RETURN c.id AS id, entity_count
+        OPTIONAL MATCH (c)<-[:PARENT_COMMUNITY]-(child:Community)
+        WITH c,
+             count(DISTINCT e) AS entity_count,
+             count(DISTINCT child) AS child_community_count
+        RETURN c.id AS id,
+               c.level AS level,
+               entity_count,
+               child_community_count
         ORDER BY entity_count DESC
         """
-        return self.graph_store.execute_query(query, {"level": level})
+        return self.graph_store.execute_query(
+            query,
+            {"graph_name": self.graph_name, "level": level},
+        )
 
     def _fetch_community_context(self, community_id: str, level: int = 0) -> str:
         """Fetch context for a community.
 
         Level 0: entities and intra-community relationships.
-        Level > 0: child community summaries (bottom-up aggregation).
+        Level > 0: child community summaries first, then entity context fallback.
         """
         if level == 0:
-            return self._fetch_entity_context(community_id)
-        return self._fetch_child_summary_context(community_id)
+            return self._fetch_entity_context(community_id, level)
 
-    def _fetch_entity_context(self, community_id: str) -> str:
+        child_context = self._fetch_child_summary_context(community_id, level)
+        if child_context.strip():
+            return child_context
+
+        return self._fetch_entity_context(community_id, level)
+
+    def _fetch_entity_context(self, community_id: str, level: int) -> str:
         """Fetch all entities and intra-community relationships as text."""
         query = """
-        MATCH (c:Community {id: $cid})<-[:IN_COMMUNITY]-(e:__Entity__)
+        MATCH (c:Community {
+            graph_name: $graph_name,
+            id: $cid,
+            level: $level
+        })<-[:IN_COMMUNITY]-(e:__Entity__)
         OPTIONAL MATCH (e)-[r]-(other:__Entity__)
         WHERE (other)-[:IN_COMMUNITY]->(c)
-          AND id(e) < id(other)
+          AND elementId(e) < elementId(other)
         RETURN e, type(r) AS rel_type, other
         """
         lines = []
         seen_entities = set()
-        results = self.graph_store.execute_query(query, {"cid": community_id})
+        results = self.graph_store.execute_query(
+            query,
+            {"graph_name": self.graph_name, "cid": community_id, "level": level},
+        )
         for record in results:
             entity = record["e"]
-            label = list(entity.labels - {"__Entity__"})[0] if entity.labels - {"__Entity__"} else "Entity"
+            non_entity_labels = entity.labels - {"__Entity__"}
+            label = list(non_entity_labels)[0] if non_entity_labels else "Entity"
             name = entity.get("name", "") or entity.get("description", "")
             key = f"{label}:{name}"
             if key not in seen_entities:
@@ -121,15 +148,29 @@ class CommunitySummarizer:
 
         return "\n".join(lines)
 
-    def _fetch_child_summary_context(self, community_id: str) -> str:
+    def _fetch_child_summary_context(self, community_id: str, level: int) -> str:
         """Fetch child community summaries for higher-level communities."""
         query = """
-        MATCH (child:Community)-[:PARENT_COMMUNITY]->(c:Community {id: $cid})
-        WHERE child.summary IS NOT NULL
+        MATCH (child:Community)-[:PARENT_COMMUNITY]->(c:Community {
+            graph_name: $graph_name,
+            id: $cid,
+            level: $level
+        })
+        WHERE child.graph_name = $graph_name
+          AND child.level = $child_level
+          AND child.summary IS NOT NULL
         RETURN child.id AS id, child.summary AS summary, child.level AS level
         ORDER BY child.level, child.id
         """
-        results = self.graph_store.execute_query(query, {"cid": community_id})
+        results = self.graph_store.execute_query(
+            query,
+            {
+                "graph_name": self.graph_name,
+                "cid": community_id,
+                "level": level,
+                "child_level": level - 1,
+            },
+        )
         if not results:
             return ""
 
@@ -140,9 +181,23 @@ class CommunitySummarizer:
             lines.append("")
         return "\n".join(lines)
 
-    def _store_summary(self, community_id: str, summary: str):
+    def _store_summary(self, community_id: str, level: int, summary: str):
         query = """
-        MATCH (c:Community {id: $cid})
-        SET c.summary = $summary
+        MATCH (c:Community {
+            graph_name: $graph_name,
+            id: $cid,
+            level: $level
+        })
+        SET c.summary = $summary,
+            c.embedding = NULL,
+            c.updated = timestamp()
         """
-        self.graph_store.execute_query(query, {"cid": community_id, "summary": summary})
+        self.graph_store.execute_query(
+            query,
+            {
+                "graph_name": self.graph_name,
+                "cid": community_id,
+                "level": level,
+                "summary": summary,
+            },
+        )
