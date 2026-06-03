@@ -13,9 +13,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-from recon_graphrag.llm.base import BaseLLM
+from recon_graphrag.communities.detection import DEFAULT_GRAPH_NAME
 from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graph.base import GraphStore
+from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.models.types import SearchResult
 from recon_graphrag.retrieval.base import BaseRetriever
 
@@ -56,6 +57,7 @@ class GlobalSearchRetriever(BaseRetriever):
         map_prompt: Optional[str] = None,
         reduce_prompt: Optional[str] = None,
         vector_index_name: str = "community-embeddings",
+        graph_name: str = DEFAULT_GRAPH_NAME,
     ):
         self.graph_store = graph_store
         self.llm = llm
@@ -63,6 +65,7 @@ class GlobalSearchRetriever(BaseRetriever):
         self.map_prompt = map_prompt or DEFAULT_MAP_PROMPT
         self.reduce_prompt = reduce_prompt or DEFAULT_REDUCE_PROMPT
         self.vector_index_name = vector_index_name
+        self.graph_name = graph_name
 
     async def search(
         self, query: str, top_k: int = 5, level: Optional[int] = None
@@ -90,35 +93,49 @@ class GlobalSearchRetriever(BaseRetriever):
     ) -> list[dict]:
         """Vector search on community summary embeddings."""
         query_vector = await self.embedder.async_embed_query(query)
+        overfetch_k = max(top_k * 5, top_k)
 
         if level is not None:
             cypher = """
             CALL db.index.vector.queryNodes($index_name, $k, $query_vector)
             YIELD node AS community, score
-            WHERE community.level = $level AND community.summary IS NOT NULL
-            RETURN community.id AS id, community.summary AS summary,
-                   community.level AS level, score
+            WHERE community.graph_name = $graph_name
+              AND community.level = $level
+              AND community.summary IS NOT NULL
+            RETURN community.id AS id,
+                   community.summary AS summary,
+                   community.level AS level,
+                   score
             ORDER BY score DESC
+            LIMIT $top_k
             """
             params = {
                 "index_name": self.vector_index_name,
-                "k": top_k,
+                "k": overfetch_k,
+                "top_k": top_k,
                 "query_vector": query_vector,
                 "level": level,
+                "graph_name": self.graph_name,
             }
         else:
             cypher = """
             CALL db.index.vector.queryNodes($index_name, $k, $query_vector)
             YIELD node AS community, score
-            WHERE community.summary IS NOT NULL
-            RETURN community.id AS id, community.summary AS summary,
-                   community.level AS level, score
+            WHERE community.graph_name = $graph_name
+              AND community.summary IS NOT NULL
+            RETURN community.id AS id,
+                   community.summary AS summary,
+                   community.level AS level,
+                   score
             ORDER BY score DESC
+            LIMIT $top_k
             """
             params = {
                 "index_name": self.vector_index_name,
-                "k": top_k,
+                "k": overfetch_k,
+                "top_k": top_k,
                 "query_vector": query_vector,
+                "graph_name": self.graph_name,
             }
 
         return self.graph_store.execute_query(cypher, params)
@@ -151,6 +168,7 @@ class GlobalSearchRetriever(BaseRetriever):
         parts = []
         for comm in communities:
             parts.append(
-                f"Report Segment {comm['id']}:\n{comm['summary']}"
+                f"Report Segment {comm['id']} (level {comm['level']}):\n"
+                f"{comm['summary']}"
             )
         return "\n\n---\n\n".join(parts)
