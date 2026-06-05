@@ -8,11 +8,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-from neo4j_graphrag.embeddings import Embedder
 from neo4j_graphrag.experimental.components.resolver import (
     SinglePropertyExactMatchResolver,
 )
 
+from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graph.base import GraphStore
 from recon_graphrag.models.types import IndexConfig
 
@@ -23,7 +23,7 @@ class IndexManager:
     def __init__(
         self,
         graph_store: GraphStore,
-        embedder: Optional[Embedder] = None,
+        embedder: Optional[BaseEmbedder] = None,
         embedding_dim: Optional[int] = None,
         index_config: Optional[IndexConfig] = None,
     ):

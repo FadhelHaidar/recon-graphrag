@@ -68,8 +68,8 @@ class Neo4jGraphWriter:
             SET d += row.metadata,
                 d.text_hash = row.text_hash,
                 d.graph_name = row.graph_name,
-                d.updated = timestamp()
-            ON CREATE SET d.created = timestamp()
+                d.updated = timestamp(),
+                d.created = coalesce(d.created, timestamp())
             """,
             {"documents": rows},
         )
@@ -99,8 +99,8 @@ class Neo4jGraphWriter:
                 c.index = row.index,
                 c.graph_name = row.graph_name,
                 c += row.metadata,
-                c.updated = timestamp()
-            ON CREATE SET c.created = timestamp()
+                c.updated = timestamp(),
+                c.created = coalesce(c.created, timestamp())
             MERGE (c)-[:PART_OF]->(d)
             """,
             {"chunks": rows},
@@ -135,8 +135,8 @@ class Neo4jGraphWriter:
                     e.graph_name = row.graph_name,
                     e.name = coalesce(row.properties.name, row.id),
                     e.description = coalesce(row.properties.description, ''),
-                    e.updated = timestamp()
-                ON CREATE SET e.created = timestamp()
+                    e.updated = timestamp(),
+                    e.created = coalesce(e.created, timestamp())
                 """,
                 {"entities": rows},
             )
@@ -193,8 +193,8 @@ class Neo4jGraphWriter:
                 MERGE (source)-[r:{rel_label}]->(target)
                 SET r += row.properties,
                     r.graph_name = row.graph_name,
-                    r.updated = timestamp()
-                ON CREATE SET r.created = timestamp()
+                    r.updated = timestamp(),
+                    r.created = coalesce(r.created, timestamp())
                 """,
                 {"relationships": rows},
             )

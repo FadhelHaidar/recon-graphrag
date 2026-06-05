@@ -19,10 +19,12 @@ from recon_graphrag.extraction.extractor import LLMGraphExtractor
 from recon_graphrag.extraction.schema import GraphSchema
 from recon_graphrag.extraction.assembler import GraphDocumentAssembler
 from recon_graphrag.extraction.validator import SchemaValidator
+from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graph.base import GraphStore
 from recon_graphrag.graph.index_manager import IndexManager
 from recon_graphrag.graph.neo4j_writer import Neo4jGraphWriter
 from recon_graphrag.graph.writer import GraphWriter
+from recon_graphrag.llm.base import BaseLLM
 
 
 class GraphBuilderPipeline:
@@ -31,8 +33,8 @@ class GraphBuilderPipeline:
     def __init__(
         self,
         graph_store: GraphStore,
-        llm,
-        embedder,
+        llm: BaseLLM,
+        embedder: BaseEmbedder,
         schema: GraphSchema,
         chunk_size: int = 1000,
         chunk_overlap: int = 200,

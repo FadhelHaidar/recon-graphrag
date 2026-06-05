@@ -13,7 +13,7 @@ from recon_graphrag.retrieval.global_search import GlobalSearchRetriever
 from recon_graphrag.retrieval.drift import DriftSearchRetriever
 
 # Providers
-from recon_graphrag.llm import create_llm, BaseLLM
+from recon_graphrag.llm import create_llm, BaseLLM, LLMResponse, LLMUsage
 from recon_graphrag.embeddings import create_embedder, BaseEmbedder, ModelParamsEmbedder
 
 # Graph store
@@ -55,6 +55,8 @@ __all__ = [
     "create_llm",
     "create_embedder",
     "BaseLLM",
+    "LLMResponse",
+    "LLMUsage",
     "BaseEmbedder",
     "ModelParamsEmbedder",
     # Graph store

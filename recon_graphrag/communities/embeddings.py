@@ -6,9 +6,8 @@ then upserts them into the graph for semantic retrieval.
 
 from __future__ import annotations
 
-from neo4j_graphrag.embeddings import Embedder
-
 from recon_graphrag.communities.detection import DEFAULT_GRAPH_NAME
+from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graph.base import GraphStore
 
 
@@ -18,7 +17,7 @@ class CommunityEmbedder:
     def __init__(
         self,
         graph_store: GraphStore,
-        embedder: Embedder,
+        embedder: BaseEmbedder,
         graph_name: str = DEFAULT_GRAPH_NAME,
     ):
         self.graph_store = graph_store

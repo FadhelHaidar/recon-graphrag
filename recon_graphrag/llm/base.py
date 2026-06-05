@@ -1,9 +1,44 @@
-"""LLM base interface.
+"""Local LLM interface types.
 
-Re-exports neo4j-graphrag's LLMInterface so users can depend on
-recon_graphrag.llm.BaseLLM without importing internal neo4j-graphrag paths.
+These protocols keep Recon-GraphRAG independent from provider-specific
+wrapper classes while preserving the simple ``ainvoke(...).content`` contract
+used throughout the SDK.
 """
 
-from neo4j_graphrag.llm import LLMInterface as BaseLLM
+from __future__ import annotations
 
-__all__ = ["BaseLLM"]
+from dataclasses import dataclass
+from typing import Any, Optional, Protocol, runtime_checkable
+
+
+@dataclass
+class LLMUsage:
+    """Token usage returned by a model provider, when available."""
+
+    request_tokens: Optional[int] = None
+    response_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+
+
+@dataclass
+class LLMResponse:
+    """Response returned by an LLM invocation."""
+
+    content: str
+    usage: Optional[LLMUsage] = None
+
+
+@runtime_checkable
+class BaseLLM(Protocol):
+    """Protocol for LLM providers accepted by Recon-GraphRAG."""
+
+    def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
+        """Synchronously generate a response."""
+        ...
+
+    async def ainvoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
+        """Asynchronously generate a response."""
+        ...
+
+
+__all__ = ["BaseLLM", "LLMResponse", "LLMUsage"]
