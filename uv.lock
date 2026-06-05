@@ -1100,6 +1100,7 @@ sentence-transformers = [
 [package.dev-dependencies]
 dev = [
     { name = "dotenv" },
+    { name = "pytest-asyncio" },
 ]
 
 [package.metadata]
@@ -1121,7 +1122,10 @@ requires-dist = [
 provides-extras = ["openai", "ollama", "sentence-transformers", "all", "dev"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "dotenv", specifier = ">=0.9.9" }]
+dev = [
+    { name = "dotenv", specifier = ">=0.9.9" },
+    { name = "pytest-asyncio", specifier = ">=1.3.0" },
+]
 
 [[package]]
 name = "regex"

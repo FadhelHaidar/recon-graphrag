@@ -53,30 +53,40 @@ class CommunityEmbedder:
         if ids:
             self.graph_store.upsert_vectors(ids, "embedding", embeddings)
 
-    async def embed_entities(self):
+    async def embed_entities(self, batch_size: int = 500):
         """Generate embeddings for entities without embeddings.
 
+        Loops until all unembedded entities are processed.
         Concatenates label + name + description as the text to embed,
         then batch-upserts all embeddings at once.
         """
-        entities = self._get_entities_without_embeddings()
-        if not entities:
+        total = 0
+
+        while True:
+            entities = self._get_entities_without_embeddings(limit=batch_size)
+            if not entities:
+                break
+
+            ids, embeddings = [], []
+
+            for entity in entities:
+                text = self._entity_to_text(entity)
+                try:
+                    embedding = await self.embedder.async_embed_query(text)
+                    ids.append(entity["id"])
+                    embeddings.append(embedding)
+                except Exception as e:
+                    name = entity.get("name", entity.get("description", ""))
+                    print(f"  Error embedding entity '{name}': {e}")
+
+            if ids:
+                self.graph_store.upsert_vectors(ids, "embedding", embeddings)
+                total += len(ids)
+
+        if total == 0:
             print("All entities already have embeddings.")
-            return
-
-        ids, embeddings = [], []
-        for entity in entities:
-            text = self._entity_to_text(entity)
-            try:
-                embedding = await self.embedder.async_embed_query(text)
-                ids.append(entity["id"])
-                embeddings.append(embedding)
-            except Exception as e:
-                name = entity.get("name", entity.get("description", ""))
-                print(f"  Error embedding entity '{name}': {e}")
-
-        if ids:
-            self.graph_store.upsert_vectors(ids, "embedding", embeddings)
+        else:
+            print(f"Embedded {total} entities.")
 
     def _get_communities_without_embeddings(self, level: int) -> list[dict]:
         query = """
@@ -92,16 +102,16 @@ class CommunityEmbedder:
             {"graph_name": self.graph_name, "level": level},
         )
 
-    def _get_entities_without_embeddings(self) -> list[dict]:
+    def _get_entities_without_embeddings(self, limit: int = 500) -> list[dict]:
         query = """
         MATCH (e:__Entity__)
         WHERE e.embedding IS NULL
         RETURN elementId(e) AS id, labels(e) AS labels,
                e.name AS name,
                CASE WHEN e.description IS NOT NULL THEN e.description ELSE '' END AS description
-        LIMIT 500
+        LIMIT $limit
         """
-        return self.graph_store.execute_query(query)
+        return self.graph_store.execute_query(query, {"limit": limit})
 
     @staticmethod
     def _community_to_text(community: dict) -> str:
