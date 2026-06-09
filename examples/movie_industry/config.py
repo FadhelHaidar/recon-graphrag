@@ -21,10 +21,11 @@ def get_llm():
     # Option 1: OpenRouter
     return create_llm(
         "openrouter",
-        model_name="qwen/qwen3.6-flash",
+        model_name=os.getenv("OPENROUTER_LLM_MODEL"),
         api_key=os.getenv("OPENROUTER_API_KEY"),
         model_params={"extra_body": {"reasoning": {"enabled": True}}},
     )
+
     # Option 2: Azure OpenAI
     # return create_llm(
     #     "azure_openai",
@@ -34,6 +35,7 @@ def get_llm():
     #     azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
     #     model_params={"temperature": 0},
     # )
+
     # Option 3: Custom OpenAI-compatible
     # return create_llm(
     #     "openai",
@@ -44,13 +46,15 @@ def get_llm():
 
 
 def get_embedder():
+
     # Option 1: OpenRouter
     return create_embedder(
         "openrouter",
-        model="qwen/qwen3-embedding-8b",
+        model=os.getenv("OPENROUTER_EMBED_MODEL"),
         api_key=os.getenv("OPENROUTER_API_KEY"),
         model_params={"encoding_format": "float", "dimensions": 1536},
     )
+
     # Option 2: Sentence-Transformers (local, no API key)
     # return create_embedder("sentence-transformer", model="all-MiniLM-L6-v2")
     # Option 3: Azure OpenAI

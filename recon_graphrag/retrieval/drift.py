@@ -23,6 +23,10 @@ from recon_graphrag.graph.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.models.types import SearchResult
 from recon_graphrag.retrieval.base import BaseRetriever
+from recon_graphrag.retrieval.community_levels import (
+    CommunityLevelSelector,
+    resolve_community_level,
+)
 
 
 DEFAULT_DRIFT_QUERY = """
@@ -84,7 +88,7 @@ class DriftSearchRetriever(BaseRetriever):
         vector_index_name: str = "entity-embeddings",
         fulltext_index_name: str = "entity-names",
         graph_name: str = DEFAULT_GRAPH_NAME,
-        community_level: int = 0,
+        community_level: CommunityLevelSelector = 0,
     ):
         self.graph_store = graph_store
         self.llm = llm
@@ -113,7 +117,7 @@ class DriftSearchRetriever(BaseRetriever):
         query: str,
         top_k: int = 10,
         community_top_k: int = 3,
-        community_level: Optional[int] = None,
+        community_level: CommunityLevelSelector = None,
     ) -> SearchResult:
         """Run DRIFT search.
 
@@ -126,7 +130,12 @@ class DriftSearchRetriever(BaseRetriever):
         retriever_result = self._retriever.search(query_text=query, top_k=top_k)
 
         entity_context = self._format_entity_context(retriever_result)
-        target_level = self.community_level if community_level is None else community_level
+        target_selector = self.community_level if community_level is None else community_level
+        target_level = resolve_community_level(
+            self.graph_store,
+            self.graph_name,
+            target_selector,
+        )
         community_keys = self._extract_community_keys(retriever_result, target_level)
 
         community_context = ""
