@@ -68,16 +68,32 @@ class CommunityDetector:
 
         Returns list of {community_id, level, entity_count, child_community_count}.
         """
+        print(
+            f"Starting community detection: graph_name={self.graph_name} "
+            f"max_levels={self.max_levels} gamma={self.gamma} theta={self.theta} tolerance={self.tolerance}"
+        )
+
+        print(f"Cleaning existing communities: graph_name={self.graph_name}")
         self._cleanup_communities()
+
+        print(f"Dropping existing GDS projection: graph_name={self.graph_name}")
         self._drop_projection()
+
+        print(f"Projecting entity graph: graph_name={self.graph_name} relationship_types={self.relationship_types or 'AUTO'}")
         self._project_graph()
         try:
+            print(f"Running Leiden community detection: graph_name={self.graph_name} max_levels={self.max_levels}")
             leiden_results = self._run_leiden()
+            print(f"Leiden community detection returned assignments: count={len(leiden_results)}")
             self._write_community_hierarchy(leiden_results)
         finally:
+            print(f"Dropping GDS projection: graph_name={self.graph_name}")
             self._drop_projection()
 
-        return self._get_community_stats()
+        stats = self._get_community_stats()
+        levels = sorted({s["level"] for s in stats})
+        print(f"Community detection complete: communities={len(stats)} levels={levels}")
+        return stats
 
     @staticmethod
     def _escape_cypher_identifier(identifier: str) -> str:
@@ -107,12 +123,17 @@ class CommunityDetector:
             {"graph_name": self.graph_name},
         )
         if not count or count[0]["cnt"] == 0:
+            print(
+                f"No entity nodes found for community detection: graph_name={self.graph_name} "
+                f"entity_label={self.entity_label}"
+            )
             raise RuntimeError(
                 f"No {self.entity_label} nodes found. "
                 "Run ingestion before community detection."
             )
 
         valid_types = self._get_valid_relationship_types()
+        print(f"Valid relationship types for community detection: relationship_types={valid_types}")
 
         query = f"""
         MATCH (source:{entity_label} {{graph_name: $graph_name}})-[r]-(target:{entity_label} {{graph_name: $graph_name}})
@@ -137,7 +158,16 @@ class CommunityDetector:
             },
         )
 
+        if result:
+            print(
+                f"Projected entity graph: graph_name={result[0].get('graphName')} "
+                f"nodes={result[0].get('nodeCount', 0)} relationships={result[0].get('relationshipCount', 0)}"
+            )
+        else:
+            print(f"GDS projection returned no result: graph_name={self.graph_name}")
+
         if not result or result[0]["relationshipCount"] == 0:
+            print(f"GDS projection has zero relationships: graph_name={self.graph_name}")
             raise RuntimeError(
                 "GDS projection was created with zero relationships. "
                 "Community detection needs entity-to-entity relationships."
@@ -163,6 +193,9 @@ class CommunityDetector:
 
         if not valid_types:
             requested = self.relationship_types if self.relationship_types is not None else "AUTO"
+            print(
+                f"No valid relationship types found: requested={requested} existing={sorted(existing_types)}"
+            )
             raise RuntimeError(
                 f"No valid entity-to-entity relationship types found. "
                 f"Requested: {requested}. "
@@ -285,8 +318,12 @@ class CommunityDetector:
                 parent_edges.add((path[level], level, path[level + 1], level + 1))
 
         if not membership_rows:
+            print(
+                f"Leiden returned no community assignments: graph_name={self.graph_name}"
+            )
             raise RuntimeError("Leiden returned no community assignments.")
 
+        print(f"Writing community hierarchy: memberships={len(membership_rows)} parent_edges={len(parent_edges)}")
         self._write_entity_memberships(membership_rows)
         self._write_parent_community_edges(parent_edges)
 

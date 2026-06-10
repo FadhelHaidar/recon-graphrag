@@ -60,7 +60,13 @@ class CommunityPipeline:
         Returns:
             Dict with stats from each step.
         """
-        print("Step 4: Detecting communities...")
+        print(
+            f"Starting community pipeline: graph_name={self.graph_name} "
+            f"relationship_types={self.relationship_types or 'AUTO'} max_levels={self.max_levels} "
+            f"requested_level={level}"
+        )
+
+        print(f"Detecting communities: graph_name={self.graph_name}")
         detector = CommunityDetector(
             self.graph_store,
             relationship_types=self.relationship_types,
@@ -73,14 +79,22 @@ class CommunityPipeline:
             random_seed=self.random_seed,
         )
         community_stats = detector.detect()
-        print(f"  Found {len(community_stats)} communities")
-
         detected_levels = sorted({s["level"] for s in community_stats})
+        print(f"Detected communities: count={len(community_stats)} levels={detected_levels}")
+
         levels = (
             [lvl for lvl in detected_levels if lvl <= level]
             if level is not None
             else detected_levels
         )
+        if level is not None:
+            print(
+                f"Processing community levels: requested_level={level} "
+                f"detected_levels={detected_levels} levels={levels}"
+            )
+        else:
+            print(f"Processing community levels: levels={levels}")
+
         total_summaries = 0
 
         summarizer = CommunitySummarizer(
@@ -96,15 +110,20 @@ class CommunityPipeline:
         )
 
         for lvl in levels:
-            print(f"Step 5: Summarizing communities (level {lvl})...")
+            print(f"Summarizing communities: level={lvl}")
             summaries = await summarizer.summarize_all(level=lvl)
-            print(f"  Summarized {len(summaries)} communities at level {lvl}")
+            print(f"Summarized communities: level={lvl} count={len(summaries)}")
 
-            print(f"Step 6: Embedding community summaries (level {lvl})...")
+            print(f"Embedding community summaries: level={lvl}")
             await community_embedder.embed_communities(level=lvl)
+            print(f"Embedded community summaries: level={lvl}")
 
             total_summaries += len(summaries)
 
+        print(
+            f"Community pipeline complete: communities={len(community_stats)} "
+            f"summaries={total_summaries} levels={levels}"
+        )
         return {
             "communities": len(community_stats),
             "summaries": total_summaries,

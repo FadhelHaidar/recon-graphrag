@@ -90,6 +90,29 @@ def test_validator_sets_name_from_identity_property():
     assert result.nodes[0].properties["name"] == "Inception"
 
 
+def test_validator_coerces_string_properties_from_lists():
+    schema = _make_movie_schema()
+    extraction = GraphExtraction(
+        nodes=[
+            ExtractedNode(
+                id="m1",
+                label="Movie",
+                properties={
+                    "title": ["Inception", "Dream Heist"],
+                    "description": ["dream heist", "memory architecture"],
+                },
+            ),
+        ],
+        relationships=[],
+    )
+    validator = SchemaValidator()
+    result = validator.validate(extraction, schema)
+    props = result.nodes[0].properties
+    assert props["title"] == "Inception, Dream Heist"
+    assert props["description"] == "dream heist, memory architecture"
+    assert props["name"] == "Inception, Dream Heist"
+
+
 def test_validator_drops_unknown_relationship_types():
     schema = _make_movie_schema()
     extraction = GraphExtraction(

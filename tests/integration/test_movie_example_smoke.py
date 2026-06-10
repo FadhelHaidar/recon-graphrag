@@ -8,7 +8,7 @@ import pytest
 from dotenv import load_dotenv
 
 from examples.movie_industry.config import get_embedder, get_llm, get_neo4j_store
-from examples.movie_industry.data import MOVIE_EXAMPLE_TEXT
+from examples.movie_industry.data import MOVIE_EXAMPLE_PAGES
 from examples.movie_industry.prompts import (
     COMMUNITY_SUMMARY_PROMPT,
     DRIFT_ANSWER_PROMPT,
@@ -152,9 +152,11 @@ async def test_movie_example_azure_neo4j_smoke():
             schema=MOVIE_SCHEMA,
             graph_name=GRAPH_NAME,
         )
-        build_result = await builder.build_from_text(
-            MOVIE_EXAMPLE_TEXT,
+        build_result = await builder.build_from_pages(
+            MOVIE_EXAMPLE_PAGES,
             metadata={"source": "movie-example-smoke"},
+            window_size=2,
+            window_overlap=1,
         )
 
         validation = build_result.get("validation", {})

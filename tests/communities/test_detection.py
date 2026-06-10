@@ -1,5 +1,7 @@
 """Tests for scoped community detection queries."""
 
+import pytest
+
 from recon_graphrag.communities.detection import CommunityDetector
 
 
