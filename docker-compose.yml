@@ -3,10 +3,10 @@ version: "3.8"
 services:
   neo4j:
     image: neo4j:5.26.0
-    container_name: ci-graphrag-neo4j
+    container_name: recon-neo4j
     ports:
-      - "7474:7474"   # Browser UI
-      - "7687:7687"   # Bolt protocol
+      - "7475:7474"   # Browser UI
+      - "7688:7687"   # Bolt protocol
     environment:
       NEO4J_AUTH: neo4j/password
       NEO4J_PLUGINS: '["apoc", "graph-data-science"]'

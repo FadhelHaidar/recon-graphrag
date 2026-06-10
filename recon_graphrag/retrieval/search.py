@@ -48,8 +48,10 @@ class GraphRAG:
             mode: One of "local", "global", "drift".
             **kwargs: Additional arguments passed to the specific retriever:
                 - local: top_k (int)
-                - global: top_k (int), level (int)
-                - drift: top_k (int), community_top_k (int), community_level (int)
+                - global: top_k (int), level/community_level
+                  (int | "all" | "finest" | "coarsest")
+                - drift: top_k (int), community_top_k (int), community_level
+                  (int | "all" | "finest" | "coarsest")
         """
         modes = {
             "local": self.local,

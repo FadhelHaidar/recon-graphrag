@@ -1,6 +1,6 @@
 # Recon-GraphRAG
 
-Domain-agnostic GraphRAG SDK built on Neo4j and `neo4j-graphrag`, following the [Microsoft GraphRAG](https://microsoft.github.io/graphrag/) philosophy.
+Domain-agnostic GraphRAG SDK built on Neo4j, following the [Microsoft GraphRAG](https://microsoft.github.io/graphrag/) philosophy.
 
 Like Microsoft GraphRAG, Recon-GraphRAG uses **community detection with multi-level hierarchical communities** to structure knowledge graphs, and provides the same three search paradigms — **Local**, **Global**, and **DRIFT** search — to answer questions at different levels of specificity.
 
@@ -9,7 +9,7 @@ Like Microsoft GraphRAG, Recon-GraphRAG uses **community detection with multi-le
 ## Requirements
 
 - **Neo4j** (Community or Enterprise edition) with the following plugins:
-  - **APOC** — required for entity resolution (`SinglePropertyExactMatchResolver`)
+  - **APOC** - optional for internal duplicate entity resolution
   - **GDS** (Graph Data Science) — required for community detection (Leiden algorithm)
 
 The Docker Compose setup below includes both plugins.
@@ -338,6 +338,54 @@ embedder = create_embedder(
 ```
 
 > **Note:** When using non-OpenAI embedders, the `IndexManager` auto-detects the embedding dimension for sentence-transformers. For other providers, pass `embedding_dim` explicitly.
+
+### Provider Integration Tests
+
+Provider integration tests load credentials and model names from `.env`, but they skip by default so normal test runs do not call paid external APIs. Set the provider-specific opt-in flag to run the real endpoint checks.
+
+OpenRouter:
+
+```powershell
+$env:RUN_OPENROUTER_INTEGRATION_TESTS="1"
+python -m pytest -p no:cacheprovider tests/integration/test_openrouter_env.py -vv
+```
+
+Required `.env` values:
+
+```env
+OPENROUTER_API_KEY=...
+OPENROUTER_LLM_MODEL=...
+OPENROUTER_EMBED_MODEL=...
+```
+
+Azure OpenAI:
+
+```powershell
+$env:RUN_AZURE_OPENAI_INTEGRATION_TESTS="1"
+python -m pytest -p no:cacheprovider tests/integration/test_azure_openai_env.py -vv
+```
+
+Azure Movie Example smoke test:
+
+```powershell
+docker-compose up -d
+$env:RUN_MOVIE_EXAMPLE_SMOKE_TESTS="1"
+python -m pytest -p no:cacheprovider tests/integration/test_movie_example_smoke.py -vv
+```
+
+Required `.env` values:
+
+```env
+AZURE_OPENAI_ENDPOINT=...
+AZURE_OPENAI_API_KEY=...
+AZURE_OPENAI_LLM_DEPLOYMENT_NAME=...
+AZURE_OPENAI_EMBED_MODEL_DEPLOYMENT_NAME=...
+NEO4J_URL=bolt://localhost:7688
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=password
+```
+
+To verify that these tests collect without making network calls, run the same `pytest` commands without setting the opt-in environment variable. They should report as skipped.
 
 ## Search Modes
 

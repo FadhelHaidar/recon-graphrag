@@ -100,7 +100,11 @@ class CommunityDetector:
     def _project_graph(self):
         entity_label = self._escape_cypher_identifier(self.entity_label)
         count = self.graph_store.execute_query(
-            f"MATCH (e:{entity_label}) RETURN count(e) AS cnt"
+            f"""
+            MATCH (e:{entity_label} {{graph_name: $graph_name}})
+            RETURN count(e) AS cnt
+            """,
+            {"graph_name": self.graph_name},
         )
         if not count or count[0]["cnt"] == 0:
             raise RuntimeError(
@@ -109,18 +113,29 @@ class CommunityDetector:
             )
 
         valid_types = self._get_valid_relationship_types()
-        rel_config = self._build_relationship_projection(valid_types)
 
         query = f"""
-        CALL gds.graph.project(
+        MATCH (source:{entity_label} {{graph_name: $graph_name}})-[r]-(target:{entity_label} {{graph_name: $graph_name}})
+        WHERE r.graph_name = $graph_name
+          AND type(r) IN $relationship_types
+        WITH gds.graph.project(
             $graph_name,
-            {self._cypher_string_literal(self.entity_label)},
-            {{{rel_config}}}
-        )
-        YIELD graphName, nodeCount, relationshipCount
-        RETURN graphName, nodeCount, relationshipCount
+            source,
+            target,
+            {{relationshipType: type(r)}},
+            {{undirectedRelationshipTypes: $relationship_types}}
+        ) AS g
+        RETURN g.graphName AS graphName,
+               g.nodeCount AS nodeCount,
+               g.relationshipCount AS relationshipCount
         """
-        result = self.graph_store.execute_query(query, {"graph_name": self.graph_name})
+        result = self.graph_store.execute_query(
+            query,
+            {
+                "graph_name": self.graph_name,
+                "relationship_types": valid_types,
+            },
+        )
 
         if not result or result[0]["relationshipCount"] == 0:
             raise RuntimeError(
@@ -132,9 +147,11 @@ class CommunityDetector:
         entity_label = self._escape_cypher_identifier(self.entity_label)
         existing = self.graph_store.execute_query(
             f"""
-            MATCH (:{entity_label})-[r]-(:{entity_label})
+            MATCH (:{entity_label} {{graph_name: $graph_name}})-[r]-(:{entity_label} {{graph_name: $graph_name}})
+            WHERE r.graph_name = $graph_name
             RETURN DISTINCT type(r) AS t
-            """
+            """,
+            {"graph_name": self.graph_name},
         )
         existing_types = {r["t"] for r in existing}
 

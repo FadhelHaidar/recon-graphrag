@@ -9,11 +9,6 @@ from __future__ import annotations
 from typing import Optional, Protocol, runtime_checkable
 
 import neo4j
-from neo4j_graphrag.indexes import (
-    create_fulltext_index,
-    create_vector_index,
-    upsert_vectors,
-)
 
 
 @runtime_checkable
@@ -56,16 +51,10 @@ class GraphStore(Protocol):
         embedding_property: str,
         vectors: list[list[float]],
     ) -> None:
-        """Batch upsert vector embeddings onto nodes."""
+        """Batch upsert vector embeddings onto nodes by Neo4j elementId()."""
         ...
 
     @property
     def driver(self) -> neo4j.Driver:
-        """Return the underlying neo4j.Driver (for neo4j-graphrag compatibility).
-
-        This is a temporary bridge — neo4j-graphrag's SimpleKGPipeline and
-        HybridCypherRetriever require a raw driver. Future versions of
-        neo4j-graphrag may accept a protocol instead, at which point this
-        property can be removed.
-        """
+        """Return the underlying neo4j.Driver for advanced Neo4j integrations."""
         ...

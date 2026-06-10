@@ -9,11 +9,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from neo4j_graphrag.llm import LLMInterface
-from neo4j_graphrag.llm.types import LLMResponse
-
 from recon_graphrag.communities.detection import DEFAULT_GRAPH_NAME
 from recon_graphrag.graph.base import GraphStore
+from recon_graphrag.llm.base import BaseLLM, LLMResponse
 
 
 DEFAULT_SUMMARY_PROMPT = """Summarize the following cluster of related entities and their connections.
@@ -38,7 +36,7 @@ class CommunitySummarizer:
     def __init__(
         self,
         graph_store: GraphStore,
-        llm: LLMInterface,
+        llm: BaseLLM,
         prompt_template: Optional[str] = None,
         graph_name: str = DEFAULT_GRAPH_NAME,
     ):

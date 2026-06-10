@@ -8,13 +8,53 @@ from __future__ import annotations
 
 from typing import Optional
 
-from neo4j_graphrag.embeddings import Embedder
-from neo4j_graphrag.experimental.components.resolver import (
-    SinglePropertyExactMatchResolver,
-)
-
+from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graph.base import GraphStore
+from recon_graphrag.graph.cypher import escape_cypher_identifier
 from recon_graphrag.models.types import IndexConfig
+
+
+class ExactMatchEntityResolver:
+    """Merge duplicate entity nodes using APOC when available."""
+
+    def __init__(self, graph_store: GraphStore, resolve_property: str = "name"):
+        self.graph_store = graph_store
+        self.resolve_property = resolve_property
+
+    async def run(self) -> dict:
+        try:
+            self.graph_store.execute_query("RETURN apoc.version() AS version")
+        except Exception as exc:
+            return {
+                "skipped": True,
+                "reason": f"APOC is unavailable: {exc}",
+                "merged_groups": 0,
+            }
+
+        prop = escape_cypher_identifier(self.resolve_property)
+        result = self.graph_store.execute_query(
+            f"""
+            MATCH (e:__Entity__)
+            WHERE e.{prop} IS NOT NULL
+            WITH e,
+                 coalesce(e.graph_name, '') AS graph_name,
+                 e.{prop} AS resolve_value,
+                 [label IN labels(e) WHERE label <> '__Entity__'] AS domain_labels
+            UNWIND CASE
+                WHEN size(domain_labels) = 0 THEN ['__Entity__']
+                ELSE domain_labels
+            END AS domain_label
+            WITH graph_name, domain_label, resolve_value, collect(DISTINCT e) AS nodes
+            WHERE size(nodes) > 1
+            CALL apoc.refactor.mergeNodes(
+                nodes,
+                {{properties: 'combine', mergeRels: true}}
+            ) YIELD node
+            RETURN count(node) AS merged_groups
+            """
+        )
+        merged_groups = result[0].get("merged_groups", 0) if result else 0
+        return {"skipped": False, "merged_groups": merged_groups}
 
 
 class IndexManager:
@@ -23,7 +63,7 @@ class IndexManager:
     def __init__(
         self,
         graph_store: GraphStore,
-        embedder: Optional[Embedder] = None,
+        embedder: Optional[BaseEmbedder] = None,
         embedding_dim: Optional[int] = None,
         index_config: Optional[IndexConfig] = None,
     ):
@@ -77,7 +117,9 @@ class IndexManager:
             self.config.entity_fulltext_index,
         ]:
             try:
-                self.graph_store.execute_query(f"DROP INDEX `{name}` IF EXISTS")
+                self.graph_store.execute_query(
+                    f"DROP INDEX {escape_cypher_identifier(name)} IF EXISTS"
+                )
             except Exception:
                 pass
 
@@ -97,16 +139,12 @@ class IndexManager:
     async def resolve_entities(self):
         """Run entity resolution to merge duplicate __Entity__ nodes.
 
-        Uses SinglePropertyExactMatchResolver which merges entities with
-        the same label and matching 'name' property. Requires APOC plugin.
+        Merges entities with the same graph name, domain label, and name.
+        If APOC is unavailable, resolution is skipped and graph building can
+        continue.
         """
-        resolver = SinglePropertyExactMatchResolver(
-            driver=self.graph_store.driver,
-            resolve_property="name",
-            neo4j_database=getattr(self.graph_store, "_database", None),
-        )
-        result = await resolver.run()
-        return result
+        resolver = ExactMatchEntityResolver(self.graph_store, resolve_property="name")
+        return await resolver.run()
 
     def verify(self):
         """Print current graph schema info: indexes, node counts, relationship counts."""

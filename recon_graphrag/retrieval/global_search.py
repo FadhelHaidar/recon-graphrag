@@ -19,6 +19,10 @@ from recon_graphrag.graph.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.models.types import SearchResult
 from recon_graphrag.retrieval.base import BaseRetriever
+from recon_graphrag.retrieval.community_levels import (
+    CommunityLevelSelector,
+    resolve_community_level,
+)
 
 
 DEFAULT_MAP_PROMPT = """Based on this report segment, answer the question.
@@ -68,7 +72,11 @@ class GlobalSearchRetriever(BaseRetriever):
         self.graph_name = graph_name
 
     async def search(
-        self, query: str, top_k: int = 5, level: Optional[int] = None
+        self,
+        query: str,
+        top_k: int = 5,
+        level: CommunityLevelSelector = None,
+        community_level: CommunityLevelSelector = None,
     ) -> SearchResult:
         """Run global search over community summaries.
 
@@ -76,7 +84,13 @@ class GlobalSearchRetriever(BaseRetriever):
         2. Map: LLM generates partial answer from each community summary
         3. Reduce: LLM synthesizes all partial answers into final answer
         """
-        communities = await self._search_communities(query, top_k, level)
+        selected_level = community_level if community_level is not None else level
+        resolved_level = resolve_community_level(
+            self.graph_store,
+            self.graph_name,
+            selected_level,
+        )
+        communities = await self._search_communities(query, top_k, resolved_level)
         if not communities:
             return SearchResult(
                 query=query, mode="global",

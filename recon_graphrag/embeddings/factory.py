@@ -1,15 +1,12 @@
 """Embedder factory functions.
 
-Convenience module to create Embedder instances without needing to know the
-exact import paths. Supports OpenAI, Azure OpenAI, Ollama, sentence-transformer,
-and OpenRouter.
-
-Users can also pass their own Embedder implementations directly —
-the factory is just convenience.
+Creates local provider adapters without relying on ``neo4j-graphrag``
+embedding wrappers.
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from recon_graphrag.embeddings.base import BaseEmbedder, ModelParamsEmbedder
@@ -17,35 +14,13 @@ from recon_graphrag.embeddings.base import BaseEmbedder, ModelParamsEmbedder
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
-def create_embedder(provider: str, *, model_params: dict[str, Any] | None = None, **kwargs: Any) -> BaseEmbedder:
-    """Create an Embedder instance for a supported provider.
-
-    Args:
-        provider: One of "openai", "azure_openai", "ollama",
-            "sentence-transformer", "openrouter".
-        model_params: Extra kwargs to inject into every embed call.
-            These are parameters that the underlying SDK expects at call time
-            (e.g. ``dimensions``, ``encoding_format``, ``extra_body``) rather
-            than at construction time. If provided, the embedder is
-            automatically wrapped with :class:`ModelParamsEmbedder`.
-        **kwargs: Passed to the underlying Embedder constructor.
-
-    Returns:
-        A BaseEmbedder instance, wrapped with ModelParamsEmbedder if
-        model_params is provided.
-
-    Example:
-        embedder = create_embedder("openai", model="text-embedding-3-small",
-                                    api_key="sk-...")
-
-        embedder = create_embedder("openrouter",
-                                    model="qwen/qwen3-embedding-8b",
-                                    api_key="sk-or-...",
-                                    model_params={"dimensions": 1536,
-                                                  "encoding_format": "float"})
-
-        embedder = create_embedder("sentence-transformer", model="all-MiniLM-L6-v2")
-    """
+def create_embedder(
+    provider: str,
+    *,
+    model_params: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> BaseEmbedder:
+    """Create an embedder instance for a supported provider."""
     providers = {
         "openai": _create_openai_embedder,
         "azure_openai": _create_azure_openai_embedder,
@@ -64,43 +39,132 @@ def create_embedder(provider: str, *, model_params: dict[str, Any] | None = None
     return embedder
 
 
-# --- Embedder constructors ---
+class OpenAIEmbeddings:
+    """OpenAI-compatible embeddings adapter."""
+
+    def __init__(self, model: str = "text-embedding-ada-002", azure: bool = False, **kwargs: Any):
+        try:
+            import openai
+        except ImportError as exc:
+            raise ImportError(
+                "Could not import openai Python client. "
+                "Install it with `pip install openai`."
+            ) from exc
+
+        self.model = model
+        client_cls = openai.AzureOpenAI if azure else openai.OpenAI
+        async_client_cls = openai.AsyncAzureOpenAI if azure else openai.AsyncOpenAI
+        self.client = client_cls(**kwargs)
+        self.async_client = async_client_cls(**kwargs)
+
+    def embed_query(self, text: str, **kwargs: Any) -> list[float]:
+        response = self.client.embeddings.create(input=text, model=self.model, **kwargs)
+        return list(response.data[0].embedding)
+
+    async def async_embed_query(self, text: str, **kwargs: Any) -> list[float]:
+        response = await self.async_client.embeddings.create(
+            input=text,
+            model=self.model,
+            **kwargs,
+        )
+        return list(response.data[0].embedding)
+
+
+class OllamaEmbeddings:
+    """Ollama embeddings adapter."""
+
+    def __init__(self, model: str, **kwargs: Any):
+        try:
+            import ollama
+        except ImportError as exc:
+            raise ImportError(
+                "Could not import ollama Python client. "
+                "Install it with `pip install ollama`."
+            ) from exc
+
+        self.model = model
+        self.client = ollama.Client(**kwargs)
+        self.async_client = ollama.AsyncClient(**kwargs)
+
+    def embed_query(self, text: str, **kwargs: Any) -> list[float]:
+        response = self.client.embed(model=self.model, input=text, **kwargs)
+        return _ollama_embedding(response)
+
+    async def async_embed_query(self, text: str, **kwargs: Any) -> list[float]:
+        response = await self.async_client.embed(model=self.model, input=text, **kwargs)
+        return _ollama_embedding(response)
+
+
+class SentenceTransformerEmbeddings:
+    """SentenceTransformers embeddings adapter."""
+
+    def __init__(self, model: str = "all-MiniLM-L6-v2", *args: Any, **kwargs: Any):
+        try:
+            import numpy as np
+            import sentence_transformers
+            import torch
+        except ImportError as exc:
+            raise ImportError(
+                "Could not import sentence_transformers. "
+                "Install it with `pip install sentence-transformers`."
+            ) from exc
+
+        self.np = np
+        self.torch = torch
+        self.model = sentence_transformers.SentenceTransformer(model, *args, **kwargs)
+
+    def embed_query(self, text: str, **kwargs: Any) -> list[float]:
+        result = self.model.encode([text], **kwargs)
+        if isinstance(result, (self.torch.Tensor, self.np.ndarray)):
+            return result.flatten().tolist()
+        if isinstance(result, list):
+            values = []
+            for item in result:
+                if isinstance(item, self.torch.Tensor):
+                    values.extend(item.flatten().tolist())
+                elif isinstance(item, self.np.ndarray):
+                    values.extend(item.flatten().tolist())
+                elif isinstance(item, list):
+                    values.extend(item)
+            if values:
+                return values
+        raise ValueError("Unexpected return type from SentenceTransformer.encode")
+
+    async def async_embed_query(self, text: str, **kwargs: Any) -> list[float]:
+        return await asyncio.to_thread(self.embed_query, text, **kwargs)
 
 
 def _create_openai_embedder(**kwargs: Any) -> BaseEmbedder:
-    from neo4j_graphrag.embeddings import OpenAIEmbeddings
-
     return OpenAIEmbeddings(**kwargs)
 
 
 def _create_azure_openai_embedder(**kwargs: Any) -> BaseEmbedder:
-    from neo4j_graphrag.embeddings import AzureOpenAIEmbeddings
-
-    return AzureOpenAIEmbeddings(**kwargs)
+    deployment_name = kwargs.get("azure_deployment") or kwargs.get("model")
+    if deployment_name:
+        kwargs.setdefault("azure_deployment", deployment_name)
+    return OpenAIEmbeddings(azure=True, **kwargs)
 
 
 def _create_ollama_embedder(**kwargs: Any) -> BaseEmbedder:
-    from neo4j_graphrag.embeddings import OllamaEmbeddings
-
     return OllamaEmbeddings(**kwargs)
 
 
 def _create_sentence_transformer_embedder(**kwargs: Any) -> BaseEmbedder:
-    from neo4j_graphrag.embeddings import SentenceTransformerEmbeddings
-
     return SentenceTransformerEmbeddings(**kwargs)
 
 
 def _create_openrouter_embedder(**kwargs: Any) -> BaseEmbedder:
-    """Create OpenRouter embedder (OpenAI-compatible API).
-
-    Sets base_url to OpenRouter by default, but allows override
-    via explicit base_url kwarg.
-
-    Defaults encoding_format="float" since OpenRouter defaults to base64,
-    which causes "No embedding data received" errors.
-    """
-    from neo4j_graphrag.embeddings import OpenAIEmbeddings
-
     kwargs.setdefault("base_url", _OPENROUTER_BASE_URL)
     return OpenAIEmbeddings(**kwargs)
+
+
+def _ollama_embedding(response: Any) -> list[float]:
+    embeddings = getattr(response, "embeddings", None)
+    if isinstance(response, dict):
+        embeddings = response.get("embeddings", embeddings)
+    if not embeddings:
+        raise ValueError("Failed to retrieve embeddings.")
+    embedding = embeddings[0]
+    if not isinstance(embedding, list):
+        embedding = list(embedding)
+    return embedding

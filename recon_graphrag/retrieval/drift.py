@@ -15,14 +15,17 @@ from __future__ import annotations
 
 from typing import Optional
 
-from neo4j_graphrag.retrievers import HybridCypherRetriever
-
 from recon_graphrag.communities.detection import DEFAULT_GRAPH_NAME
 from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graph.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.models.types import SearchResult
 from recon_graphrag.retrieval.base import BaseRetriever
+from recon_graphrag.retrieval.community_levels import (
+    CommunityLevelSelector,
+    resolve_community_level,
+)
+from recon_graphrag.retrieval.hybrid import HybridEntityRetriever, HybridRanker
 
 
 DEFAULT_DRIFT_QUERY = """
@@ -84,7 +87,7 @@ class DriftSearchRetriever(BaseRetriever):
         vector_index_name: str = "entity-embeddings",
         fulltext_index_name: str = "entity-names",
         graph_name: str = DEFAULT_GRAPH_NAME,
-        community_level: int = 0,
+        community_level: CommunityLevelSelector = 0,
     ):
         self.graph_store = graph_store
         self.llm = llm
@@ -97,15 +100,13 @@ class DriftSearchRetriever(BaseRetriever):
         self.community_level = community_level
         self._retriever = self._build_retriever()
 
-    def _build_retriever(self) -> HybridCypherRetriever:
-        neo4j_database = getattr(self.graph_store, "_database", None)
-        return HybridCypherRetriever(
-            driver=self.graph_store.driver,
+    def _build_retriever(self) -> HybridEntityRetriever:
+        return HybridEntityRetriever(
+            graph_store=self.graph_store,
+            embedder=self.embedder,
             vector_index_name=self.vector_index_name,
             fulltext_index_name=self.fulltext_index_name,
             retrieval_query=self.retrieval_query,
-            embedder=self.embedder,
-            neo4j_database=neo4j_database,
         )
 
     async def search(
@@ -113,7 +114,12 @@ class DriftSearchRetriever(BaseRetriever):
         query: str,
         top_k: int = 10,
         community_top_k: int = 3,
-        community_level: Optional[int] = None,
+        community_level: CommunityLevelSelector = None,
+        query_vector: list[float] | None = None,
+        effective_search_ratio: int = 1,
+        query_params: dict | None = None,
+        ranker: HybridRanker | str = "naive",
+        alpha: float | None = None,
     ) -> SearchResult:
         """Run DRIFT search.
 
@@ -123,10 +129,23 @@ class DriftSearchRetriever(BaseRetriever):
         4. Fetch other entities in those communities (bridging)
         5. Combine all context → LLM answer
         """
-        retriever_result = self._retriever.search(query_text=query, top_k=top_k)
+        retriever_result = await self._retriever.search(
+            query_text=query,
+            query_vector=query_vector,
+            top_k=top_k,
+            effective_search_ratio=effective_search_ratio,
+            query_params=query_params,
+            ranker=ranker,
+            alpha=alpha,
+        )
 
         entity_context = self._format_entity_context(retriever_result)
-        target_level = self.community_level if community_level is None else community_level
+        target_selector = self.community_level if community_level is None else community_level
+        target_level = resolve_community_level(
+            self.graph_store,
+            self.graph_name,
+            target_selector,
+        )
         community_keys = self._extract_community_keys(retriever_result, target_level)
 
         community_context = ""

@@ -9,13 +9,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from neo4j_graphrag.embeddings import Embedder
-from neo4j_graphrag.llm import LLMInterface
-
 from recon_graphrag.communities.detection import DEFAULT_GRAPH_NAME, CommunityDetector
 from recon_graphrag.communities.embeddings import CommunityEmbedder
 from recon_graphrag.communities.summarization import CommunitySummarizer
+from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graph.base import GraphStore
+from recon_graphrag.llm.base import BaseLLM
 
 
 class CommunityPipeline:
@@ -24,8 +23,8 @@ class CommunityPipeline:
     def __init__(
         self,
         graph_store: GraphStore,
-        llm: LLMInterface,
-        embedder: Embedder,
+        llm: BaseLLM,
+        embedder: BaseEmbedder,
         relationship_types: Optional[list[str]] = None,
         max_levels: int = 3,
         gamma: float = 1.0,

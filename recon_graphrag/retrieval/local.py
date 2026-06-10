@@ -12,13 +12,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from neo4j_graphrag.retrievers import HybridCypherRetriever
-
-from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graph.base import GraphStore
+from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.models.types import SearchResult
 from recon_graphrag.retrieval.base import BaseRetriever
+from recon_graphrag.retrieval.hybrid import HybridEntityRetriever, HybridRanker
 
 
 DEFAULT_RETRIEVAL_QUERY = """
@@ -74,20 +73,35 @@ class LocalSearchRetriever(BaseRetriever):
         self.fulltext_index_name = fulltext_index_name
         self._retriever = self._build_retriever()
 
-    def _build_retriever(self) -> HybridCypherRetriever:
-        neo4j_database = getattr(self.graph_store, "_database", None)
-        return HybridCypherRetriever(
-            driver=self.graph_store.driver,
+    def _build_retriever(self) -> HybridEntityRetriever:
+        return HybridEntityRetriever(
+            graph_store=self.graph_store,
+            embedder=self.embedder,
             vector_index_name=self.vector_index_name,
             fulltext_index_name=self.fulltext_index_name,
             retrieval_query=self.retrieval_query,
-            embedder=self.embedder,
-            neo4j_database=neo4j_database,
         )
 
-    async def search(self, query: str, top_k: int = 10) -> SearchResult:
+    async def search(
+        self,
+        query: str,
+        top_k: int = 10,
+        query_vector: list[float] | None = None,
+        effective_search_ratio: int = 1,
+        query_params: dict | None = None,
+        ranker: HybridRanker | str = "naive",
+        alpha: float | None = None,
+    ) -> SearchResult:
         """Run local search: vector search on entities → subgraph traversal → LLM answer."""
-        retriever_result = self._retriever.search(query_text=query, top_k=top_k)
+        retriever_result = await self._retriever.search(
+            query_text=query,
+            query_vector=query_vector,
+            top_k=top_k,
+            effective_search_ratio=effective_search_ratio,
+            query_params=query_params,
+            ranker=ranker,
+            alpha=alpha,
+        )
         context = self._format_context(retriever_result)
         answer = await self._generate_answer(query, context)
         return SearchResult(query=query, mode="local", answer=answer, context=context)

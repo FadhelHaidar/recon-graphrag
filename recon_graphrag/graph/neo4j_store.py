@@ -1,24 +1,20 @@
-"""Neo4j graph store backend.
-
-Wraps neo4j.Driver + neo4j-graphrag index helpers.
-"""
+"""Neo4j graph store backend."""
 
 from __future__ import annotations
 
 from typing import Optional
 
 import neo4j
-from neo4j_graphrag.indexes import (
-    create_fulltext_index,
-    create_vector_index,
-    upsert_vectors,
-)
 
 from recon_graphrag.graph.base import GraphStore
+from recon_graphrag.graph.cypher import (
+    cypher_string_literal,
+    escape_cypher_identifier,
+)
 
 
 class Neo4jGraphStore:
-    """Neo4j backend: wraps neo4j.Driver + neo4j-graphrag index helpers."""
+    """Neo4j backend backed by the official Neo4j driver."""
 
     def __init__(
         self,
@@ -50,16 +46,18 @@ class Neo4jGraphStore:
         dimensions: int,
         similarity_fn: str = "cosine",
     ) -> None:
-        create_vector_index(
-            self._driver,
-            name=name,
-            label=label,
-            embedding_property=embedding_property,
-            dimensions=dimensions,
-            similarity_fn=similarity_fn,
-            fail_if_exists=False,
-            neo4j_database=self._database,
-        )
+        query = f"""
+        CREATE VECTOR INDEX {escape_cypher_identifier(name)} IF NOT EXISTS
+        FOR (n:{escape_cypher_identifier(label)})
+        ON (n.{escape_cypher_identifier(embedding_property)})
+        OPTIONS {{
+          indexConfig: {{
+            `vector.dimensions`: {int(dimensions)},
+            `vector.similarity_function`: {cypher_string_literal(similarity_fn)}
+          }}
+        }}
+        """
+        self.execute_query(query)
 
     def create_fulltext_index(
         self,
@@ -67,14 +65,15 @@ class Neo4jGraphStore:
         label: str,
         node_properties: list[str],
     ) -> None:
-        create_fulltext_index(
-            self._driver,
-            name=name,
-            label=label,
-            node_properties=node_properties,
-            fail_if_exists=False,
-            neo4j_database=self._database,
+        properties = ", ".join(
+            f"n.{escape_cypher_identifier(prop)}" for prop in node_properties
         )
+        query = f"""
+        CREATE FULLTEXT INDEX {escape_cypher_identifier(name)} IF NOT EXISTS
+        FOR (n:{escape_cypher_identifier(label)})
+        ON EACH [{properties}]
+        """
+        self.execute_query(query)
 
     def upsert_vectors(
         self,
@@ -82,10 +81,27 @@ class Neo4jGraphStore:
         embedding_property: str,
         vectors: list[list[float]],
     ) -> None:
-        upsert_vectors(
-            self._driver,
-            node_ids,
-            embedding_property,
-            vectors,
-            neo4j_database=self._database,
+        """Batch upsert vector embeddings onto nodes matched by elementId().
+
+        This intentionally follows the current embedding call path, which reads
+        elementId() values immediately before writing embeddings back.
+        """
+        if len(node_ids) != len(vectors):
+            raise ValueError("node_ids and vectors must have the same length")
+        if not node_ids:
+            return
+
+        rows = [
+            {"id": node_id, "vector": vector}
+            for node_id, vector in zip(node_ids, vectors)
+        ]
+        self.execute_query(
+            """
+            UNWIND $rows AS row
+            MATCH (n)
+            WHERE elementId(n) = row.id
+            CALL db.create.setNodeVectorProperty(n, $embedding_property, row.vector)
+            RETURN count(n) AS updated_count
+            """,
+            {"rows": rows, "embedding_property": embedding_property},
         )
