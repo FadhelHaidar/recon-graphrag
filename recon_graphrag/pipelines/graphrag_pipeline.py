@@ -20,10 +20,7 @@ from recon_graphrag.extraction.schema import GraphSchema
 from recon_graphrag.extraction.assembler import GraphDocumentAssembler
 from recon_graphrag.extraction.validator import SchemaValidator
 from recon_graphrag.embeddings.base import BaseEmbedder
-from recon_graphrag.graph.base import GraphStore
-from recon_graphrag.graph.index_manager import IndexManager
-from recon_graphrag.graph.neo4j_writer import Neo4jGraphWriter
-from recon_graphrag.graph.writer import GraphWriter
+from recon_graphrag.graphdb.base import GraphStore, GraphWriter
 from recon_graphrag.llm.base import BaseLLM
 
 
@@ -61,7 +58,7 @@ class GraphBuilderPipeline:
         self.extractor = LLMGraphExtractor(llm)
         self.validator = SchemaValidator()
         self.assembler = GraphDocumentAssembler()
-        self.graph_writer = graph_writer or Neo4jGraphWriter(graph_store)
+        self.graph_writer = graph_writer or graph_store
 
     async def build_from_text(
         self,
@@ -253,7 +250,7 @@ class GraphBuilderPipeline:
 
         write_stats = self.graph_writer.write_graph_document(graph_document)
         print(
-            f"Writing graph document to Neo4j "
+            f"Writing graph document to {self._graph_store_name()} "
             f"({write_stats.get('entities')} entities, {write_stats.get('relationships')} relationships) ..."
         )
         print(f"Write complete: {write_stats}")
@@ -278,20 +275,13 @@ class GraphBuilderPipeline:
         return "".join(parts)
 
     def _backfill_descriptions(self):
-        """Set description = '' on __Entity__ nodes missing the property.
-
-        Prevents Neo4j warnings when queries reference e.description / node.description
-        on nodes whose schema doesn't define a description property.
-        """
-        self.graph_store.execute_query(
-            "MATCH (e:__Entity__) WHERE e.description IS NULL SET e.description = ''"
-        )
+        """Set description = '' on __Entity__ nodes missing the property."""
+        self.graph_store.backfill_descriptions()
 
     async def _resolve_entities(self):
         """Step 2: Merge duplicate entities with the internal resolver."""
-        mgr = IndexManager(self.graph_store)
         try:
-            result = await mgr.resolve_entities()
+            result = await self.graph_store.resolve_entities()
             if isinstance(result, dict) and result.get("skipped"):
                 print(f"Entity resolution skipped: reason={result.get('reason')}")
         except Exception as e:
@@ -310,30 +300,15 @@ class GraphBuilderPipeline:
                 raise
 
     def _validate_graph_build(self) -> dict:
-        query = """
-        CALL {
-            MATCH (e:__Entity__)
-            RETURN count(e) AS entity_count
-        }
-        CALL {
-            MATCH (c:Chunk)
-            RETURN count(c) AS chunk_count
-        }
-        CALL {
-            MATCH (:Chunk)-[r:FROM_CHUNK]->(:__Entity__)
-            RETURN count(r) AS evidence_link_count
-        }
-        CALL {
-            MATCH (:__Entity__)-[r]-(:__Entity__)
-            RETURN count(r) AS entity_relationship_count
-        }
-        RETURN entity_count,
-               chunk_count,
-               evidence_link_count,
-               entity_relationship_count
-        """
-        result = self.graph_store.execute_query(query)
-        return result[0] if result else {}
+        return self.graph_store.validate_graph_build()
+
+    def _graph_store_name(self) -> str:
+        """Return a human-readable name derived from the graph store class."""
+        class_name = type(self.graph_store).__name__
+        suffix = "GraphStore"
+        if class_name.endswith(suffix) and len(class_name) > len(suffix):
+            return class_name[: -len(suffix)]
+        return class_name
 
     def _hash_text(self, text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()

@@ -9,11 +9,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-from recon_graphrag.communities.detection import DEFAULT_GRAPH_NAME, CommunityDetector
 from recon_graphrag.communities.embeddings import CommunityEmbedder
 from recon_graphrag.communities.summarization import CommunitySummarizer
 from recon_graphrag.embeddings.base import BaseEmbedder
-from recon_graphrag.graph.base import GraphStore
+from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM
 
 
@@ -30,7 +29,7 @@ class CommunityPipeline:
         gamma: float = 1.0,
         theta: float = 0.01,
         tolerance: float = 1e-4,
-        graph_name: str = DEFAULT_GRAPH_NAME,
+        graph_name: str = "entity-graph",
         relationship_weight_property: Optional[str] = None,
         random_seed: Optional[int] = 42,
         summary_prompt: Optional[str] = None,
@@ -61,18 +60,16 @@ class CommunityPipeline:
             Dict with stats from each step.
         """
         print("Step 4: Detecting communities...")
-        detector = CommunityDetector(
-            self.graph_store,
+        community_stats = self.graph_store.detect_communities(
+            graph_name=self.graph_name,
             relationship_types=self.relationship_types,
             max_levels=self.max_levels,
             gamma=self.gamma,
             theta=self.theta,
             tolerance=self.tolerance,
-            graph_name=self.graph_name,
             relationship_weight_property=self.relationship_weight_property,
             random_seed=self.random_seed,
         )
-        community_stats = detector.detect()
         print(f"  Found {len(community_stats)} communities")
 
         detected_levels = sorted({s["level"] for s in community_stats})

@@ -17,7 +17,7 @@ from recon_graphrag.llm import create_llm, BaseLLM, LLMResponse, LLMUsage
 from recon_graphrag.embeddings import create_embedder, BaseEmbedder, ModelParamsEmbedder
 
 # Graph store
-from recon_graphrag.graph import GraphStore, Neo4jGraphStore, IndexManager
+from recon_graphrag.graphdb import GraphStore
 
 # Schema
 from recon_graphrag.extraction.schema import (
@@ -33,7 +33,6 @@ from recon_graphrag.models.types import SearchResult, IndexConfig
 
 # Communities
 from recon_graphrag.communities import (
-    CommunityDetector,
     CommunitySummarizer,
     CommunityEmbedder,
     CommunityPipeline,
@@ -80,3 +79,19 @@ __all__ = [
     # Config
     "PipelineConfig",
 ]
+
+
+def __getattr__(name: str):
+    if name == "Neo4jGraphStore":
+        from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
+
+        return Neo4jGraphStore
+    if name == "IndexManager":
+        from recon_graphrag.graphdb.neo4j.index_manager import IndexManager
+
+        return IndexManager
+    if name == "CommunityDetector":
+        from recon_graphrag.communities.neo4j.detection import CommunityDetector
+
+        return CommunityDetector
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

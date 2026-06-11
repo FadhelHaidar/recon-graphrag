@@ -10,6 +10,7 @@ from recon_graphrag.extraction.schema import (
     PropertyType,
     RelationshipType,
 )
+from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
 from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
 
 
@@ -21,18 +22,42 @@ class FakeGraphStore:
         self.queries.append(query.strip())
         return []
 
-    def create_vector_index(self, **kwargs):
+    def write_graph_document(self, graph_document):
+        return {
+            "documents": 1,
+            "chunks": len(graph_document.chunks),
+            "entities": len(graph_document.entities),
+            "relationships": len(graph_document.relationships),
+            "evidence_links": len(graph_document.evidence_links),
+        }
+
+    def backfill_descriptions(self):
         pass
 
-    def create_fulltext_index(self, **kwargs):
+    async def resolve_entities(self):
+        return {"skipped": False, "merged_groups": 0}
+
+    def get_unembedded_entities(self, limit=500):
+        return []
+
+    def upsert_vectors(self, ids, property_name, vectors):
         pass
 
-    def upsert_vectors(self, **kwargs):
-        pass
+    def validate_graph_build(self):
+        return {
+            "entity_count": 2,
+            "chunk_count": 1,
+            "evidence_link_count": 2,
+            "entity_relationship_count": 1,
+        }
 
-    @property
-    def driver(self):
-        return None
+
+class MyGraphStore(FakeGraphStore):
+    pass
+
+
+class CustomBackend(FakeGraphStore):
+    pass
 
 
 @pytest.fixture
@@ -127,6 +152,27 @@ async def test_build_from_text_orchestration(
 
 
 @pytest.mark.asyncio
+async def test_build_from_text_logs_derived_graph_store_name(
+    movie_schema, fake_llm, fake_embedder, fake_writer, capsys
+):
+    store = MyGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=fake_llm,
+        embedder=fake_embedder,
+        schema=movie_schema,
+        graph_writer=fake_writer,
+        perform_entity_resolution=False,
+        embed_entities=False,
+    )
+
+    await pipeline.build_from_text("Alice directed Inception.")
+
+    captured = capsys.readouterr()
+    assert "Writing graph document to My " in captured.out
+
+
+@pytest.mark.asyncio
 async def test_build_from_pages_with_windows(
     movie_schema, fake_llm, fake_embedder, fake_writer
 ):
@@ -182,23 +228,14 @@ async def test_build_from_text_with_entity_embedding_loop(
     movie_schema, fake_llm, fake_embedder
 ):
     store = FakeGraphStore()
-    # Writer calls: documents, chunks, entities, evidence_links, relationships
-    # Then: backfill descriptions, validation
-    # Then: embed_entities loop (2 batches)
-    store.execute_query = MagicMock(side_effect=[
-        [],  # write documents
-        [],  # write chunks
-        [],  # write entities
-        [],  # write evidence links
-        [],  # write relationships
-        [],  # backfill descriptions
-        [],  # validation
+    store.get_unembedded_entities = MagicMock(side_effect=[
         [  # first batch of unembedded entities
             {"id": "e1", "labels": ["Person"], "name": "Alice", "description": ""},
             {"id": "e2", "labels": ["Movie"], "name": "Inception", "description": ""},
         ],
         [],  # second batch (empty) -> break loop
     ])
+    store.upsert_vectors = MagicMock()
 
     pipeline = GraphBuilderPipeline(
         graph_store=store,
@@ -211,6 +248,8 @@ async def test_build_from_text_with_entity_embedding_loop(
 
     result = await pipeline.build_from_text("Alice directed Inception.")
     assert "extraction" in result
+    store.get_unembedded_entities.assert_called()
+    store.upsert_vectors.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -259,6 +298,39 @@ def test_make_document_id_with_source():
     )
     doc_id = pipeline._make_document_id("hello", {"source": "My Doc"})
     assert doc_id == "doc:my-doc"
+
+
+def test_graph_store_name_uses_neo4j_class_name():
+    pipeline = GraphBuilderPipeline(
+        graph_store=Neo4jGraphStore(driver=MagicMock()),
+        llm=MagicMock(),
+        embedder=MagicMock(),
+        schema=_make_test_schema(),
+    )
+
+    assert pipeline._graph_store_name() == "Neo4j"
+
+
+def test_graph_store_name_trims_graph_store_suffix():
+    pipeline = GraphBuilderPipeline(
+        graph_store=MyGraphStore(),
+        llm=MagicMock(),
+        embedder=MagicMock(),
+        schema=_make_test_schema(),
+    )
+
+    assert pipeline._graph_store_name() == "My"
+
+
+def test_graph_store_name_keeps_custom_class_without_graph_store_suffix():
+    pipeline = GraphBuilderPipeline(
+        graph_store=CustomBackend(),
+        llm=MagicMock(),
+        embedder=MagicMock(),
+        schema=_make_test_schema(),
+    )
+
+    assert pipeline._graph_store_name() == "CustomBackend"
 
 
 def test_make_document_id_without_source():

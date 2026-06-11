@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Optional
 
 from recon_graphrag.embeddings.base import BaseEmbedder
-from recon_graphrag.graph.base import GraphStore
+from recon_graphrag.graphdb.base import GraphStore
 
 
 HybridRanker = Literal["naive", "linear"]
@@ -39,15 +39,17 @@ class HybridEntityRetriever:
         self,
         graph_store: GraphStore,
         embedder: BaseEmbedder,
-        retrieval_query: str,
+        retrieval_query: Optional[str],
         vector_index_name: str,
         fulltext_index_name: str,
+        context_mode: str = "local",
     ):
         self.graph_store = graph_store
         self.embedder = embedder
         self.retrieval_query = retrieval_query
         self.vector_index_name = vector_index_name
         self.fulltext_index_name = fulltext_index_name
+        self.context_mode = context_mode
 
     async def search(
         self,
@@ -67,8 +69,12 @@ class HybridEntityRetriever:
             query_vector = await self.embedder.async_embed_query(query_text)
 
         candidate_k = top_k * effective_search_ratio
-        vector_rows = self._vector_search(query_vector, candidate_k, top_k)
-        keyword_rows = self._keyword_search(query_text, candidate_k, top_k)
+        vector_rows = self.graph_store.vector_search(
+            self.vector_index_name, query_vector, candidate_k, label="__Entity__"
+        )
+        keyword_rows = self.graph_store.keyword_search(
+            self.fulltext_index_name, query_text, candidate_k, label="__Entity__"
+        )
         matches = merge_hybrid_scores(
             vector_rows,
             keyword_rows,
@@ -85,75 +91,17 @@ class HybridEntityRetriever:
             metadata={"query_vector": query_vector},
         )
 
-    def _vector_search(
-        self,
-        query_vector: list[float],
-        candidate_k: int,
-        top_k: int,
-    ) -> list[dict]:
-        query = """
-        CALL db.index.vector.queryNodes($index_name, $k, $query_vector)
-        YIELD node, score
-        WHERE node:__Entity__
-        RETURN elementId(node) AS id, score
-        ORDER BY score DESC
-        LIMIT $top_k
-        """
-        return self.graph_store.execute_query(
-            query,
-            {
-                "index_name": self.vector_index_name,
-                "k": candidate_k,
-                "top_k": top_k,
-                "query_vector": query_vector,
-            },
-        )
-
-    def _keyword_search(
-        self,
-        query_text: str,
-        candidate_k: int,
-        top_k: int,
-    ) -> list[dict]:
-        query = """
-        CALL db.index.fulltext.queryNodes(
-            $index_name,
-            $query_text,
-            {limit: $k}
-        )
-        YIELD node, score
-        WHERE node:__Entity__
-        RETURN elementId(node) AS id, score
-        ORDER BY score DESC
-        LIMIT $top_k
-        """
-        return self.graph_store.execute_query(
-            query,
-            {
-                "index_name": self.fulltext_index_name,
-                "query_text": query_text,
-                "k": candidate_k,
-                "top_k": top_k,
-            },
-        )
-
     def _fetch_context(
         self,
         matches: list[dict],
         query_params: dict | None = None,
     ) -> list[dict]:
-        query = f"""
-        UNWIND $matches AS match
-        MATCH (node)
-        WHERE elementId(node) = match.id
-        WITH node, match.score AS score
-        {self.retrieval_query}
-        """
-        parameters = {"matches": matches}
-        if query_params:
-            for key, value in query_params.items():
-                parameters.setdefault(key, value)
-        return self.graph_store.execute_query(query, parameters)
+        return self.graph_store.fetch_entity_context(
+            matches=matches,
+            retrieval_query=self.retrieval_query,
+            query_params=query_params,
+            mode=self.context_mode,
+        )
 
 
 def merge_hybrid_scores(

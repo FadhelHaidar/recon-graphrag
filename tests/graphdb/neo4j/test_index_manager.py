@@ -2,7 +2,7 @@
 
 import pytest
 
-from recon_graphrag.graph.index_manager import ExactMatchEntityResolver, IndexManager
+from recon_graphrag.graphdb.neo4j.index_manager import ExactMatchEntityResolver, IndexManager
 
 
 class FakeGraphStore:
@@ -30,10 +30,6 @@ class FakeGraphStore:
 
     def upsert_vectors(self, **kwargs):
         pass
-
-    @property
-    def driver(self):
-        return None
 
 
 def test_index_manager_create_indexes_uses_graph_store_methods():

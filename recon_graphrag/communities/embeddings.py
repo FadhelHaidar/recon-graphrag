@@ -6,9 +6,8 @@ then upserts them into the graph for semantic retrieval.
 
 from __future__ import annotations
 
-from recon_graphrag.communities.detection import DEFAULT_GRAPH_NAME
 from recon_graphrag.embeddings.base import BaseEmbedder
-from recon_graphrag.graph.base import GraphStore
+from recon_graphrag.graphdb.base import GraphStore
 
 
 class CommunityEmbedder:
@@ -18,7 +17,7 @@ class CommunityEmbedder:
         self,
         graph_store: GraphStore,
         embedder: BaseEmbedder,
-        graph_name: str = DEFAULT_GRAPH_NAME,
+        graph_name: str = "entity-graph",
     ):
         self.graph_store = graph_store
         self.embedder = embedder
@@ -30,7 +29,7 @@ class CommunityEmbedder:
         Reads Community nodes with summaries but without embeddings,
         generates embeddings via the embedder, and batch-upserts them.
         """
-        communities = self._get_communities_without_embeddings(level)
+        communities = self.graph_store.get_unembedded_communities(self.graph_name, level)
         if not communities:
             print(f"  All communities at level {level} already have embeddings.")
             return
@@ -59,7 +58,7 @@ class CommunityEmbedder:
         total = 0
 
         while True:
-            entities = self._get_entities_without_embeddings(limit=batch_size)
+            entities = self.graph_store.get_unembedded_entities(limit=batch_size)
             if not entities:
                 break
 
@@ -85,31 +84,6 @@ class CommunityEmbedder:
             print("  All entities already have embeddings.")
         else:
             print(f"  Embedded {total} entities.")
-
-    def _get_communities_without_embeddings(self, level: int) -> list[dict]:
-        query = """
-        MATCH (c:Community {graph_name: $graph_name, level: $level})
-        WHERE c.summary IS NOT NULL AND c.embedding IS NULL
-        RETURN elementId(c) AS id,
-               c.id AS community_id,
-               c.level AS level,
-               c.summary AS summary
-        """
-        return self.graph_store.execute_query(
-            query,
-            {"graph_name": self.graph_name, "level": level},
-        )
-
-    def _get_entities_without_embeddings(self, limit: int = 500) -> list[dict]:
-        query = """
-        MATCH (e:__Entity__)
-        WHERE e.embedding IS NULL
-        RETURN elementId(e) AS id, labels(e) AS labels,
-               e.name AS name,
-               CASE WHEN e.description IS NOT NULL THEN e.description ELSE '' END AS description
-        LIMIT $limit
-        """
-        return self.graph_store.execute_query(query, {"limit": limit})
 
     @staticmethod
     def _community_to_text(community: dict) -> str:

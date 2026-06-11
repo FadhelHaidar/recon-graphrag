@@ -16,13 +16,15 @@ class FakeGraphStore:
 
     def execute_query(self, query, parameters=None):
         self.queries.append(query.strip())
-        if "c.summary IS NOT NULL AND c.embedding IS NULL" in query:
-            return self._communities
-        if "e.embedding IS NULL" in query:
-            batch = self._entities[:parameters.get("limit", 500)]
-            self._entities = self._entities[parameters.get("limit", 500):]
-            return batch
         return []
+
+    def get_unembedded_communities(self, graph_name, level):
+        return self._communities
+
+    def get_unembedded_entities(self, limit=500):
+        batch = self._entities[:limit]
+        self._entities = self._entities[limit:]
+        return batch
 
     def upsert_vectors(self, ids, property_name, vectors):
         self.upserted.append((ids, property_name, vectors))

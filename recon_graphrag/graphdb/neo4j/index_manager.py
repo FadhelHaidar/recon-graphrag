@@ -9,8 +9,8 @@ from __future__ import annotations
 from typing import Optional
 
 from recon_graphrag.embeddings.base import BaseEmbedder
-from recon_graphrag.graph.base import GraphStore
-from recon_graphrag.graph.cypher import escape_cypher_identifier
+from recon_graphrag.graphdb.base import GraphStore
+from recon_graphrag.graphdb.neo4j.cypher import escape_cypher_identifier
 from recon_graphrag.models.types import IndexConfig
 
 

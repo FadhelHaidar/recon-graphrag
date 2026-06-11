@@ -11,34 +11,53 @@ class FakeGraphStore:
     def __init__(self):
         self.calls = []
 
+    def vector_search(self, index_name, query_vector, k, label=None, filters=None):
+        self.calls.append(("vector_search", {"index_name": index_name, "k": k, "label": label}))
+        return [
+            {"id": "a", "score": 0.7},
+            {"id": "b", "score": 0.5},
+        ]
+
+    def keyword_search(self, index_name, query_text, k, label=None, filters=None):
+        self.calls.append(("keyword_search", {"index_name": index_name, "k": k, "label": label}))
+        return [
+            {"id": "a", "score": 1.0},
+            {"id": "c", "score": 0.4},
+        ]
+
     def execute_query(self, query, parameters=None):
         params = parameters or {}
-        self.calls.append((query.strip(), params))
-        if "db.index.vector.queryNodes" in query:
-            return [
-                {"id": "a", "score": 0.7},
-                {"id": "b", "score": 0.5},
-            ]
-        if "db.index.fulltext.queryNodes" in query:
-            return [
-                {"id": "a", "score": 1.0},
-                {"id": "c", "score": 0.4},
-            ]
-        if "UNWIND $matches AS match" in query:
-            return [
-                {
-                    "title": "Alice (Person)",
-                    "relationships": ["Person: Alice -[DIRECTED]-> Movie: Inception"],
-                    "source_text": ["Alice directed Inception."],
-                    "score": params["matches"][0]["score"],
-                    "custom": params.get("custom"),
-                }
-            ]
+        self.calls.append(("execute_query", {"query": query.strip(), "params": params}))
         return []
 
-    @property
-    def driver(self):
-        return None
+    def fetch_entity_context(
+        self,
+        matches,
+        retrieval_query=None,
+        query_params=None,
+        mode="local",
+    ):
+        params = query_params or {}
+        self.calls.append(
+            (
+                "fetch_entity_context",
+                {
+                    "matches": matches,
+                    "retrieval_query": retrieval_query,
+                    "query_params": params,
+                    "mode": mode,
+                },
+            )
+        )
+        return [
+            {
+                "title": "Alice (Person)",
+                "relationships": ["Person: Alice -[DIRECTED]-> Movie: Inception"],
+                "source_text": ["Alice directed Inception."],
+                "score": matches[0]["score"],
+                "custom": params.get("custom"),
+            }
+        ]
 
 
 class FakeEmbedder:
@@ -130,25 +149,18 @@ async def test_hybrid_entity_retriever_embeds_queries_and_fetches_context():
     assert embedder.queries == ["Who directed Inception?"]
     assert result.items[0].content["title"] == "Alice (Person)"
     assert result.items[0].content["custom"] == "value"
-    vector_params = [
-        params
-        for query, params in store.calls
-        if "db.index.vector.queryNodes" in query
-    ][0]
-    keyword_params = [
-        params
-        for query, params in store.calls
-        if "db.index.fulltext.queryNodes" in query
-    ][0]
-    assert vector_params["k"] == 6
-    assert keyword_params["k"] == 6
-    context_params = [
-        params for query, params in store.calls if "UNWIND $matches AS match" in query
-    ][0]
-    assert context_params["matches"] == [
+    vector_call = [c for c in store.calls if c[0] == "vector_search"][0]
+    keyword_call = [c for c in store.calls if c[0] == "keyword_search"][0]
+    assert vector_call[1]["k"] == 6
+    assert keyword_call[1]["k"] == 6
+    context_call = [c for c in store.calls if c[0] == "fetch_entity_context"][0]
+    assert context_call[1]["matches"] == [
         {"id": "a", "score": 1.0},
         {"id": "b", "score": 0.7142857142857143},
     ]
+    assert context_call[1]["retrieval_query"] == "RETURN node.name AS title, score"
+    assert context_call[1]["query_params"] == {"custom": "value"}
+    assert context_call[1]["mode"] == "local"
     assert result.metadata == {"query_vector": [0.1, 0.2, 0.3]}
 
 

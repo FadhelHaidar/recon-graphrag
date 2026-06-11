@@ -2,7 +2,7 @@
 
 import pytest
 
-from recon_graphrag.communities.detection import CommunityDetector
+from recon_graphrag.communities.neo4j.detection import CommunityDetector
 
 
 class FakeGraphStore:

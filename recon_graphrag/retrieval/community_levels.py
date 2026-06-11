@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional, TypeAlias
 
-from recon_graphrag.graph.base import GraphStore
+from recon_graphrag.graphdb.base import GraphStore
 
 
 CommunityLevelSelector: TypeAlias = Optional[

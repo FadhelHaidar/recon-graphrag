@@ -15,9 +15,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from recon_graphrag.communities.detection import DEFAULT_GRAPH_NAME
 from recon_graphrag.embeddings.base import BaseEmbedder
-from recon_graphrag.graph.base import GraphStore
+from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.models.types import SearchResult
 from recon_graphrag.retrieval.base import BaseRetriever
@@ -27,32 +26,6 @@ from recon_graphrag.retrieval.community_levels import (
 )
 from recon_graphrag.retrieval.hybrid import HybridEntityRetriever, HybridRanker
 
-
-DEFAULT_DRIFT_QUERY = """
-OPTIONAL MATCH (node)-[r]-(neighbor)
-WHERE NOT neighbor:Chunk AND NOT neighbor:Document AND NOT neighbor:Community
-WITH node, score, collect(DISTINCT {
-    entity: labels(node)[-1] + ': ' + coalesce(node.name, node.description, ''),
-    rel: type(r),
-    neighbor: labels(neighbor)[-1] + ': ' + coalesce(neighbor.name, neighbor.description, '')
-}) AS connections
-OPTIONAL MATCH (node)<-[:FROM_CHUNK]-(chunk:Chunk)
-WITH node, score, connections, collect(DISTINCT chunk.text) AS source_texts
-OPTIONAL MATCH (node)-[:IN_COMMUNITY]->(c:Community)
-WITH node, score, connections, source_texts,
-     collect(DISTINCT {
-        id: c.id,
-        level: c.level,
-        graph_name: c.graph_name,
-        summary: c.summary
-     }) AS communities
-RETURN node.name + ' (' + labels(node)[-1] + ')' AS title,
-       [c IN connections WHERE c.rel IS NOT NULL |
-           c.entity + ' -[' + c.rel + ']-> ' + c.neighbor] AS relationships,
-       source_texts AS source_text,
-       communities,
-       score
-"""
 
 DEFAULT_ANSWER_PROMPT = """You have access to detailed findings and broader context.
 
@@ -86,13 +59,13 @@ class DriftSearchRetriever(BaseRetriever):
         answer_prompt: Optional[str] = None,
         vector_index_name: str = "entity-embeddings",
         fulltext_index_name: str = "entity-names",
-        graph_name: str = DEFAULT_GRAPH_NAME,
+        graph_name: str = "entity-graph",
         community_level: CommunityLevelSelector = 0,
     ):
         self.graph_store = graph_store
         self.llm = llm
         self.embedder = embedder
-        self.retrieval_query = retrieval_query or DEFAULT_DRIFT_QUERY
+        self.retrieval_query = retrieval_query
         self.answer_prompt = answer_prompt or DEFAULT_ANSWER_PROMPT
         self.vector_index_name = vector_index_name
         self.fulltext_index_name = fulltext_index_name
@@ -107,6 +80,7 @@ class DriftSearchRetriever(BaseRetriever):
             vector_index_name=self.vector_index_name,
             fulltext_index_name=self.fulltext_index_name,
             retrieval_query=self.retrieval_query,
+            context_mode="drift",
         )
 
     async def search(
@@ -209,41 +183,17 @@ class DriftSearchRetriever(BaseRetriever):
     def _fetch_community_summaries(
         self, community_keys: list[dict], top_k: int
     ) -> list[dict]:
-        query = """
-        UNWIND $keys AS key
-        MATCH (c:Community {
-            graph_name: $graph_name,
-            id: key.id,
-            level: key.level
-        })
-        WHERE c.summary IS NOT NULL
-        RETURN c.id AS id, c.summary AS summary, c.level AS level
-        ORDER BY c.level ASC
-        LIMIT $top_k
-        """
-        return self.graph_store.execute_query(
-            query,
-            {"keys": community_keys, "graph_name": self.graph_name, "top_k": top_k},
+        return self.graph_store.get_community_summaries_by_keys(
+            graph_name=self.graph_name,
+            keys=community_keys,
+            top_k=top_k,
         )
 
     def _fetch_community_entities(self, community_keys: list[dict]) -> list[dict]:
         """Fetch entities in specified communities."""
-        query = """
-        UNWIND $keys AS key
-        MATCH (c:Community {
-            graph_name: $graph_name,
-            id: key.id,
-            level: key.level
-        })<-[:IN_COMMUNITY]-(e:__Entity__)
-        OPTIONAL MATCH (e)-[r]-(other:__Entity__)
-        WHERE (other)-[:IN_COMMUNITY]->(c) AND elementId(e) < elementId(other)
-        RETURN DISTINCT e.name AS name, labels(e) AS labels,
-               collect(DISTINCT type(r) + ' -> ' + coalesce(other.name, other.description)) AS rels
-        LIMIT 50
-        """
-        return self.graph_store.execute_query(
-            query,
-            {"keys": community_keys, "graph_name": self.graph_name},
+        return self.graph_store.get_community_entities_by_keys(
+            graph_name=self.graph_name,
+            keys=community_keys,
         )
 
     @staticmethod
