@@ -66,8 +66,8 @@ class CommunityEmbedder:
             ids, embeddings = [], []
 
             for entity in entities:
-                text = self._entity_to_text(entity)
                 try:
+                    text = self._entity_to_text(entity)
                     embedding = await self.embedder.async_embed_query(text)
                     ids.append(entity["id"])
                     embeddings.append(embedding)

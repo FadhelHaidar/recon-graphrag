@@ -1,7 +1,5 @@
 """Schema validation for extracted graph data."""
 
-from typing import Any
-
 from recon_graphrag.extraction.schema import GraphSchema
 from recon_graphrag.extraction.types import (
     ExtractedNode,
@@ -83,62 +81,10 @@ class SchemaValidator:
 
     def _filter_properties(self, properties, schema_type):
         allowed = schema_type.property_names if schema_type else set()
-        property_types = {
-            prop.name: prop.type
-            for prop in (schema_type.properties if schema_type else [])
-        }
         base_allowed = {"name", "description", "weight"}
 
         return {
-            key: self._normalize_property_value(
-                value,
-                property_types.get(key, self._base_property_type(key)),
-            )
+            key: value
             for key, value in properties.items()
             if key in allowed or key in base_allowed
         }
-
-    def _base_property_type(self, key: str) -> str:
-        if key in {"name", "description"}:
-            return "STRING"
-        if key == "weight":
-            return "FLOAT"
-        return "STRING"
-
-    def _normalize_property_value(self, value: Any, property_type: str) -> Any:
-        if property_type == "STRING":
-            return self._stringify_value(value)
-        if property_type == "FLOAT":
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                return value
-        if property_type == "INTEGER":
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                return value
-        if property_type == "BOOLEAN":
-            return bool(value)
-        if property_type == "LIST":
-            return value if isinstance(value, list) else [value]
-        return value
-
-    def _stringify_value(self, value: Any) -> str:
-        if value is None:
-            return ""
-        if isinstance(value, str):
-            return value
-        if isinstance(value, dict):
-            return ", ".join(
-                f"{key}: {self._stringify_value(item)}"
-                for key, item in value.items()
-                if item is not None
-            )
-        if isinstance(value, (list, tuple, set)):
-            return ", ".join(
-                text
-                for item in value
-                if (text := self._stringify_value(item))
-            )
-        return str(value)
