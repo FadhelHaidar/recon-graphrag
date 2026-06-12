@@ -13,9 +13,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from recon_graphrag.communities.detection import DEFAULT_GRAPH_NAME
 from recon_graphrag.embeddings.base import BaseEmbedder
-from recon_graphrag.graph.base import GraphStore
+from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.models.types import SearchResult
 from recon_graphrag.retrieval.base import BaseRetriever
@@ -61,7 +60,7 @@ class GlobalSearchRetriever(BaseRetriever):
         map_prompt: Optional[str] = None,
         reduce_prompt: Optional[str] = None,
         vector_index_name: str = "community-embeddings",
-        graph_name: str = DEFAULT_GRAPH_NAME,
+        graph_name: str = "entity-graph",
     ):
         self.graph_store = graph_store
         self.llm = llm
@@ -90,7 +89,14 @@ class GlobalSearchRetriever(BaseRetriever):
             self.graph_name,
             selected_level,
         )
-        communities = await self._search_communities(query, top_k, resolved_level)
+        query_vector = await self.embedder.async_embed_query(query)
+        communities = self.graph_store.search_communities(
+            index_name=self.vector_index_name,
+            query_vector=query_vector,
+            graph_name=self.graph_name,
+            top_k=top_k,
+            level=resolved_level,
+        )
         if not communities:
             return SearchResult(
                 query=query, mode="global",
@@ -101,58 +107,6 @@ class GlobalSearchRetriever(BaseRetriever):
         partial_answers = await self._map_phase(query, communities)
         answer = await self._reduce_phase(query, partial_answers)
         return SearchResult(query=query, mode="global", answer=answer, context=context)
-
-    async def _search_communities(
-        self, query: str, top_k: int, level: Optional[int]
-    ) -> list[dict]:
-        """Vector search on community summary embeddings."""
-        query_vector = await self.embedder.async_embed_query(query)
-        overfetch_k = max(top_k * 5, top_k)
-
-        if level is not None:
-            cypher = """
-            CALL db.index.vector.queryNodes($index_name, $k, $query_vector)
-            YIELD node AS community, score
-            WHERE community.graph_name = $graph_name
-              AND community.level = $level
-              AND community.summary IS NOT NULL
-            RETURN community.id AS id,
-                   community.summary AS summary,
-                   community.level AS level,
-                   score
-            ORDER BY score DESC
-            LIMIT $top_k
-            """
-            params = {
-                "index_name": self.vector_index_name,
-                "k": overfetch_k,
-                "top_k": top_k,
-                "query_vector": query_vector,
-                "level": level,
-                "graph_name": self.graph_name,
-            }
-        else:
-            cypher = """
-            CALL db.index.vector.queryNodes($index_name, $k, $query_vector)
-            YIELD node AS community, score
-            WHERE community.graph_name = $graph_name
-              AND community.summary IS NOT NULL
-            RETURN community.id AS id,
-                   community.summary AS summary,
-                   community.level AS level,
-                   score
-            ORDER BY score DESC
-            LIMIT $top_k
-            """
-            params = {
-                "index_name": self.vector_index_name,
-                "k": overfetch_k,
-                "top_k": top_k,
-                "query_vector": query_vector,
-                "graph_name": self.graph_name,
-            }
-
-        return self.graph_store.execute_query(cypher, params)
 
     async def _map_phase(
         self, query: str, communities: list[dict]

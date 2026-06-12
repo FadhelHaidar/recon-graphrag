@@ -13,7 +13,7 @@ import sys
 from recon_graphrag import CommunityPipeline, GraphBuilderPipeline, IndexManager
 
 from config import get_embedder, get_llm, get_neo4j_store
-from data import MOVIE_EXAMPLE_TEXT
+from data import MOVIE_EXAMPLE_PAGES
 from prompts import COMMUNITY_SUMMARY_PROMPT
 from schema import COMMUNITY_RELATIONSHIP_TYPES, MOVIE_SCHEMA
 
@@ -32,9 +32,11 @@ async def build():
     IndexManager(store, embedding_dim=1536).create_indexes()
 
     pipeline = GraphBuilderPipeline(store, llm, embedder, schema=MOVIE_SCHEMA)
-    result = await pipeline.build_from_text(
-        MOVIE_EXAMPLE_TEXT,
+    result = await pipeline.build_from_pages(
+        MOVIE_EXAMPLE_PAGES,
         metadata={"source": "example"},
+        window_size=2,
+        window_overlap=1,
     )
     print(f"Ingestion result: {result}")
 

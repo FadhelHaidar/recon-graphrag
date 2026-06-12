@@ -1,6 +1,8 @@
 """Tests for scoped community detection queries."""
 
-from recon_graphrag.communities.detection import CommunityDetector
+import pytest
+
+from recon_graphrag.communities.neo4j.detection import CommunityDetector
 
 
 class FakeGraphStore:

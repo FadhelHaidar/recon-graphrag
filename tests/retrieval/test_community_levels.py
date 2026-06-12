@@ -16,32 +16,41 @@ class FakeGraphStore:
 
     def execute_query(self, query, parameters=None):
         params = parameters or {}
-        self.calls.append((query.strip(), params))
+        self.calls.append(("execute_query", {"query": query.strip(), "params": params}))
 
         if "RETURN max(c.level) AS level" in query:
             return [{"level": 2}]
 
-        if "db.index.vector.queryNodes" in query:
-            return [
-                {
-                    "id": "c2",
-                    "summary": "Coarse community summary",
-                    "level": params.get("level"),
-                    "score": 0.9,
-                }
-            ]
-
-        if "RETURN c.id AS id, c.summary AS summary, c.level AS level" in query:
-            return [{"id": "c2", "summary": "Coarse community summary", "level": 2}]
-
-        if "RETURN DISTINCT e.name AS name" in query:
-            return []
-
         return []
 
-    @property
-    def driver(self):
-        return None
+    def search_communities(self, index_name, query_vector, graph_name, top_k, level=None):
+        self.calls.append(("search_communities", {"index_name": index_name, "top_k": top_k, "level": level, "graph_name": graph_name}))
+        return [
+            {
+                "id": "c2",
+                "summary": "Coarse community summary",
+                "level": level,
+                "score": 0.9,
+            }
+        ]
+
+    def get_community_summaries_by_keys(self, graph_name, keys, top_k):
+        self.calls.append(
+            (
+                "get_community_summaries_by_keys",
+                {"graph_name": graph_name, "keys": keys, "top_k": top_k},
+            )
+        )
+        return [{"id": "c2", "summary": "Coarse community summary", "level": 2}]
+
+    def get_community_entities_by_keys(self, graph_name, keys):
+        self.calls.append(
+            (
+                "get_community_entities_by_keys",
+                {"graph_name": graph_name, "keys": keys},
+            )
+        )
+        return []
 
 
 class FakeEmbedder:
@@ -106,10 +115,8 @@ async def test_global_search_accepts_coarsest_alias():
     result = await retriever.search("themes", top_k=1, community_level="coarsest")
 
     assert result.answer == "answer"
-    vector_params = [
-        params for query, params in store.calls if "db.index.vector.queryNodes" in query
-    ][0]
-    assert vector_params["level"] == 2
+    search_call = [c for c in store.calls if c[0] == "search_communities"][0]
+    assert search_call[1]["level"] == 2
 
 
 @pytest.mark.asyncio
@@ -126,9 +133,7 @@ async def test_drift_search_accepts_coarsest_alias():
     result = await retriever.search("themes", top_k=1)
 
     assert result.answer == "answer"
-    summary_params = [
-        params
-        for query, params in store.calls
-        if "RETURN c.id AS id, c.summary AS summary, c.level AS level" in query
+    summary_call = [
+        c for c in store.calls if c[0] == "get_community_summaries_by_keys"
     ][0]
-    assert summary_params["keys"] == [{"id": "c2", "level": 2}]
+    assert summary_call[1]["keys"] == [{"id": "c2", "level": 2}]

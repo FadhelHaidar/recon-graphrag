@@ -2,7 +2,7 @@
 
 import pytest
 
-from recon_graphrag.graph.neo4j_store import Neo4jGraphStore
+from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
 
 
 class FakeSession:

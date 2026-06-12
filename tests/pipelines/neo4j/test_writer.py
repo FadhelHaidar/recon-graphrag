@@ -10,7 +10,8 @@ from recon_graphrag.extraction.types import (
     GraphDocument,
     RelationshipRecord,
 )
-from recon_graphrag.graph.neo4j_writer import Neo4jGraphWriter, escape_cypher_identifier
+from recon_graphrag.graphdb.neo4j.cypher import escape_cypher_identifier
+from recon_graphrag.pipelines.neo4j.writer import Neo4jGraphWriter
 
 
 class FakeGraphStore:
@@ -31,10 +32,6 @@ class FakeGraphStore:
 
     def upsert_vectors(self, **kwargs):
         pass
-
-    @property
-    def driver(self):
-        return None
 
 
 def test_escape_cypher_identifier():

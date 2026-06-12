@@ -8,7 +8,7 @@ import pytest
 from dotenv import load_dotenv
 
 from examples.movie_industry.config import get_embedder, get_llm, get_neo4j_store
-from examples.movie_industry.data import MOVIE_EXAMPLE_TEXT
+from examples.movie_industry.data import MOVIE_EXAMPLE_PAGES
 from examples.movie_industry.prompts import (
     COMMUNITY_SUMMARY_PROMPT,
     DRIFT_ANSWER_PROMPT,
@@ -28,7 +28,7 @@ from recon_graphrag import (
 )
 
 
-RUN_FLAG = "RUN_MOVIE_EXAMPLE_SMOKE_TESTS"
+RUN_FLAG = "RUN_NEO4J_MOVIE_EXAMPLE_SMOKE_TESTS"
 GRAPH_NAME = "movie-smoke"
 REQUIRED_ENV = [
     "AZURE_OPENAI_ENDPOINT",
@@ -45,7 +45,7 @@ def _env_or_skip() -> None:
     load_dotenv()
 
     if os.getenv(RUN_FLAG, "").lower() not in {"1", "true", "yes"}:
-        pytest.skip(f"Set {RUN_FLAG}=1 to run the movie example smoke test.")
+        pytest.skip(f"Set {RUN_FLAG}=1 to run the Neo4j movie example smoke test.")
 
     missing = [name for name in REQUIRED_ENV if not os.getenv(name)]
     if missing:
@@ -152,9 +152,11 @@ async def test_movie_example_azure_neo4j_smoke():
             schema=MOVIE_SCHEMA,
             graph_name=GRAPH_NAME,
         )
-        build_result = await builder.build_from_text(
-            MOVIE_EXAMPLE_TEXT,
+        build_result = await builder.build_from_pages(
+            MOVIE_EXAMPLE_PAGES,
             metadata={"source": "movie-example-smoke"},
+            window_size=2,
+            window_overlap=1,
         )
 
         validation = build_result.get("validation", {})

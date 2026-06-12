@@ -8,14 +8,6 @@ from recon_graphrag import Neo4jGraphStore, create_llm, create_embedder
 from dotenv import load_dotenv
 load_dotenv()
 
-
-def _azure_openai_v1_base_url() -> str:
-    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-    if not endpoint:
-        raise ValueError("AZURE_OPENAI_ENDPOINT is required for Azure OpenAI.")
-    return f"{endpoint.rstrip('/')}/openai/v1/"
-
-
 def get_neo4j_store() -> Neo4jGraphStore:
     url = os.getenv("NEO4J_URL", "bolt://localhost:7687")
     user = os.getenv("NEO4J_USERNAME", "neo4j")
@@ -37,10 +29,11 @@ def get_llm():
 
     # Option 2: Azure OpenAI
     return create_llm(
-        "openai",
+        "azure_openai",
         model_name=os.getenv("AZURE_OPENAI_LLM_DEPLOYMENT_NAME", "gpt-4o"),
         api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-        base_url=_azure_openai_v1_base_url(),
+        azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+        api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-06-01"),
     )
 
     # Option 3: Custom OpenAI-compatible
@@ -67,8 +60,9 @@ def get_embedder():
 
     # Option 3: Azure OpenAI
     return create_embedder(
-        "openai",
+        "azure_openai",
         model=os.getenv("AZURE_OPENAI_EMBED_MODEL_DEPLOYMENT_NAME", "text-embedding-3-small"),
         api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-        base_url=_azure_openai_v1_base_url(),
+        azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+        api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-06-01"),
     )

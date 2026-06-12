@@ -16,6 +16,7 @@ dependencies = [
     "neo4j>=5.11",
     "openai>=2.36.0",
     "pydantic>=2.0",
+    "rapidfuzz>=3.0",
     "sentence-transformers>=5.4.1",
 ]
 
@@ -32,9 +33,22 @@ include = ["recon_graphrag*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["."]
 markers = [
     "integration: tests that call external services and require explicit opt-in",
 ]
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+version_variables = ["recon_graphrag/__init__.py:__version__"]
+branch = "master"
+tag_format = "v{version}"
+commit_parser = "angular"
+commit_message = "chore(release): bump version to {version} [skip ci]"
+build_command = "python -m build"
+upload_to_pypi = false
+upload_to_release = true
+major_on_zero = false
 
 [dependency-groups]
 dev = [

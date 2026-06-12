@@ -20,10 +20,7 @@ from recon_graphrag.extraction.schema import GraphSchema
 from recon_graphrag.extraction.assembler import GraphDocumentAssembler
 from recon_graphrag.extraction.validator import SchemaValidator
 from recon_graphrag.embeddings.base import BaseEmbedder
-from recon_graphrag.graph.base import GraphStore
-from recon_graphrag.graph.index_manager import IndexManager
-from recon_graphrag.graph.neo4j_writer import Neo4jGraphWriter
-from recon_graphrag.graph.writer import GraphWriter
+from recon_graphrag.graphdb.base import GraphStore, GraphWriter
 from recon_graphrag.llm.base import BaseLLM
 
 
@@ -41,6 +38,7 @@ class GraphBuilderPipeline:
         graph_name: str = "entity-graph",
         graph_writer: Optional[GraphWriter] = None,
         perform_entity_resolution: bool = True,
+        entity_resolution_strategy: str = "normalized",
         embed_entities: bool = True,
         fail_on_resolution_error: bool = False,
         fail_on_embedding_error: bool = False,
@@ -53,6 +51,7 @@ class GraphBuilderPipeline:
         self.chunk_overlap = chunk_overlap
         self.graph_name = graph_name
         self.perform_entity_resolution = perform_entity_resolution
+        self.entity_resolution_strategy = entity_resolution_strategy
         self.embed_entity_nodes = embed_entities
         self.fail_on_resolution_error = fail_on_resolution_error
         self.fail_on_embedding_error = fail_on_embedding_error
@@ -61,7 +60,7 @@ class GraphBuilderPipeline:
         self.extractor = LLMGraphExtractor(llm)
         self.validator = SchemaValidator()
         self.assembler = GraphDocumentAssembler()
-        self.graph_writer = graph_writer or Neo4jGraphWriter(graph_store)
+        self.graph_writer = graph_writer or graph_store
 
     async def build_from_text(
         self,
@@ -76,22 +75,27 @@ class GraphBuilderPipeline:
 
         Steps 4-6 must be run separately via CommunityPipeline.
         """
-        print("Step 1: Extracting entities and relationships...")
+        metadata = metadata or {}
+        document_id = self._make_document_id(text=text, metadata=metadata)
+        print(f"Starting graph build from text: document_id={document_id} chars={len(text)}")
+
         result = await self._extract_and_write_text(text=text, metadata=metadata)
 
-        print("Step 1b: Backfilling missing description properties...")
+        print("Backfilling missing entity descriptions")
         self._backfill_descriptions()
 
         if self.perform_entity_resolution:
-            print("Step 2: Resolving duplicate entities...")
+            print("Resolving duplicate entities")
             await self._resolve_entities()
 
         if self.embed_entity_nodes:
-            print("Step 3: Embedding entities...")
+            print("Embedding entity nodes")
             await self._embed_entities()
 
+        print("Validating graph build")
         validation = self._validate_graph_build()
 
+        print(f"Graph build complete: document_id={document_id}")
         return {
             "extraction": result,
             "validation": validation,
@@ -110,6 +114,11 @@ class GraphBuilderPipeline:
         document_id = self._make_document_id(text=text, metadata=metadata)
         text_hash = self._hash_text(text)
 
+        print(
+            f"Starting graph build from pages: document_id={document_id} "
+            f"pages={len(pages)} chars={len(text)} window_size={window_size} window_overlap={window_overlap}"
+        )
+
         window_builder = PageWindowBuilder(
             window_size=window_size,
             window_overlap=window_overlap,
@@ -120,6 +129,14 @@ class GraphBuilderPipeline:
             metadata=metadata,
         )
 
+        if chunks:
+            print(
+                f"Built page windows: document_id={document_id} chunks={len(chunks)} "
+                f"first_page={chunks[0].metadata.get('page_start')} last_page={chunks[-1].metadata.get('page_end')}"
+            )
+        else:
+            print(f"Built page windows: document_id={document_id} chunks=0")
+
         result = await self._extract_and_write_chunks(
             document_id=document_id,
             text_hash=text_hash,
@@ -127,16 +144,21 @@ class GraphBuilderPipeline:
             metadata=metadata,
         )
 
+        print("Backfilling missing entity descriptions")
         self._backfill_descriptions()
 
         if self.perform_entity_resolution:
+            print("Resolving duplicate entities")
             await self._resolve_entities()
 
         if self.embed_entity_nodes:
+            print("Embedding entity nodes")
             await self._embed_entities()
 
+        print("Validating graph build")
         validation = self._validate_graph_build()
 
+        print(f"Graph build complete: document_id={document_id}")
         return {
             "extraction": result,
             "validation": validation,
@@ -187,8 +209,12 @@ class GraphBuilderPipeline:
     ) -> dict:
         chunk_extractions = {}
         extraction_errors = {}
+        total = len(chunks)
 
-        for chunk in chunks:
+        print(f"Starting extraction: document_id={document_id} chunks={total}")
+
+        for i, chunk in enumerate(chunks, start=1):
+            print(f"[{i}/{total}] Extracting chunk {chunk.id} ...")
             try:
                 raw_extraction = await self.extractor.extract(
                     text=chunk.text,
@@ -196,9 +222,17 @@ class GraphBuilderPipeline:
                 )
                 validated = self.validator.validate(raw_extraction, self.schema)
                 chunk_extractions[chunk.id] = validated
+                node_count = len(validated.nodes)
+                rel_count = len(validated.relationships)
+                print(f"  [{i}/{total}] ✓ chunk {chunk.id} extracted ({node_count} nodes, {rel_count} rels)")
             except Exception as e:
                 extraction_errors[chunk.id] = e
-                print(f"  Warning: extraction failed for chunk {chunk.id}: {e}")
+                print(f"  [{i}/{total}] ✗ chunk {chunk.id} failed")
+
+        print(
+            f"Extraction complete: {len(chunk_extractions)}/{total} succeeded, "
+            f"{len(extraction_errors)}/{total} failed."
+        )
 
         if chunks and not chunk_extractions:
             first_chunk_id, first_error = next(iter(extraction_errors.items()))
@@ -217,6 +251,11 @@ class GraphBuilderPipeline:
         )
 
         write_stats = self.graph_writer.write_graph_document(graph_document)
+        print(
+            f"Writing graph document to {self._graph_store_name()} "
+            f"({write_stats.get('entities')} entities, {write_stats.get('relationships')} relationships) ..."
+        )
+        print(f"Write complete: {write_stats}")
 
         return {
             "document_id": document_id,
@@ -224,25 +263,34 @@ class GraphBuilderPipeline:
             "write_stats": write_stats,
         }
 
-    def _backfill_descriptions(self):
-        """Set description = '' on __Entity__ nodes missing the property.
+    def _chunk_log_extra(self, chunk) -> str:
+        """Return a formatted string with chunk metadata for printing."""
+        parts = []
+        if "page_start" in chunk.metadata:
+            parts.append(f" page_start={chunk.metadata['page_start']}")
+        if "page_end" in chunk.metadata:
+            parts.append(f" page_end={chunk.metadata['page_end']}")
+        if "char_start" in chunk.metadata:
+            parts.append(f" char_start={chunk.metadata['char_start']}")
+        if "char_end" in chunk.metadata:
+            parts.append(f" char_end={chunk.metadata['char_end']}")
+        return "".join(parts)
 
-        Prevents Neo4j warnings when queries reference e.description / node.description
-        on nodes whose schema doesn't define a description property.
-        """
-        self.graph_store.execute_query(
-            "MATCH (e:__Entity__) WHERE e.description IS NULL SET e.description = ''"
-        )
+    def _backfill_descriptions(self):
+        """Set description = '' on __Entity__ nodes missing the property."""
+        self.graph_store.backfill_descriptions()
 
     async def _resolve_entities(self):
         """Step 2: Merge duplicate entities with the internal resolver."""
-        mgr = IndexManager(self.graph_store)
         try:
-            result = await mgr.resolve_entities()
+            result = await self.graph_store.resolve_entities(
+                graph_name=self.graph_name,
+                strategy=self.entity_resolution_strategy,
+            )
             if isinstance(result, dict) and result.get("skipped"):
-                print(f"  Warning: entity resolution skipped: {result.get('reason')}")
+                print(f"Entity resolution skipped: reason={result.get('reason')}")
         except Exception as e:
-            print(f"  Warning: entity resolution failed (APOC plugin required): {e}")
+            print(f"Entity resolution failed: {e}")
             if self.fail_on_resolution_error:
                 raise
 
@@ -252,35 +300,20 @@ class GraphBuilderPipeline:
         try:
             await embedder.embed_entities()
         except Exception as e:
-            print(f"  Warning: entity embedding failed: {e}")
+            print(f"Entity embedding failed: {e}")
             if self.fail_on_embedding_error:
                 raise
 
     def _validate_graph_build(self) -> dict:
-        query = """
-        CALL {
-            MATCH (e:__Entity__)
-            RETURN count(e) AS entity_count
-        }
-        CALL {
-            MATCH (c:Chunk)
-            RETURN count(c) AS chunk_count
-        }
-        CALL {
-            MATCH (:Chunk)-[r:FROM_CHUNK]->(:__Entity__)
-            RETURN count(r) AS evidence_link_count
-        }
-        CALL {
-            MATCH (:__Entity__)-[r]-(:__Entity__)
-            RETURN count(r) AS entity_relationship_count
-        }
-        RETURN entity_count,
-               chunk_count,
-               evidence_link_count,
-               entity_relationship_count
-        """
-        result = self.graph_store.execute_query(query)
-        return result[0] if result else {}
+        return self.graph_store.validate_graph_build()
+
+    def _graph_store_name(self) -> str:
+        """Return a human-readable name derived from the graph store class."""
+        class_name = type(self.graph_store).__name__
+        suffix = "GraphStore"
+        if class_name.endswith(suffix) and len(class_name) > len(suffix):
+            return class_name[: -len(suffix)]
+        return class_name
 
     def _hash_text(self, text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()

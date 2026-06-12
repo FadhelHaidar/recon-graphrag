@@ -13,29 +13,12 @@ from __future__ import annotations
 from typing import Optional
 
 from recon_graphrag.embeddings.base import BaseEmbedder
-from recon_graphrag.graph.base import GraphStore
+from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.models.types import SearchResult
 from recon_graphrag.retrieval.base import BaseRetriever
 from recon_graphrag.retrieval.hybrid import HybridEntityRetriever, HybridRanker
 
-
-DEFAULT_RETRIEVAL_QUERY = """
-OPTIONAL MATCH (node)-[r]-(neighbor)
-WHERE NOT neighbor:Chunk AND NOT neighbor:Document AND NOT neighbor:Community
-WITH node, score, collect(DISTINCT {
-    entity: labels(node)[-1] + ': ' + coalesce(node.name, node.description, ''),
-    rel: type(r),
-    neighbor: labels(neighbor)[-1] + ': ' + coalesce(neighbor.name, neighbor.description, '')
-}) AS connections
-OPTIONAL MATCH (node)<-[:FROM_CHUNK]-(chunk:Chunk)
-WITH node, score, connections, collect(DISTINCT chunk.text) AS source_texts
-RETURN node.name + ' (' + labels(node)[-1] + ')' AS title,
-       [c IN connections WHERE c.rel IS NOT NULL |
-           c.entity + ' -[' + c.rel + ']-> ' + c.neighbor] AS relationships,
-       source_texts AS source_text,
-       score
-"""
 
 DEFAULT_ANSWER_PROMPT = """Based on the findings below, answer the query.
 
@@ -67,7 +50,7 @@ class LocalSearchRetriever(BaseRetriever):
         self.graph_store = graph_store
         self.llm = llm
         self.embedder = embedder
-        self.retrieval_query = retrieval_query or DEFAULT_RETRIEVAL_QUERY
+        self.retrieval_query = retrieval_query
         self.answer_prompt = answer_prompt or DEFAULT_ANSWER_PROMPT
         self.vector_index_name = vector_index_name
         self.fulltext_index_name = fulltext_index_name
@@ -80,6 +63,7 @@ class LocalSearchRetriever(BaseRetriever):
             vector_index_name=self.vector_index_name,
             fulltext_index_name=self.fulltext_index_name,
             retrieval_query=self.retrieval_query,
+            context_mode="local",
         )
 
     async def search(

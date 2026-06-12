@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from recon_graphrag.communities.detection import DEFAULT_GRAPH_NAME
 from recon_graphrag.embeddings.base import BaseEmbedder
-from recon_graphrag.graph.base import GraphStore
+from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.models.types import SearchResult
 from recon_graphrag.retrieval.drift import DriftSearchRetriever
@@ -28,7 +27,7 @@ class GraphRAG:
         graph_store: GraphStore,
         llm: BaseLLM,
         embedder: BaseEmbedder,
-        graph_name: str = DEFAULT_GRAPH_NAME,
+        graph_name: str = "entity-graph",
     ):
         self.local = LocalSearchRetriever(graph_store, llm, embedder)
         self.global_ = GlobalSearchRetriever(

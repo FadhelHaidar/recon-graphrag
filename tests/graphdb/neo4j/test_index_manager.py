@@ -2,7 +2,7 @@
 
 import pytest
 
-from recon_graphrag.graph.index_manager import ExactMatchEntityResolver, IndexManager
+from recon_graphrag.graphdb.neo4j.index_manager import IndexManager
 
 
 class FakeGraphStore:
@@ -20,6 +20,25 @@ class FakeGraphStore:
             return [{"version": "5.0"}]
         if "apoc.refactor.mergeNodes" in query:
             return [{"merged_groups": 2}]
+        if "MATCH (e:__Entity__)" in query and "elementId(e) AS node_id" in query:
+            return [
+                {
+                    "node_id": "4:a",
+                    "entity_id": "e1",
+                    "graph_name": "movie-graph",
+                    "resolve_value": "OpenAI",
+                    "labels": ["__Entity__", "Organization"],
+                    "properties": {},
+                },
+                {
+                    "node_id": "4:b",
+                    "entity_id": "e2",
+                    "graph_name": "movie-graph",
+                    "resolve_value": "openai",
+                    "labels": ["__Entity__", "Organization"],
+                    "properties": {},
+                },
+            ]
         return []
 
     def create_vector_index(self, **kwargs):
@@ -30,10 +49,6 @@ class FakeGraphStore:
 
     def upsert_vectors(self, **kwargs):
         pass
-
-    @property
-    def driver(self):
-        return None
 
 
 def test_index_manager_create_indexes_uses_graph_store_methods():
@@ -54,26 +69,20 @@ def test_index_manager_create_indexes_uses_graph_store_methods():
 
 
 @pytest.mark.asyncio
-async def test_resolver_skips_when_apoc_is_unavailable():
-    store = FakeGraphStore(apoc_available=False)
-    resolver = ExactMatchEntityResolver(store)
-
-    result = await resolver.run()
-
-    assert result["skipped"] is True
-    assert result["merged_groups"] == 0
-
-
-@pytest.mark.asyncio
-async def test_resolver_merges_duplicate_entities_with_apoc():
+async def test_index_manager_resolve_entities_forwards_strategy_and_graph_name():
     store = FakeGraphStore(apoc_available=True)
-    resolver = ExactMatchEntityResolver(store)
+    manager = IndexManager(store)
 
-    result = await resolver.run()
+    result = await manager.resolve_entities(
+        graph_name="movie-graph",
+        strategy="normalized",
+        dry_run=True,
+    )
 
-    assert result == {"skipped": False, "merged_groups": 2}
-    merge_query = store.calls[1][0]
-    assert "MATCH (e:__Entity__)" in merge_query
-    assert "e.`name` AS resolve_value" in merge_query
-    assert "graph_name, domain_label, resolve_value" in merge_query
-    assert "apoc.refactor.mergeNodes" in merge_query
+    assert result["strategy"] == "normalized"
+    assert result["merged_groups"] == 1
+    load_call = next(
+        call for call in store.calls
+        if "MATCH (e:__Entity__)" in call[0] and "elementId(e) AS node_id" in call[0]
+    )
+    assert load_call[1]["graph_name"] == "movie-graph"
