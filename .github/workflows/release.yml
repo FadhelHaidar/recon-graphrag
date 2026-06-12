@@ -28,9 +28,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install build dependencies
-        run: pip install build
-
       - name: Python Semantic Release
         uses: python-semantic-release/python-semantic-release@v9.12.0
         with:
