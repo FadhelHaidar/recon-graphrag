@@ -240,11 +240,7 @@ MOVIE_SCHEMA = GraphSchema(
         RelationshipType(
             label="COMPARED_TO",
             description="Person, movie, or style is compared to another person, movie, or style",
-        ),
-        RelationshipType(
-            label="CONNECTED_TO",
-            description="General semantic or contextual connection between entities",
-        ),
+        )
     ],
 
     patterns=[

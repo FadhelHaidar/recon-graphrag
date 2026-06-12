@@ -38,6 +38,18 @@ markers = [
     "integration: tests that call external services and require explicit opt-in",
 ]
 
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+version_variables = ["recon_graphrag/__init__.py:__version__"]
+branch = "master"
+tag_format = "v{version}"
+commit_parser = "angular"
+commit_message = "chore(release): bump version to {version} [skip ci]"
+build_command = "python -m build"
+upload_to_pypi = false
+upload_to_release = true
+major_on_zero = false
+
 [dependency-groups]
 dev = [
     "dotenv>=0.9.9",
