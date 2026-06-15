@@ -107,7 +107,7 @@ fix/neo4j-index-race
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) so that automated release tooling can classify changes correctly.
 
-Common types:
+### Common types
 
 | Type | Triggers release? | Use for |
 | --------- | --------- | --------- |
@@ -129,6 +129,27 @@ fix: handle empty entity resolution candidates
 ```
 
 Documentation-only PRs should use `docs:` so they do not trigger a version bump.
+
+### Breaking changes and major version bumps
+
+To trigger a **major** version bump, indicate a breaking change using one of these patterns:
+
+1. Add `!` after the type or scope:
+
+   ```text
+   feat!: redesign the search API
+   fix(retrieval)!: change the default top_k behavior
+   ```
+
+2. Include a `BREAKING CHANGE:` footer in the commit body:
+
+   ```text
+   feat: redesign the search API
+   
+   BREAKING CHANGE: the `search()` method now requires `mode` as a keyword argument.
+   ```
+
+Release Please uses these signals to determine that the next release should be a major version.
 
 ## Pull request process
 
