@@ -12,13 +12,6 @@ license = {text = "MIT"}
 authors = [{name = "recon-graphrag contributors"}]
 keywords = ["graphrag", "neo4j", "knowledge-graph", "retrieval", "rag"]
 
-[project.urls]
-Homepage = "https://github.com/FadhelHaidar/recon-graphrag"
-Documentation = "https://github.com/FadhelHaidar/recon-graphrag#readme"
-Repository = "https://github.com/FadhelHaidar/recon-graphrag.git"
-Issues = "https://github.com/FadhelHaidar/recon-graphrag/issues"
-Changelog = "https://github.com/FadhelHaidar/recon-graphrag/blob/master/CHANGELOG.md"
-
 dependencies = [
     "neo4j>=5.11",
     "openai>=2.36.0",
@@ -33,6 +26,13 @@ ollama = ["ollama"]
 sentence-transformers = ["sentence-transformers>=2.0"]
 all = ["openai>=1.0", "ollama", "sentence-transformers>=2.0"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[project.urls]
+Homepage = "https://github.com/FadhelHaidar/recon-graphrag"
+Documentation = "https://github.com/FadhelHaidar/recon-graphrag#readme"
+Repository = "https://github.com/FadhelHaidar/recon-graphrag.git"
+Issues = "https://github.com/FadhelHaidar/recon-graphrag/issues"
+Changelog = "https://github.com/FadhelHaidar/recon-graphrag/blob/master/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 include = ["recon_graphrag*"]
