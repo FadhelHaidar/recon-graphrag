@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.2](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.1.1...v0.1.2) (2026-06-15)
+
+
+### Documentation
+
+* document breaking change commit style for major version bumps ([4749c9f](https://github.com/FadhelHaidar/recon-graphrag/commit/4749c9fa4ad43d8dd7c1432c47cbd4706971d7d2))
+* fix documentation ([43de87f](https://github.com/FadhelHaidar/recon-graphrag/commit/43de87f38b9bb3660188c9f979520bd90001cb39))
+* fix pyproject.toml URL section placement and regenerate uv.lock ([b4a8606](https://github.com/FadhelHaidar/recon-graphrag/commit/b4a860672a3f01ad3dade709658ee09cbea42261))
+* reorganize README and add comprehensive documentation ([983b935](https://github.com/FadhelHaidar/recon-graphrag/commit/983b9356bce3ac774d38ec705d814a7d16c60ee7))
+
 ## [0.1.1](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.1.0...v0.1.1) (2026-06-12)
 
 
