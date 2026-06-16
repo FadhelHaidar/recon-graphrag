@@ -61,6 +61,7 @@ __all__ = [
     # Graph store
     "GraphStore",
     "Neo4jGraphStore",
+    "FalkorDBGraphStore",
     "IndexManager",
     # Schema
     "GraphSchema",
@@ -86,6 +87,10 @@ def __getattr__(name: str):
         from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
 
         return Neo4jGraphStore
+    if name == "FalkorDBGraphStore":
+        from recon_graphrag.graphdb.falkordb.store import FalkorDBGraphStore
+
+        return FalkorDBGraphStore
     if name == "IndexManager":
         from recon_graphrag.graphdb.neo4j.index_manager import IndexManager
 

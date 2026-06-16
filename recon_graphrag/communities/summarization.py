@@ -7,6 +7,7 @@ high-level community insights instead of individual nodes.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Optional
 
 from recon_graphrag.graphdb.base import GraphStore
@@ -101,9 +102,11 @@ class CommunitySummarizer:
         seen_entities = set()
         for record in results:
             entity = record["e"]
-            non_entity_labels = entity.labels - {"__Entity__"}
+            non_entity_labels = self._domain_labels(entity)
             label = list(non_entity_labels)[0] if non_entity_labels else "Entity"
-            name = entity.get("name", "") or entity.get("description", "")
+            name = self._node_property(entity, "name") or self._node_property(
+                entity, "description"
+            )
             key = f"{label}:{name}"
             if key not in seen_entities:
                 lines.append(f"- [{label}] {name}")
@@ -111,10 +114,41 @@ class CommunitySummarizer:
 
             other = record["other"]
             if other and record["rel_type"]:
-                other_name = other.get("name", "") or other.get("description", "")
+                other_name = self._node_property(other, "name") or self._node_property(
+                    other, "description"
+                )
                 lines.append(f"  {name} --[{record['rel_type']}]--> {other_name}")
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _domain_labels(entity) -> list[str]:
+        """Return labels excluding the internal entity marker."""
+        labels = getattr(entity, "labels", [])
+        if isinstance(labels, str):
+            labels = [labels]
+        elif not isinstance(labels, Iterable):
+            labels = []
+
+        return [label for label in labels if label != "__Entity__"]
+
+    @staticmethod
+    def _node_property(entity, key: str, default: str = ""):
+        """Read a node property from dict-like or backend node objects."""
+        if entity is None:
+            return default
+
+        if hasattr(entity, "get"):
+            return entity.get(key, default)
+
+        properties = getattr(entity, "properties", None)
+        if isinstance(properties, dict):
+            return properties.get(key, default)
+
+        try:
+            return entity[key]
+        except (KeyError, TypeError, AttributeError):
+            return default
 
     def _fetch_child_summary_context(self, community_id: str, level: int) -> str:
         """Fetch child community summaries for higher-level communities."""

@@ -23,3 +23,20 @@ services:
       timeout: 5s
       retries: 15
       start_period: 30s
+
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: recon-falkordb
+    ports:
+      - "6379:6379"   # Redis protocol
+      - "3000:3000"   # FalkorDB UI
+    environment:
+      - FALKORDB_PASSWORD=password
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "password", "PING"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+    profiles:
+      - falkordb

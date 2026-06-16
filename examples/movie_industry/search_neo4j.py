@@ -1,13 +1,20 @@
-"""Retrieval pipeline: query the graph with domain-specific prompts.
+"""Neo4j retrieval pipeline: query the graph with domain-specific prompts.
 
-Run this after build_graph.py has populated the graph.
+Run this after build_neo4j.py has populated the graph.
+
+Usage:
+  python search_neo4j.py
+  python search_neo4j.py --llm-provider openrouter
+  python search_neo4j.py --embedder-provider openai
 """
 
+import argparse
 import asyncio
+import os
 
 from recon_graphrag import GraphRAG
 
-from config import get_neo4j_store, get_llm, get_embedder
+from config import get_embedder, get_llm, get_neo4j_store
 from prompts import (
     LOCAL_ANSWER_PROMPT,
     DRIFT_ANSWER_PROMPT,
@@ -16,11 +23,30 @@ from prompts import (
 )
 
 
-async def run_test_suite(test_queries: list):
-    """Iterates through a list of questions and runs all RAG modes for each."""
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Run retrieval test queries against the Neo4j movie graph."
+    )
+    parser.add_argument(
+        "--llm-provider",
+        choices=["openrouter", "azure_openai", "openai"],
+        default=os.getenv("LLM_PROVIDER", "azure_openai"),
+        help="LLM provider (defaults to LLM_PROVIDER env var, then azure_openai).",
+    )
+    parser.add_argument(
+        "--embedder-provider",
+        choices=["openrouter", "azure_openai", "openai", "sentence-transformer"],
+        default=os.getenv("EMBEDDER_PROVIDER", "azure_openai"),
+        help="Embedder provider (defaults to EMBEDDER_PROVIDER env var, then azure_openai).",
+    )
+    return parser.parse_args()
+
+
+async def run_test_suite(test_queries: list, llm_provider: str, embedder_provider: str):
+    """Iterates through test questions and runs the specified RAG mode(s) for each."""
     store = get_neo4j_store()
-    llm = get_llm()
-    embedder = get_embedder()
+    llm = get_llm(llm_provider)
+    embedder = get_embedder(embedder_provider)
 
     graph_rag = GraphRAG(store, llm, embedder)
 
@@ -47,12 +73,18 @@ async def run_test_suite(test_queries: list):
     }
 
     for item in test_queries:
+        modes = item.get("modes", ["local", "global", "drift"])
+
         print(f"\n" + "="*60)
         print(f"QUERY: {item['query']}")
+        print(f"MODES: {', '.join(modes)}")
         print(f"OBJECTIVE: {item['test_objective']}")
         print("="*60)
 
-        for mode in ["local", "global", "drift"]:
+        for mode in modes:
+            if mode not in search_options:
+                print(f"\n>>> [{mode.upper()} ERROR]: Unknown mode. Use local, global, or drift.")
+                continue
             try:
                 result = await graph_rag.search(
                     item["query"],
@@ -64,13 +96,17 @@ async def run_test_suite(test_queries: list):
                 print(f"\n>>> [{mode.upper()} ERROR]: {str(e)}")
 
 if __name__ == "__main__":
-    # Graph RAG test cases for the movie industry corpus
+    args = parse_args()
+
+    # Graph RAG test cases for the movie industry corpus.
+    # Each case can specify a "modes" list; defaults to ["local", "global", "drift"].
     test_suite = [
         {
             "query": (
                 "Which movies were directed by Christopher Nolan and feature "
                 "Cillian Murphy?"
             ),
+            "modes": ["local"],
             "test_objective": (
                 "Verify DIRECTED and ACTED_IN relationships between Person and Movie."
             ),
@@ -79,6 +115,7 @@ if __name__ == "__main__":
             "query": (
                 "Which films did Hans Zimmer compose music for in this collection?"
             ),
+            "modes": ["local"],
             "test_objective": (
                 "Verify COMPOSED_MUSIC relationships and composer-to-movie extraction."
             ),
@@ -87,6 +124,7 @@ if __name__ == "__main__":
             "query": (
                 "Which movies were shot by Hoyte van Hoytema?"
             ),
+            "modes": ["local"],
             "test_objective": (
                 "Verify SHOT_BY relationships for cinematographer-to-movie links."
             ),
@@ -95,6 +133,7 @@ if __name__ == "__main__":
             "query": (
                 "How does Hans Zimmer connect Inception to Dune?"
             ),
+            "modes": ["local", "drift"],
             "test_objective": (
                 "Test multi-hop traversal from Movie to Person to Movie using "
                 "COMPOSED_MUSIC relationships."
@@ -104,6 +143,7 @@ if __name__ == "__main__":
             "query": (
                 "Find the connection path between Interstellar and Dune."
             ),
+            "modes": ["local", "drift"],
             "test_objective": (
                 "Test whether the graph can connect movies through shared actors, "
                 "composer, genre, and sci-fi themes."
@@ -113,6 +153,7 @@ if __name__ == "__main__":
             "query": (
                 "How is Cillian Murphy connected to Michelle Yeoh?"
             ),
+            "modes": ["local", "drift"],
             "test_objective": (
                 "Test cross-film pathfinding through Sunshine, Oppenheimer, "
                 "Everything Everywhere All At Once, and actor bridges."
@@ -122,6 +163,7 @@ if __name__ == "__main__":
             "query": (
                 "How are Inception, The Revenant, and Birdman connected?"
             ),
+            "modes": ["local", "drift"],
             "test_objective": (
                 "Test multi-hop traversal through Leonardo DiCaprio, Tom Hardy, "
                 "Alejandro G. Inarritu, and award relationships."
@@ -131,6 +173,7 @@ if __name__ == "__main__":
             "query": (
                 "Which characters were played by actors in Christopher Nolan films?"
             ),
+            "modes": ["local"],
             "test_objective": (
                 "Verify PLAYED_CHARACTER extraction and connections between Person, "
                 "Character, and Movie context."
@@ -140,6 +183,7 @@ if __name__ == "__main__":
             "query": (
                 "How does Tom Hardy connect Nolan films to non-Nolan films?"
             ),
+            "modes": ["local", "drift"],
             "test_objective": (
                 "Test actor bridge reasoning across Inception, The Dark Knight Rises, "
                 "The Revenant, and Peaky Blinders."
@@ -149,6 +193,7 @@ if __name__ == "__main__":
             "query": (
                 "Which actors create bridges between Nolan films and other directors' films?"
             ),
+            "modes": ["local", "drift"],
             "test_objective": (
                 "Evaluate whether local and DRIFT retrieval can identify bridge actors "
                 "such as Tom Hardy, Leonardo DiCaprio, Cillian Murphy, Anne Hathaway, "
@@ -159,6 +204,7 @@ if __name__ == "__main__":
             "query": (
                 "Which movies in this corpus won the Oscar for Best Picture?"
             ),
+            "modes": ["local"],
             "test_objective": (
                 "Verify WON_AWARD relationship extraction for Movie to Award."
             ),
@@ -168,6 +214,7 @@ if __name__ == "__main__":
                 "How are Parasite, Everything Everywhere All At Once, Birdman, "
                 "and Oppenheimer connected through awards?"
             ),
+            "modes": ["global", "drift"],
             "test_objective": (
                 "Test global community retrieval over shared award relationships."
             ),
@@ -176,6 +223,7 @@ if __name__ == "__main__":
             "query": (
                 "How does Parasite connect to 1917?"
             ),
+            "modes": ["global", "drift"],
             "test_objective": (
                 "Verify award competition reasoning using WON_AWARD and NOMINATED_FOR "
                 "relationships."
@@ -185,6 +233,7 @@ if __name__ == "__main__":
             "query": (
                 "Which movies explore time, memory, or moral responsibility?"
             ),
+            "modes": ["local", "global"],
             "test_objective": (
                 "Test EXPLORES relationships and semantic retrieval over Theme nodes."
             ),
@@ -193,6 +242,7 @@ if __name__ == "__main__":
             "query": (
                 "What themes connect Interstellar, Inception, Dunkirk, and Oppenheimer?"
             ),
+            "modes": ["global", "drift"],
             "test_objective": (
                 "Assess global and DRIFT retrieval over Nolan-related thematic clusters."
             ),
@@ -201,6 +251,7 @@ if __name__ == "__main__":
             "query": (
                 "Which films in the corpus explore class inequality or social conflict?"
             ),
+            "modes": ["local", "global"],
             "test_objective": (
                 "Verify Theme extraction for Parasite, Oppenheimer, and other "
                 "social-conflict-related films."
@@ -210,6 +261,7 @@ if __name__ == "__main__":
             "query": (
                 "Which films are connected through IMAX cinematography?"
             ),
+            "modes": ["local"],
             "test_objective": (
                 "Verify USES_TECHNIQUE relationships and retrieval over Technique nodes."
             ),
@@ -218,6 +270,7 @@ if __name__ == "__main__":
             "query": (
                 "How are Nolan and Villeneuve connected through large-format filmmaking?"
             ),
+            "modes": ["local", "drift"],
             "test_objective": (
                 "Test semantic traversal across directors, cinematographers, movies, "
                 "and Technique nodes."
@@ -227,6 +280,7 @@ if __name__ == "__main__":
             "query": (
                 "Which films use Shepard tones or sound design to create tension?"
             ),
+            "modes": ["local"],
             "test_objective": (
                 "Verify extraction of musical and sound-related Technique nodes."
             ),
@@ -235,6 +289,7 @@ if __name__ == "__main__":
             "query": (
                 "Which movies are connected to Warner Bros, A24, or Universal Pictures?"
             ),
+            "modes": ["local", "drift"],
             "test_objective": (
                 "Verify PRODUCED and DISTRIBUTED relationships involving Studio nodes."
             ),
@@ -244,6 +299,7 @@ if __name__ == "__main__":
                 "How did Christopher Nolan's studio relationships change from "
                 "Warner Bros to Universal Pictures?"
             ),
+            "modes": ["local", "drift"],
             "test_objective": (
                 "Test studio-level reasoning over Nolan movies and Studio relationships."
             ),
@@ -252,6 +308,7 @@ if __name__ == "__main__":
             "query": (
                 "Which movies belong to or are connected with major franchises or series?"
             ),
+            "modes": ["local", "global"],
             "test_objective": (
                 "Verify BELONGS_TO relationships for The Dark Knight trilogy, "
                 "Dune series, and Marvel Cinematic Universe references."
@@ -261,6 +318,7 @@ if __name__ == "__main__":
             "query": (
                 "What are the major communities or clusters in this movie graph?"
             ),
+            "modes": ["global"],
             "test_objective": (
                 "Assess global search quality using community summaries."
             ),
@@ -269,6 +327,7 @@ if __name__ == "__main__":
             "query": (
                 "Summarize the Nolan-related community in this graph."
             ),
+            "modes": ["global"],
             "test_objective": (
                 "Test whether global retrieval can summarize the Nolan subgraph involving "
                 "movies, actors, composer, cinematographer, studio, and themes."
@@ -278,6 +337,7 @@ if __name__ == "__main__":
             "query": (
                 "Summarize the Oscar-winning film community in this graph."
             ),
+            "modes": ["global"],
             "test_objective": (
                 "Test community detection around Best Picture winners and award links."
             ),
@@ -286,6 +346,7 @@ if __name__ == "__main__":
             "query": (
                 "Compare the connections of Parasite and Oppenheimer in the graph."
             ),
+            "modes": ["local", "global", "drift"],
             "test_objective": (
                 "Test comparative reasoning across themes, awards, directors, and "
                 "historical or social context."
@@ -296,6 +357,7 @@ if __name__ == "__main__":
                 "Compare the sci-fi network around Interstellar, Dune, Sunshine, "
                 "and Everything Everywhere All At Once."
             ),
+            "modes": ["global", "drift"],
             "test_objective": (
                 "Test cross-community retrieval across sci-fi movies, actors, studios, "
                 "themes, and composers."
@@ -305,6 +367,7 @@ if __name__ == "__main__":
             "query": (
                 "Which people are the most important bridge nodes in this graph?"
             ),
+            "modes": ["local", "global", "drift"],
             "test_objective": (
                 "Evaluate whether the system can identify central connecting people "
                 "such as Christopher Nolan, Hans Zimmer, Cillian Murphy, Tom Hardy, "
@@ -313,4 +376,4 @@ if __name__ == "__main__":
         },
     ]
 
-    asyncio.run(run_test_suite(test_suite))
+    asyncio.run(run_test_suite(test_suite, args.llm_provider, args.embedder_provider))
