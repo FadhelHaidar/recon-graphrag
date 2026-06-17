@@ -3,9 +3,9 @@
 This assumes the shared movie graph artifact has already been ingested.
 
 Usage:
-  python build_communities.py --backend neo4j
-  python build_communities.py --backend memgraph --community-gamma 3.0
-  python build_communities.py --backend both
+  python communities.py --backend neo4j
+  python communities.py --backend memgraph --community-gamma 3.0
+  python communities.py --backend both
 """
 
 from __future__ import annotations
@@ -17,9 +17,26 @@ import os
 from recon_graphrag import CommunityPipeline, IndexManager as Neo4jIndexManager
 from recon_graphrag.graphdb.memgraph.index_manager import IndexManager as MemgraphIndexManager
 
-from config import EMBEDDING_DIM, get_embedder, get_llm, get_memgraph_store, get_neo4j_store
-from prompts import COMMUNITY_SUMMARY_PROMPT
-from schema import COMMUNITY_RELATIONSHIP_TYPES
+try:
+    from .config import (
+        EMBEDDING_DIM,
+        get_embedder,
+        get_llm,
+        get_memgraph_store,
+        get_neo4j_store,
+    )
+    from .prompts import COMMUNITY_SUMMARY_PROMPT
+    from .schema import COMMUNITY_RELATIONSHIP_TYPES
+except ImportError:
+    from config import (
+        EMBEDDING_DIM,
+        get_embedder,
+        get_llm,
+        get_memgraph_store,
+        get_neo4j_store,
+    )
+    from prompts import COMMUNITY_SUMMARY_PROMPT
+    from schema import COMMUNITY_RELATIONSHIP_TYPES
 
 
 def parse_args():

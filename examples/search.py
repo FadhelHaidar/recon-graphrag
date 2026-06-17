@@ -3,8 +3,8 @@
 Run this after ingesting the shared movie graph artifact and building communities.
 
 Usage:
-  python search_movie_graph.py --backend neo4j
-  python search_movie_graph.py --backend memgraph --modes local drift
+  python search.py --backend neo4j
+  python search.py --backend memgraph --modes local drift
 """
 
 from __future__ import annotations
@@ -15,9 +15,14 @@ import os
 
 from recon_graphrag import GraphRAG
 
-from common import configure_movie_rag, run_movie_search_suite
-from config import get_embedder, get_llm, get_memgraph_store, get_neo4j_store
-from query_suite import MOVIE_QUERY_SUITE
+try:
+    from .common import configure_movie_rag, run_movie_search_suite
+    from .config import get_embedder, get_llm, get_memgraph_store, get_neo4j_store
+    from .query_suite import MOVIE_QUERY_SUITE
+except ImportError:
+    from common import configure_movie_rag, run_movie_search_suite
+    from config import get_embedder, get_llm, get_memgraph_store, get_neo4j_store
+    from query_suite import MOVIE_QUERY_SUITE
 
 
 def parse_args():

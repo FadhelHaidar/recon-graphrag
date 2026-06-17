@@ -3,9 +3,9 @@
 Run this after both databases have been built from the same movie corpus.
 
 Usage:
-  python compare_memgraph_neo4j.py --limit 5
-  python compare_memgraph_neo4j.py --modes local drift
-  python compare_memgraph_neo4j.py --dedup-strategy normalized
+  python compare_backends.py --limit 5
+  python compare_backends.py --modes local drift
+  python compare_backends.py --dedup-strategy normalized
 """
 
 from __future__ import annotations
@@ -17,9 +17,14 @@ import traceback
 
 from recon_graphrag import GraphRAG
 
-from common import SEARCH_OPTIONS, configure_movie_rag
-from config import get_embedder, get_llm, get_memgraph_store, get_neo4j_store
-from query_suite import MOVIE_QUERY_SUITE
+try:
+    from .common import SEARCH_OPTIONS, configure_movie_rag
+    from .config import get_embedder, get_llm, get_memgraph_store, get_neo4j_store
+    from .query_suite import MOVIE_QUERY_SUITE
+except ImportError:
+    from common import SEARCH_OPTIONS, configure_movie_rag
+    from config import get_embedder, get_llm, get_memgraph_store, get_neo4j_store
+    from query_suite import MOVIE_QUERY_SUITE
 
 
 def parse_args():

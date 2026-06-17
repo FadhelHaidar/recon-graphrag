@@ -1,8 +1,8 @@
 """Ingest a movie graph JSON artifact into Neo4j, Memgraph, or both.
 
 Usage:
-  python ingest_movie_graph.py --backend both
-  python ingest_movie_graph.py --backend neo4j --input artifacts/movie_graph.json
+  python ingest.py --backend both
+  python ingest.py --backend neo4j --input artifacts/movie_graph.json
 """
 
 from __future__ import annotations
@@ -15,12 +15,20 @@ from pathlib import Path
 from recon_graphrag.extraction.artifacts import load_graph_document_json
 from recon_graphrag.graphdb.memgraph.index_manager import IndexManager as MemgraphIndexManager
 
-from common import (
-    DEFAULT_ARTIFACT_PATH,
-    finalize_graph_ingest,
-    write_graph_document_for_ingest,
-)
-from config import get_embedder, get_memgraph_store, get_neo4j_store
+try:
+    from .common import (
+        DEFAULT_ARTIFACT_PATH,
+        finalize_graph_ingest,
+        write_graph_document_for_ingest,
+    )
+    from .config import get_embedder, get_memgraph_store, get_neo4j_store
+except ImportError:
+    from common import (
+        DEFAULT_ARTIFACT_PATH,
+        finalize_graph_ingest,
+        write_graph_document_for_ingest,
+    )
+    from config import get_embedder, get_memgraph_store, get_neo4j_store
 from recon_graphrag import IndexManager as Neo4jIndexManager
 
 

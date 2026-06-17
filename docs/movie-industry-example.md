@@ -20,20 +20,20 @@ The `examples/` directory contains a complete, runnable movie-industry project t
 | [config.py](../examples/config.py) | Multi-provider setup (Azure OpenAI, OpenRouter, local) and store getters for Neo4j and Memgraph |
 | [prompts.py](../examples/prompts.py) | Domain-customized prompts for all retrievers |
 | [data.py](../examples/data.py) | Sample movie text data |
-| [extract_movie_graph.py](../examples/extract_movie_graph.py) | Extract once into a database-neutral JSON graph artifact |
-| [ingest_movie_graph.py](../examples/ingest_movie_graph.py) | Ingest the shared graph artifact into Neo4j, Memgraph, or both |
-| [build_communities.py](../examples/build_communities.py) | Build communities for Neo4j, Memgraph, or both |
-| [search_movie_graph.py](../examples/search_movie_graph.py) | Run the shared query suite on Neo4j or Memgraph |
-| [compare_memgraph_neo4j.py](../examples/compare_memgraph_neo4j.py) | Compare graph stats and retrieval outputs across both backends |
+| [extract.py](../examples/extract.py) | Extract once into a database-neutral JSON graph artifact |
+| [ingest.py](../examples/ingest.py) | Ingest the shared graph artifact into Neo4j, Memgraph, or both |
+| [communities.py](../examples/communities.py) | Build communities for Neo4j, Memgraph, or both |
+| [search.py](../examples/search.py) | Run the shared query suite on Neo4j or Memgraph |
+| [compare_backends.py](../examples/compare_backends.py) | Compare graph stats and retrieval outputs across Neo4j and Memgraph |
 
 ### Provider selection
 
 All build and search scripts accept `--llm-provider` and `--embedder-provider` flags:
 
 ```bash
-python extract_movie_graph.py --llm-provider openrouter
-python ingest_movie_graph.py --backend both --embedder-provider openai
-python search_movie_graph.py --backend neo4j --llm-provider openai --embedder-provider sentence-transformer
+python extract.py --llm-provider openrouter
+python ingest.py --backend both --embedder-provider openai
+python search.py --backend neo4j --llm-provider openai --embedder-provider sentence-transformer
 ```
 
 Supported LLM providers: `openrouter`, `azure_openai`, `openai`.  
@@ -43,7 +43,7 @@ You can also set the `LLM_PROVIDER` and `EMBEDDER_PROVIDER` environment variable
 
 ### Search modes per test case
 
-`search_movie_graph.py` no longer runs every query through all three search modes. Each test case in the shared suite declares its own `modes` list (e.g. `["local"]`, `["global", "drift"]`, `["local", "global", "drift"]`). Omitting `modes` defaults to running all three.
+`search.py` runs the query modes declared by each test case in the shared suite (e.g. `["local"]`, `["global", "drift"]`, `["local", "global", "drift"]`). Omitting `modes` defaults to running all three.
 
 ### Run the example with Neo4j
 
@@ -63,20 +63,20 @@ You can also set the `LLM_PROVIDER` and `EMBEDDER_PROVIDER` environment variable
 
    ```bash
    cd examples
-   python extract_movie_graph.py --llm-provider openrouter
-   python ingest_movie_graph.py --backend neo4j --embedder-provider openrouter
+   python extract.py --llm-provider openrouter
+   python ingest.py --backend neo4j --embedder-provider openrouter
    ```
 
 4. Build communities:
 
    ```bash
-   python build_communities.py --backend neo4j --llm-provider openrouter --embedder-provider openrouter
+   python communities.py --backend neo4j --llm-provider openrouter --embedder-provider openrouter
    ```
 
 5. Run test queries:
 
    ```bash
-   python search_movie_graph.py --backend neo4j --llm-provider openrouter --embedder-provider openrouter
+   python search.py --backend neo4j --llm-provider openrouter --embedder-provider openrouter
    ```
 
 ### Run the example with Memgraph
@@ -93,20 +93,20 @@ You can also set the `LLM_PROVIDER` and `EMBEDDER_PROVIDER` environment variable
 
    ```bash
    cd examples
-   python extract_movie_graph.py --llm-provider openrouter
-   python ingest_movie_graph.py --backend memgraph --embedder-provider openrouter
+   python extract.py --llm-provider openrouter
+   python ingest.py --backend memgraph --embedder-provider openrouter
    ```
 
 4. Build communities:
 
    ```bash
-   python build_communities.py --backend memgraph --community-gamma 3.0 --llm-provider openrouter --embedder-provider openrouter
+   python communities.py --backend memgraph --community-gamma 3.0 --llm-provider openrouter --embedder-provider openrouter
    ```
 
 5. Run test queries:
 
    ```bash
-   python search_movie_graph.py --backend memgraph --llm-provider openrouter --embedder-provider openrouter
+   python search.py --backend memgraph --llm-provider openrouter --embedder-provider openrouter
    ```
 
 ### Compare Neo4j and Memgraph
@@ -114,10 +114,10 @@ You can also set the `LLM_PROVIDER` and `EMBEDDER_PROVIDER` environment variable
 To compare outputs fairly, ingest both databases from the same artifact before building communities:
 
 ```bash
-python extract_movie_graph.py --llm-provider openrouter
-python ingest_movie_graph.py --backend both --embedder-provider openrouter
-python build_communities.py --backend both --llm-provider openrouter --embedder-provider openrouter
-python compare_memgraph_neo4j.py --limit 5
+python extract.py --llm-provider openrouter
+python ingest.py --backend both --embedder-provider openrouter
+python communities.py --backend both --llm-provider openrouter --embedder-provider openrouter
+python compare_backends.py --limit 5
 ```
 
 ### Schema highlights

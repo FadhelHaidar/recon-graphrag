@@ -14,7 +14,8 @@ sys.path.insert(0, str(EXAMPLE_DIR))
 
 from common import SEARCH_OPTIONS, configure_movie_rag, ingest_graph_document, run_movie_search_suite  # noqa: E402
 from common import extract_graph_document_from_pages  # noqa: E402
-from ingest_movie_graph import ingest_artifact  # noqa: E402
+import ingest  # noqa: E402
+from ingest import ingest_artifact  # noqa: E402
 from query_suite import MOVIE_QUERY_SUITE  # noqa: E402
 from recon_graphrag.extraction.types import (  # noqa: E402
     ChunkRecord,
@@ -260,12 +261,12 @@ async def test_ingest_artifact_finalizes_after_all_backend_writes(monkeypatch, t
         async def embed_entities(self):
             events.append((self.store.name, "embed"))
 
-    monkeypatch.setattr("ingest_movie_graph.load_graph_document_json", lambda path: graph_document)
-    monkeypatch.setattr("ingest_movie_graph.get_embedder", lambda provider: MagicMock())
-    monkeypatch.setattr("ingest_movie_graph.get_neo4j_store", lambda: FakeStore("neo4j"))
-    monkeypatch.setattr("ingest_movie_graph.get_memgraph_store", lambda: FakeStore("memgraph"))
-    monkeypatch.setattr("ingest_movie_graph.Neo4jIndexManager", FakeIndexManager)
-    monkeypatch.setattr("ingest_movie_graph.MemgraphIndexManager", FakeIndexManager)
+    monkeypatch.setattr(ingest, "load_graph_document_json", lambda path: graph_document)
+    monkeypatch.setattr(ingest, "get_embedder", lambda provider: MagicMock())
+    monkeypatch.setattr(ingest, "get_neo4j_store", lambda: FakeStore("neo4j"))
+    monkeypatch.setattr(ingest, "get_memgraph_store", lambda: FakeStore("memgraph"))
+    monkeypatch.setattr(ingest, "Neo4jIndexManager", FakeIndexManager)
+    monkeypatch.setattr(ingest, "MemgraphIndexManager", FakeIndexManager)
     monkeypatch.setattr("common.CommunityEmbedder", FakeCommunityEmbedder)
 
     result = await ingest_artifact(
