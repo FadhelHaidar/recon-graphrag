@@ -59,7 +59,7 @@ class OpenAIEmbeddings:
 
     def embed_query(self, text: str, **kwargs: Any) -> list[float]:
         response = self.client.embeddings.create(input=text, model=self.model, **kwargs)
-        return _openai_embedding(response)
+        return list(response.data[0].embedding)
 
     async def async_embed_query(self, text: str, **kwargs: Any) -> list[float]:
         response = await self.async_client.embeddings.create(
@@ -67,7 +67,7 @@ class OpenAIEmbeddings:
             model=self.model,
             **kwargs,
         )
-        return _openai_embedding(response)
+        return list(response.data[0].embedding)
 
 
 class OllamaEmbeddings:
@@ -168,84 +168,3 @@ def _ollama_embedding(response: Any) -> list[float]:
     if not isinstance(embedding, list):
         embedding = list(embedding)
     return embedding
-
-
-def _openai_embedding(response: Any) -> list[float]:
-    error = _response_error(response)
-    if error is not None:
-        raise OpenAICompatibleProviderError.from_error(
-            "embedding",
-            error,
-            response,
-        )
-
-    data = getattr(response, "data", None)
-    if not data:
-        raise ValueError(
-            "OpenAI-compatible embedding response did not include data. "
-            f"Response: {_safe_response_summary(response)}"
-        )
-
-    embedding = getattr(data[0], "embedding", None)
-    if embedding is None:
-        raise ValueError(
-            "OpenAI-compatible embedding response item did not include an embedding. "
-            f"Response: {_safe_response_summary(response)}"
-        )
-    return list(embedding)
-
-
-class OpenAICompatibleProviderError(RuntimeError):
-    """Provider error returned inside an OpenAI-compatible response payload."""
-
-    @classmethod
-    def from_error(
-        cls,
-        operation: str,
-        error: Any,
-        response: Any,
-    ) -> "OpenAICompatibleProviderError":
-        message = _error_value(error, "message") or repr(error)
-        code = _error_value(error, "code")
-        return cls(
-            f"OpenAI-compatible {operation} provider returned error"
-            f"{f' ({code})' if code is not None else ''}: {message}. "
-            f"Response: {_safe_response_summary(response)}"
-        )
-
-
-def _response_error(response: Any) -> Any:
-    payload = _response_payload(response)
-    if isinstance(payload, dict) and payload.get("error"):
-        return payload["error"]
-    return getattr(response, "error", None)
-
-
-def _response_payload(response: Any) -> Any:
-    if isinstance(response, dict):
-        return response
-    model_dump = getattr(response, "model_dump", None)
-    if callable(model_dump):
-        try:
-            return model_dump()
-        except Exception:
-            return None
-    return None
-
-
-def _error_value(error: Any, key: str) -> Any:
-    if isinstance(error, dict):
-        return error.get(key)
-    return getattr(error, key, None)
-
-
-def _safe_response_summary(response: Any) -> str:
-    if response is None:
-        return "None"
-    model_dump = getattr(response, "model_dump", None)
-    if callable(model_dump):
-        try:
-            return repr(model_dump())
-        except Exception:
-            pass
-    return repr(response)

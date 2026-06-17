@@ -7,16 +7,16 @@ import os
 import pytest
 from dotenv import load_dotenv
 
-from examples.config import get_embedder, get_llm, get_neo4j_store
-from examples.data import MOVIE_EXAMPLE_PAGES
-from examples.prompts import (
+from examples.movie_industry.config import get_embedder, get_llm, get_neo4j_store
+from examples.movie_industry.data import MOVIE_EXAMPLE_PAGES
+from examples.movie_industry.prompts import (
     COMMUNITY_SUMMARY_PROMPT,
     DRIFT_ANSWER_PROMPT,
     GLOBAL_MAP_PROMPT,
     GLOBAL_REDUCE_PROMPT,
     LOCAL_ANSWER_PROMPT,
 )
-from examples.schema import (
+from examples.movie_industry.schema import (
     COMMUNITY_RELATIONSHIP_TYPES,
     MOVIE_SCHEMA,
 )

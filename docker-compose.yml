@@ -23,32 +23,3 @@ services:
       timeout: 5s
       retries: 15
       start_period: 30s
-
-  memgraph:
-    image: memgraph/memgraph-mage:latest
-    container_name: recon-memgraph
-    ports:
-      - "7689:7687"   # Bolt protocol
-      - "7444:7444"   # Memgraph Lab / logs
-    healthcheck:
-      test: ["CMD-SHELL", "echo 'RETURN 1;' | mgconsole"]
-      interval: 10s
-      timeout: 5s
-      retries: 15
-      start_period: 30s
-
-  lab:
-    image: memgraph/lab
-    container_name: recon-memgraph-lab
-    ports:
-      - "3000:3000"
-    environment:
-      QUICK_CONNECT_MG_HOST: memgraph
-      QUICK_CONNECT_MG_PORT: "7687"
-
-    depends_on:
-      - memgraph
-
-networks:
-  default:
-    name: recon-graphrag

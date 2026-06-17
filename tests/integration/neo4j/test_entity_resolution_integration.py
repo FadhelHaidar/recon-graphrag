@@ -7,7 +7,7 @@ import os
 import pytest
 from dotenv import load_dotenv
 
-from examples.config import get_embedder, get_llm, get_neo4j_store
+from examples.movie_industry.config import get_embedder, get_llm, get_neo4j_store
 
 
 RUN_FLAG = "RUN_NEO4J_ENTITY_RESOLUTION_INTEGRATION_TESTS"

@@ -2,8 +2,6 @@
 
 Recon-GraphRAG provides three search modes, matching the Microsoft GraphRAG philosophy: **Local**, **Global**, and **DRIFT**.
 
-For a deep dive into the internals, see [Search Under the Hood](search-under-the-hood.md).
-
 ## Search modes overview
 
 | Mode | Strategy | Best for |
@@ -76,16 +74,7 @@ result = await graph_rag.search(
 
 ## Community levels
 
-Recon-GraphRAG stores communities with `level=0` as the **finest / most local** level. Higher numbers are broader parent communities. The highest available level is the **coarsest / most global** community level.
-
-This is the opposite of some Microsoft GraphRAG descriptions, where level 0 is often interpreted as the coarsest root level.
-
-Use this mapping when comparing terminology:
-
-```text
-Recon level 0       ~= Microsoft finest / deepest community level
-Recon highest level ~= Microsoft C0 / root / coarsest community level
-```
+Recon-GraphRAG stores communities with `level=0` as the **finest / most local** level. Higher numbers are broader parent communities. This is the opposite of some Microsoft GraphRAG descriptions, where level 0 is often the coarsest root level.
 
 The search API supports semantic selectors:
 
@@ -97,20 +86,13 @@ community_level=0             # Exact stored level
 community_level=1             # Exact stored level
 ```
 
-Global search also accepts the existing `level=` argument for backward compatibility:
-
-```python
-await graph_rag.search("What are the major themes?", mode="global", level=0)
-await graph_rag.search("What are the major themes?", mode="global", community_level="coarsest")
-```
-
-Passing `level=0` does **not** mean "most global" in this codebase. It means "finest / most local community summaries." For Microsoft-style global summaries, prefer `community_level="coarsest"`.
+For full background, see [Community Levels vs Microsoft GraphRAG](community_levels_vs_microsoft_graphrag.md).
 
 ## Customizing prompts
 
 Each retriever exposes prompt attributes that you can override for domain-specific behavior.
 
-### Local search prompt
+### Local search
 
 ```python
 graph_rag.local.answer_prompt = (
@@ -118,7 +100,7 @@ graph_rag.local.answer_prompt = (
 )
 ```
 
-### Global search prompt
+### Global search
 
 ```python
 graph_rag.global_.map_prompt = (
@@ -129,7 +111,7 @@ graph_rag.global_.reduce_prompt = (
 )
 ```
 
-### DRIFT search prompt
+### DRIFT search
 
 ```python
 graph_rag.drift.answer_prompt = (
@@ -168,4 +150,5 @@ community = CommunityPipeline(
 ## Next steps
 
 - Try the search examples in [Quick Start](quickstart.md).
-- See a full domain example in [Movie Industry Example](movie-industry-example.md).
+- See a full domain example in [Examples](examples.md).
+- Understand community level numbering in [Community Levels vs Microsoft GraphRAG](community_levels_vs_microsoft_graphrag.md).
