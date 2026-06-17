@@ -1,6 +1,6 @@
 """Recon-GraphRAG: Domain-agnostic GraphRAG SDK built on Neo4j."""
 
-__version__ = "0.1.2"
+__version__ = "2.0.0"
 
 # Pipelines
 from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
