@@ -1,4 +1,4 @@
-# Search Internals
+# Search Under the Hood
 
 This document explains what actually happens when you call `GraphRAG.search(...)`. It is written for people who already know how to *use* the SDK and now want to understand the mechanics underneath.
 

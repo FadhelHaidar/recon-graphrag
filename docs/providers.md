@@ -168,7 +168,7 @@ Most providers have a fixed output dimension. Make sure the `embedding_dim` pass
 | Sentence-Transformers | `IndexManager` can auto-detect when you pass `embedder=embedder`. |
 | Ollama | Pass `embedding_dim` explicitly. |
 
-See [Indexes](indexes.md) for more details.
+See [Indexing](indexing.md) for more details.
 
 ## Provider integration tests
 
@@ -179,5 +179,5 @@ See [Testing](testing.md) for run commands and required environment variables.
 ## Next steps
 
 - Follow the full setup in [Quick Start](quickstart.md).
-- Configure indexes in [Indexes](indexes.md).
+- Configure indexes in [Indexing](indexing.md).
 - Learn about search modes in [Search](search.md).

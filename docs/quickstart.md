@@ -179,7 +179,7 @@ drift_result = await graph_rag.search(
 )
 ```
 
-> **Note on community levels:** In Recon-GraphRAG, `level=0` means the **finest / most local** communities. This is the opposite of some Microsoft GraphRAG descriptions. See [Community Level Numbering](community-level-numbering.md) for details.
+> **Note on community levels:** In Recon-GraphRAG, `level=0` means the **finest / most local** communities. This is the opposite of some Microsoft GraphRAG descriptions. See [Search](search.md) for details.
 
 ## Complete example
 

@@ -1,4 +1,4 @@
-# Indexes
+# Indexing
 
 Recon-GraphRAG uses Neo4j vector and fulltext indexes for retrieval. The `IndexManager` helper creates the indexes you need in one call.
 

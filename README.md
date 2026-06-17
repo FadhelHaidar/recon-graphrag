@@ -135,13 +135,12 @@ For a step-by-step walkthrough, see [docs/quickstart.md](docs/quickstart.md).
 | [docs/pipelines.md](docs/pipelines.md) | `GraphBuilderPipeline` and `CommunityPipeline` architecture |
 | [docs/advanced-workflows.md](docs/advanced-workflows.md) | Composable building blocks below the high-level pipelines |
 | [docs/schema.md](docs/schema.md) | Defining schemas with `GraphSchema` and `build_schema()` |
-| [docs/indexes.md](docs/indexes.md) | Creating and managing Neo4j indexes |
+| [docs/indexing.md](docs/indexing.md) | Creating and managing Neo4j indexes |
 | [docs/providers.md](docs/providers.md) | LLM and embedder providers |
 | [docs/search.md](docs/search.md) | Local, global, and DRIFT search modes |
-| [docs/search-internals.md](docs/search-internals.md) | How search works internally |
+| [docs/search-under-the-hood.md](docs/search-under-the-hood.md) | How search works internally |
 | [docs/movie-industry-example.md](docs/movie-industry-example.md) | Movie industry example walkthrough |
 | [docs/testing.md](docs/testing.md) | Running tests and integration test flags |
-| [docs/community-level-numbering.md](docs/community-level-numbering.md) | How community level numbering differs from Microsoft GraphRAG |
 
 ## Example
 

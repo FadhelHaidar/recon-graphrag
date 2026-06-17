@@ -2,7 +2,7 @@
 
 Recon-GraphRAG provides three search modes, matching the Microsoft GraphRAG philosophy: **Local**, **Global**, and **DRIFT**.
 
-For a deep dive into the internals, see [Search Internals](search-internals.md).
+For a deep dive into the internals, see [Search Under the Hood](search-under-the-hood.md).
 
 ## Search modes overview
 
@@ -76,7 +76,16 @@ result = await graph_rag.search(
 
 ## Community levels
 
-Recon-GraphRAG stores communities with `level=0` as the **finest / most local** level. Higher numbers are broader parent communities. This is the opposite of some Microsoft GraphRAG descriptions, where level 0 is often the coarsest root level.
+Recon-GraphRAG stores communities with `level=0` as the **finest / most local** level. Higher numbers are broader parent communities. The highest available level is the **coarsest / most global** community level.
+
+This is the opposite of some Microsoft GraphRAG descriptions, where level 0 is often interpreted as the coarsest root level.
+
+Use this mapping when comparing terminology:
+
+```text
+Recon level 0       ~= Microsoft finest / deepest community level
+Recon highest level ~= Microsoft C0 / root / coarsest community level
+```
 
 The search API supports semantic selectors:
 
@@ -88,7 +97,14 @@ community_level=0             # Exact stored level
 community_level=1             # Exact stored level
 ```
 
-For full background, see [Community Level Numbering](community-level-numbering.md).
+Global search also accepts the existing `level=` argument for backward compatibility:
+
+```python
+await graph_rag.search("What are the major themes?", mode="global", level=0)
+await graph_rag.search("What are the major themes?", mode="global", community_level="coarsest")
+```
+
+Passing `level=0` does **not** mean "most global" in this codebase. It means "finest / most local community summaries." For Microsoft-style global summaries, prefer `community_level="coarsest"`.
 
 ## Customizing prompts
 
@@ -153,4 +169,3 @@ community = CommunityPipeline(
 
 - Try the search examples in [Quick Start](quickstart.md).
 - See a full domain example in [Movie Industry Example](movie-industry-example.md).
-- Understand community level numbering in [Community Level Numbering](community-level-numbering.md).
