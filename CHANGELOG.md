@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.0.0](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.1.2...v1.0.0) (2026-06-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* FalkorDB backend support and related extras/env vars/tests are removed in favor of Memgraph.
+
+### Features
+
+* add Memgraph backend and artifact-based examples ([62c5efb](https://github.com/FadhelHaidar/recon-graphrag/commit/62c5efb86ab6c7965ffc9e943663e5a0117dc7ea))
+* add memgraph database support ([b53c3b4](https://github.com/FadhelHaidar/recon-graphrag/commit/b53c3b4ed733c6ca6a7fc8e7c2a2dde6bc930ba6))
+* update documentation for indexing, community levels, and search modes ([bdbee55](https://github.com/FadhelHaidar/recon-graphrag/commit/bdbee55c80dedb070f182f9a32a7a2ddf5bd456c))
+
 ## [0.1.2](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.1.1...v0.1.2) (2026-06-15)
 
 
