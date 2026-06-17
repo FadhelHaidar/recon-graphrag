@@ -1,7 +1,10 @@
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 from recon_graphrag.llm.factory import create_llm
+from recon_graphrag.llm.factory import _openai_chat_response_to_llm_response
 
 
 class _FakeOpenAIClient:
@@ -65,3 +68,23 @@ def test_azure_llm_preserves_explicit_deployment(monkeypatch):
     )
 
     assert _FakeOpenAIClient.last_kwargs["azure_deployment"] == "my-chat-deployment"
+
+
+def test_openai_chat_response_without_choices_has_clear_error():
+    with pytest.raises(ValueError, match="did not include choices"):
+        _openai_chat_response_to_llm_response(SimpleNamespace(choices=None))
+
+
+def test_openai_chat_response_with_provider_error_has_clear_error():
+    response = SimpleNamespace(
+        model_dump=lambda: {
+            "choices": None,
+            "error": {
+                "message": "HTTP 429: Model busy, retry later",
+                "code": 429,
+            },
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="provider returned error"):
+        _openai_chat_response_to_llm_response(response)

@@ -179,7 +179,7 @@ drift_result = await graph_rag.search(
 )
 ```
 
-> **Note on community levels:** In Recon-GraphRAG, `level=0` means the **finest / most local** communities. This is the opposite of some Microsoft GraphRAG descriptions. See [Community Levels vs Microsoft GraphRAG](community_levels_vs_microsoft_graphrag.md) for details.
+> **Note on community levels:** In Recon-GraphRAG, `level=0` means the **finest / most local** communities. This is the opposite of some Microsoft GraphRAG descriptions. See [Search](search.md) for details.
 
 ## Complete example
 
@@ -253,4 +253,4 @@ print(result.answer)
 - Learn more about the two-stage pipeline in [Pipelines](pipelines.md).
 - Explore schema options in [Schema](schema.md).
 - Compare search modes in [Search](search.md).
-- Run a complete domain example in [Examples](examples.md).
+- Run a complete domain example in [Movie Industry Example](movie-industry-example.md).

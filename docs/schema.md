@@ -138,5 +138,5 @@ During extraction, relationships that do not match a pattern are dropped. This p
 ## Next steps
 
 - Run the schema through a pipeline in [Quick Start](quickstart.md).
-- Learn about indexing in [Indexes](indexes.md).
-- See a large real-world schema in [Examples](examples.md).
+- Learn about indexing in [Indexing](indexing.md).
+- See a large real-world schema in [Movie Industry Example](movie-industry-example.md).

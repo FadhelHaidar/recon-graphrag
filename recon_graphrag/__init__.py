@@ -30,6 +30,12 @@ from recon_graphrag.extraction.schema import (
 
 # Models
 from recon_graphrag.models.types import SearchResult, IndexConfig
+from recon_graphrag.extraction.artifacts import (
+    graph_document_from_dict,
+    graph_document_to_dict,
+    load_graph_document_json,
+    save_graph_document_json,
+)
 
 # Communities
 from recon_graphrag.communities import (
@@ -61,6 +67,7 @@ __all__ = [
     # Graph store
     "GraphStore",
     "Neo4jGraphStore",
+    "MemgraphGraphStore",
     "IndexManager",
     # Schema
     "GraphSchema",
@@ -71,6 +78,10 @@ __all__ = [
     # Models
     "SearchResult",
     "IndexConfig",
+    "graph_document_to_dict",
+    "graph_document_from_dict",
+    "save_graph_document_json",
+    "load_graph_document_json",
     # Communities
     "CommunityDetector",
     "CommunitySummarizer",
@@ -90,6 +101,10 @@ def __getattr__(name: str):
         from recon_graphrag.graphdb.neo4j.index_manager import IndexManager
 
         return IndexManager
+    if name == "MemgraphGraphStore":
+        from recon_graphrag.graphdb.memgraph.store import MemgraphGraphStore
+
+        return MemgraphGraphStore
     if name == "CommunityDetector":
         from recon_graphrag.communities.neo4j.detection import CommunityDetector
 

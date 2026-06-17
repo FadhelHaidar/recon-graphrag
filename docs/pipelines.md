@@ -146,10 +146,20 @@ would group people and movies connected through creative roles.
 
 ### Community levels
 
-Recon-GraphRAG stores communities with `level=0` as the **finest / most local** level and higher numbers as broader parent communities. This is the opposite of some Microsoft GraphRAG descriptions. See [Community Levels vs Microsoft GraphRAG](community_levels_vs_microsoft_graphrag.md).
+Recon-GraphRAG stores communities with `level=0` as the **finest / most local** level and higher numbers as broader parent communities. The highest available level is the **coarsest / most global** level.
+
+That convention comes from the community detection path: Leiden returns a community path from fine to coarse, and Recon-GraphRAG writes it by enumerating that path:
+
+```python
+for level, community_id in enumerate(path):
+    ...
+```
+
+This is the opposite of some Microsoft GraphRAG descriptions, where level 0 is often interpreted as the root or coarsest level. For search examples, see [Search](search.md).
 
 ## Next steps
 
+- Explore the composable building blocks in [Advanced Workflows](advanced-workflows.md).
 - Define your domain model in [Schema](schema.md).
-- Create required indexes in [Indexes](indexes.md).
+- Create required indexes in [Indexing](indexing.md).
 - Search the graph in [Search](search.md).

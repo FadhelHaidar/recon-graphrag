@@ -230,6 +230,10 @@ MOVIE_SCHEMA = GraphSchema(
             description="Person has a professional occupation",
         ),
         RelationshipType(
+            label="CONNECTED_TO",
+            description="Generic connection between entities",
+        ),
+        RelationshipType(
             label="BASED_ON",
             description="Movie is based on a book, novel, historical event, or source material",
         ),

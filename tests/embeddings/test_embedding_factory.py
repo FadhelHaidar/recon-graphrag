@@ -1,7 +1,10 @@
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 from recon_graphrag.embeddings.factory import create_embedder
+from recon_graphrag.embeddings.factory import _openai_embedding
 
 
 class _FakeOpenAIClient:
@@ -60,3 +63,23 @@ def test_azure_embedder_preserves_explicit_deployment(monkeypatch):
     assert _FakeOpenAIClient.last_kwargs["azure_deployment"] == (
         "my-embedding-deployment"
     )
+
+
+def test_openai_embedding_response_without_data_has_clear_error():
+    with pytest.raises(ValueError, match="did not include data"):
+        _openai_embedding(SimpleNamespace(data=None))
+
+
+def test_openai_embedding_response_with_provider_error_has_clear_error():
+    response = SimpleNamespace(
+        model_dump=lambda: {
+            "data": None,
+            "error": {
+                "message": "HTTP 429: Model busy, retry later",
+                "code": 429,
+            },
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="provider returned error"):
+        _openai_embedding(response)

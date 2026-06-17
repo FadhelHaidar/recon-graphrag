@@ -18,6 +18,12 @@ from recon_graphrag.extraction.types import (
     GraphExtraction,
     RelationshipRecord,
 )
+from recon_graphrag.extraction.artifacts import (
+    graph_document_from_dict,
+    graph_document_to_dict,
+    load_graph_document_json,
+    save_graph_document_json,
+)
 
 __all__ = [
     "GraphSchema",
@@ -34,4 +40,8 @@ __all__ = [
     "RelationshipRecord",
     "EvidenceLink",
     "GraphDocument",
+    "graph_document_to_dict",
+    "graph_document_from_dict",
+    "save_graph_document_json",
+    "load_graph_document_json",
 ]

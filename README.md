@@ -1,6 +1,6 @@
 # Recon-GraphRAG
 
-Domain-agnostic GraphRAG SDK built on Neo4j, following the [Microsoft GraphRAG](https://microsoft.github.io/graphrag/) philosophy.
+Domain-agnostic GraphRAG SDK with a pluggable graph-store backend, following the [Microsoft GraphRAG](https://microsoft.github.io/graphrag/) philosophy. The reference implementation is built on Neo4j.
 
 Like Microsoft GraphRAG, Recon-GraphRAG uses **community detection with multi-level hierarchical communities** to structure knowledge graphs, and provides the same three search paradigms — **Local**, **Global**, and **DRIFT** search — to answer questions at different levels of specificity.
 
@@ -20,6 +20,19 @@ Learn more about the two-stage pipeline in [docs/pipelines.md](docs/pipelines.md
   - **GDS** (Graph Data Science) — required for community detection (Leiden algorithm)
 
 See [docs/installation.md](docs/installation.md) for detailed setup instructions, including a Docker Compose file with Neo4j pre-configured.
+
+### Backend requirements
+
+The `GraphStore` protocol is designed to be backend-agnostic. A backend must support the following server-side capabilities to run the full Recon-GraphRAG pipeline:
+
+- Vector indexes and approximate nearest-neighbor search
+- Fulltext indexes
+- Multi-level community detection (e.g., Leiden or Louvain)
+- Cypher-compatible query language
+- Node ID-based embedding upsert
+- Entity merge / deduplication
+
+Neo4j with APOC and GDS is the reference backend.
 
 ## Install
 
@@ -120,25 +133,28 @@ For a step-by-step walkthrough, see [docs/quickstart.md](docs/quickstart.md).
 | [docs/installation.md](docs/installation.md) | Full installation guide, Docker setup, extras, and troubleshooting |
 | [docs/quickstart.md](docs/quickstart.md) | Step-by-step quick start |
 | [docs/pipelines.md](docs/pipelines.md) | `GraphBuilderPipeline` and `CommunityPipeline` architecture |
+| [docs/advanced-workflows.md](docs/advanced-workflows.md) | Composable building blocks below the high-level pipelines |
 | [docs/schema.md](docs/schema.md) | Defining schemas with `GraphSchema` and `build_schema()` |
-| [docs/indexes.md](docs/indexes.md) | Creating and managing Neo4j indexes |
+| [docs/indexing.md](docs/indexing.md) | Creating and managing Neo4j indexes |
 | [docs/providers.md](docs/providers.md) | LLM and embedder providers |
 | [docs/search.md](docs/search.md) | Local, global, and DRIFT search modes |
-| [docs/examples.md](docs/examples.md) | Movie industry example walkthrough |
+| [docs/search-under-the-hood.md](docs/search-under-the-hood.md) | How search works internally |
+| [docs/movie-industry-example.md](docs/movie-industry-example.md) | Movie industry example walkthrough |
 | [docs/testing.md](docs/testing.md) | Running tests and integration test flags |
-| [docs/community_levels_vs_microsoft_graphrag.md](docs/community_levels_vs_microsoft_graphrag.md) | How community level numbering differs from Microsoft GraphRAG |
 
 ## Example
 
-A complete movie industry example is available in [examples/movie_industry/](examples/movie_industry/):
+A complete movie industry example is available in [examples/](examples/):
 
 ```bash
-cd examples/movie_industry
-python build.py    # Build the graph and communities
-python search.py   # Run queries across all search modes
+cd examples
+python extract_movie_graph.py
+python ingest_movie_graph.py --backend neo4j
+python build_communities.py --backend neo4j
+python search_movie_graph.py --backend neo4j
 ```
 
-See [docs/examples.md](docs/examples.md) for a full walkthrough.
+See [docs/movie-industry-example.md](docs/movie-industry-example.md) for a full walkthrough.
 
 ## Contributing
 
