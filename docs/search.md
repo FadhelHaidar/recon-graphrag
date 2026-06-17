@@ -2,6 +2,8 @@
 
 Recon-GraphRAG provides three search modes, matching the Microsoft GraphRAG philosophy: **Local**, **Global**, and **DRIFT**.
 
+For a deep dive into the internals, see [Search Internals](search-internals.md).
+
 ## Search modes overview
 
 | Mode | Strategy | Best for |
@@ -86,13 +88,13 @@ community_level=0             # Exact stored level
 community_level=1             # Exact stored level
 ```
 
-For full background, see [Community Levels vs Microsoft GraphRAG](community_levels_vs_microsoft_graphrag.md).
+For full background, see [Community Level Numbering](community-level-numbering.md).
 
 ## Customizing prompts
 
 Each retriever exposes prompt attributes that you can override for domain-specific behavior.
 
-### Local search
+### Local search prompt
 
 ```python
 graph_rag.local.answer_prompt = (
@@ -100,7 +102,7 @@ graph_rag.local.answer_prompt = (
 )
 ```
 
-### Global search
+### Global search prompt
 
 ```python
 graph_rag.global_.map_prompt = (
@@ -111,7 +113,7 @@ graph_rag.global_.reduce_prompt = (
 )
 ```
 
-### DRIFT search
+### DRIFT search prompt
 
 ```python
 graph_rag.drift.answer_prompt = (
@@ -150,5 +152,5 @@ community = CommunityPipeline(
 ## Next steps
 
 - Try the search examples in [Quick Start](quickstart.md).
-- See a full domain example in [Examples](examples.md).
-- Understand community level numbering in [Community Levels vs Microsoft GraphRAG](community_levels_vs_microsoft_graphrag.md).
+- See a full domain example in [Movie Industry Example](movie-industry-example.md).
+- Understand community level numbering in [Community Level Numbering](community-level-numbering.md).

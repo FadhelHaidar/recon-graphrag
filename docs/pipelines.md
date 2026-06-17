@@ -146,10 +146,11 @@ would group people and movies connected through creative roles.
 
 ### Community levels
 
-Recon-GraphRAG stores communities with `level=0` as the **finest / most local** level and higher numbers as broader parent communities. This is the opposite of some Microsoft GraphRAG descriptions. See [Community Levels vs Microsoft GraphRAG](community_levels_vs_microsoft_graphrag.md).
+Recon-GraphRAG stores communities with `level=0` as the **finest / most local** level and higher numbers as broader parent communities. This is the opposite of some Microsoft GraphRAG descriptions. See [Community Level Numbering](community-level-numbering.md).
 
 ## Next steps
 
+- Explore the composable building blocks in [Advanced Workflows](advanced-workflows.md).
 - Define your domain model in [Schema](schema.md).
 - Create required indexes in [Indexes](indexes.md).
 - Search the graph in [Search](search.md).

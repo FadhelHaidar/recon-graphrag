@@ -174,7 +174,29 @@ def _create_openrouter_llm(**kwargs: Any) -> BaseLLM:
 
 
 def _openai_chat_response_to_llm_response(response: Any) -> LLMResponse:
-    content = response.choices[0].message.content or ""
+    error = _response_error(response)
+    if error is not None:
+        raise OpenAICompatibleProviderError.from_error(
+            "chat",
+            error,
+            response,
+        )
+
+    choices = getattr(response, "choices", None)
+    if not choices:
+        raise ValueError(
+            "OpenAI-compatible chat response did not include choices. "
+            f"Response: {_safe_response_summary(response)}"
+        )
+
+    message = getattr(choices[0], "message", None)
+    if message is None:
+        raise ValueError(
+            "OpenAI-compatible chat choice did not include a message. "
+            f"Response: {_safe_response_summary(response)}"
+        )
+
+    content = getattr(message, "content", None) or ""
     usage = None
     if getattr(response, "usage", None):
         usage = LLMUsage(
@@ -183,6 +205,62 @@ def _openai_chat_response_to_llm_response(response: Any) -> LLMResponse:
             total_tokens=response.usage.total_tokens,
         )
     return LLMResponse(content=content, usage=usage)
+
+
+class OpenAICompatibleProviderError(RuntimeError):
+    """Provider error returned inside an OpenAI-compatible response payload."""
+
+    @classmethod
+    def from_error(
+        cls,
+        operation: str,
+        error: Any,
+        response: Any,
+    ) -> "OpenAICompatibleProviderError":
+        message = _error_value(error, "message") or repr(error)
+        code = _error_value(error, "code")
+        return cls(
+            f"OpenAI-compatible {operation} provider returned error"
+            f"{f' ({code})' if code is not None else ''}: {message}. "
+            f"Response: {_safe_response_summary(response)}"
+        )
+
+
+def _response_error(response: Any) -> Any:
+    payload = _response_payload(response)
+    if isinstance(payload, dict) and payload.get("error"):
+        return payload["error"]
+    return getattr(response, "error", None)
+
+
+def _response_payload(response: Any) -> Any:
+    if isinstance(response, dict):
+        return response
+    model_dump = getattr(response, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return model_dump()
+        except Exception:
+            return None
+    return None
+
+
+def _error_value(error: Any, key: str) -> Any:
+    if isinstance(error, dict):
+        return error.get(key)
+    return getattr(error, key, None)
+
+
+def _safe_response_summary(response: Any) -> str:
+    if response is None:
+        return "None"
+    model_dump = getattr(response, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return repr(model_dump())
+        except Exception:
+            pass
+    return repr(response)
 
 
 def _is_azure_deployment_not_found(exc: Exception) -> bool:

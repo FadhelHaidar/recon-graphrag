@@ -21,11 +21,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-falkordb = ["falkordb>=1.0"]
 openai = ["openai>=1.0"]
 ollama = ["ollama"]
 sentence-transformers = ["sentence-transformers>=2.0"]
-all = ["openai>=1.0", "ollama", "sentence-transformers>=2.0", "falkordb>=1.0"]
+all = ["openai>=1.0", "ollama", "sentence-transformers>=2.0"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 
 [project.urls]
