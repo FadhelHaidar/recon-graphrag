@@ -148,10 +148,10 @@ A complete movie industry example is available in [examples/](examples/):
 
 ```bash
 cd examples
-python extract.py
-python ingest.py --backend neo4j
-python communities.py --backend neo4j
-python search.py --backend neo4j
+python extract_movie_graph.py
+python ingest_movie_graph.py --backend neo4j
+python build_communities.py --backend neo4j
+python search_movie_graph.py --backend neo4j
 ```
 
 See [docs/movie-industry-example.md](docs/movie-industry-example.md) for a full walkthrough.
