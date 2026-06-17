@@ -1,9 +1,9 @@
 """Extract the movie graph once into a database-neutral JSON artifact.
 
 Usage:
-  python extract.py
-  python extract.py --output artifacts/movie_graph.json
-  python extract.py --llm-provider openrouter
+  python extract_movie_graph.py
+  python extract_movie_graph.py --output artifacts/movie_graph.json
+  python extract_movie_graph.py --llm-provider openrouter
 """
 
 from __future__ import annotations
@@ -15,16 +15,10 @@ from pathlib import Path
 
 from recon_graphrag.extraction.artifacts import save_graph_document_json
 
-try:
-    from .common import DEFAULT_ARTIFACT_PATH, extract_graph_document_from_pages
-    from .config import get_llm
-    from .data import MOVIE_EXAMPLE_PAGES
-    from .schema import MOVIE_SCHEMA
-except ImportError:
-    from common import DEFAULT_ARTIFACT_PATH, extract_graph_document_from_pages
-    from config import get_llm
-    from data import MOVIE_EXAMPLE_PAGES
-    from schema import MOVIE_SCHEMA
+from common import DEFAULT_ARTIFACT_PATH, extract_graph_document_from_pages
+from config import get_llm
+from data import MOVIE_EXAMPLE_PAGES
+from schema import MOVIE_SCHEMA
 
 
 def parse_args():

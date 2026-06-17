@@ -15,22 +15,13 @@ from recon_graphrag.extraction.extractor import LLMGraphExtractor
 from recon_graphrag.extraction.types import GraphDocument
 from recon_graphrag.extraction.validator import SchemaValidator
 
-try:
-    from .config import EMBEDDING_DIM
-    from .prompts import (
-        DRIFT_ANSWER_PROMPT,
-        GLOBAL_MAP_PROMPT,
-        GLOBAL_REDUCE_PROMPT,
-        LOCAL_ANSWER_PROMPT,
-    )
-except ImportError:
-    from config import EMBEDDING_DIM
-    from prompts import (
-        DRIFT_ANSWER_PROMPT,
-        GLOBAL_MAP_PROMPT,
-        GLOBAL_REDUCE_PROMPT,
-        LOCAL_ANSWER_PROMPT,
-    )
+from config import EMBEDDING_DIM
+from prompts import (
+    DRIFT_ANSWER_PROMPT,
+    GLOBAL_MAP_PROMPT,
+    GLOBAL_REDUCE_PROMPT,
+    LOCAL_ANSWER_PROMPT,
+)
 
 
 DEFAULT_ARTIFACT_PATH = Path(__file__).with_name("artifacts") / "movie_graph.json"
