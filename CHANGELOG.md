@@ -1,5 +1,13 @@
 # Changelog
 
+
+## [0.2.0](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.1.2...v0.2.0) (2026-06-17)
+
+
+### Features
+
+* add Memgraph support
+
 ## [0.1.2](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.1.1...v0.1.2) (2026-06-15)
 
 
