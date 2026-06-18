@@ -4,6 +4,7 @@ Run this after ingesting the shared movie graph artifact and building communitie
 
 Usage:
   python search.py --backend neo4j
+  python search.py --backend neo4j --limit 5
   python search.py --backend memgraph --modes local drift
 """
 
@@ -54,6 +55,12 @@ def parse_args():
         default=None,
         help="Restrict the suite to specific retrieval modes.",
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit the number of query cases to run.",
+    )
     return parser.parse_args()
 
 
@@ -70,12 +77,16 @@ async def run_search_suite(
     llm_provider: str,
     embedder_provider: str,
     modes: list[str] | None = None,
+    limit: int | None = None,
 ):
     store = _get_store(backend)
     llm = get_llm(llm_provider)
     embedder = get_embedder(embedder_provider)
     graph_rag = configure_movie_rag(GraphRAG(store, llm, embedder))
-    await run_movie_search_suite(graph_rag, MOVIE_QUERY_SUITE, modes_filter=modes)
+    suite = MOVIE_QUERY_SUITE
+    if limit is not None:
+        suite = suite[:limit]
+    await run_movie_search_suite(graph_rag, suite, modes_filter=modes)
 
 
 if __name__ == "__main__":
@@ -86,5 +97,6 @@ if __name__ == "__main__":
             args.llm_provider,
             args.embedder_provider,
             modes=args.modes,
+            limit=args.limit,
         )
     )

@@ -21,8 +21,8 @@ The `examples/` directory contains a complete, runnable movie-industry project t
 | [prompts.py](../examples/prompts.py) | Domain-customized prompts for all retrievers |
 | [data.py](../examples/data.py) | Sample movie text data |
 | [extract.py](../examples/extract.py) | Extract once into a database-neutral JSON graph artifact |
-| [ingest.py](../examples/ingest.py) | Ingest the shared graph artifact into Neo4j, Memgraph, or both |
-| [communities.py](../examples/communities.py) | Build communities for Neo4j, Memgraph, or both |
+| [ingest.py](../examples/ingest.py) | Ingest the shared graph artifact into one or all graph backends |
+| [communities.py](../examples/communities.py) | Build communities for one or all graph backends |
 | [search.py](../examples/search.py) | Run the shared query suite on Neo4j or Memgraph |
 | [compare_backends.py](../examples/compare_backends.py) | Compare graph stats and retrieval outputs across Neo4j and Memgraph |
 
@@ -32,7 +32,7 @@ All build and search scripts accept `--llm-provider` and `--embedder-provider` f
 
 ```bash
 python extract.py --llm-provider openrouter
-python ingest.py --backend both --embedder-provider openai
+python ingest.py --backend all --embedder-provider openai
 python search.py --backend neo4j --llm-provider openai --embedder-provider sentence-transformer
 ```
 
@@ -40,6 +40,15 @@ Supported LLM providers: `openrouter`, `azure_openai`, `openai`.
 Supported embedder providers: `openrouter`, `azure_openai`, `openai`, `sentence-transformer`.
 
 You can also set the `LLM_PROVIDER` and `EMBEDDER_PROVIDER` environment variables instead of passing flags.
+
+For hybrid entity resolution during ingest, pass
+`--entity-resolution-strategy hybrid`. The LLM and embedder review ambiguous
+duplicate candidates. Add `--allow-ai-auto-merge` only when you want
+LLM-approved review candidates to be merged into the stored graph:
+
+```bash
+python ingest.py --backend neo4j --entity-resolution-strategy hybrid --allow-ai-auto-merge
+```
 
 ### Search modes per test case
 
@@ -111,12 +120,12 @@ You can also set the `LLM_PROVIDER` and `EMBEDDER_PROVIDER` environment variable
 
 ### Compare Neo4j and Memgraph
 
-To compare outputs fairly, ingest both databases from the same artifact before building communities:
+To compare outputs fairly, ingest all configured graph backends from the same artifact before building communities:
 
 ```bash
 python extract.py --llm-provider openrouter
-python ingest.py --backend both --embedder-provider openrouter
-python communities.py --backend both --llm-provider openrouter --embedder-provider openrouter
+python ingest.py --backend all --embedder-provider openrouter
+python communities.py --backend all --llm-provider openrouter --embedder-provider openrouter
 python compare_backends.py --limit 5
 ```
 

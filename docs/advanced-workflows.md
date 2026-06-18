@@ -223,84 +223,30 @@ page_chunks = window_builder.build_windows(pages, document_id="doc:test")
 - `GraphStore` — the full database abstraction used by pipelines and retrievers.
 - `GraphWriter` — the minimal write-only contract (`write_graph_document`).
 
-`GraphBuilderPipeline` accepts a `graph_writer` parameter that only needs to satisfy `GraphWriter`. This is the cleanest extension point for saving extractions before ingestion.
+`GraphBuilderPipeline` accepts a `graph_writer` parameter that only needs to
+satisfy `GraphWriter`. Use this when you want to intercept the assembled
+`GraphDocument` before it is written to the database.
 
-### Save extractions to JSON before writing
+### Save extracted entities and relationships as JSON
 
-```python
-import json
-from pathlib import Path
-from recon_graphrag.extraction.types import GraphDocument
-from recon_graphrag.graphdb.base import GraphWriter
-
-
-class JsonSavingWriter:
-    """Wraps a real writer and dumps each GraphDocument to JSON first."""
-
-    def __init__(self, inner: GraphWriter, out_dir: Path | str):
-        self.inner = inner
-        self.out_dir = Path(out_dir)
-        self.out_dir.mkdir(parents=True, exist_ok=True)
-
-    def write_graph_document(self, graph_document: GraphDocument) -> dict:
-        path = self.out_dir / f"{graph_document.document.id}.json"
-        path.write_text(
-            json.dumps(self._to_dict(graph_document), indent=2, default=str),
-            encoding="utf-8",
-        )
-        return self.inner.write_graph_document(graph_document)
-
-    @staticmethod
-    def _to_dict(doc: GraphDocument) -> dict:
-        return {
-            "document": {
-                "id": doc.document.id,
-                "text_hash": doc.document.text_hash,
-                "metadata": doc.document.metadata,
-                "graph_name": doc.document.graph_name,
-            },
-            "chunks": [
-                {"id": c.id, "document_id": c.document_id, "text": c.text, "index": c.index, "metadata": c.metadata}
-                for c in doc.chunks
-            ],
-            "entities": [
-                {"id": e.id, "type": e.type, "properties": e.properties}
-                for e in doc.entities
-            ],
-            "relationships": [
-                {
-                    "id": r.id,
-                    "source_id": r.source_id,
-                    "target_id": r.target_id,
-                    "type": r.type,
-                    "properties": r.properties,
-                }
-                for r in doc.relationships
-            ],
-            "evidence_links": [
-                {"chunk_id": l.chunk_id, "entity_id": l.entity_id}
-                for l in doc.evidence_links
-            ],
-        }
-```
-
-Usage:
+After extraction, the assembled `GraphDocument` contains the document, chunks,
+entities, relationships, and evidence links. Save it with
+`save_graph_document_json()` when you want a reusable JSON artifact before
+database ingestion.
 
 ```python
-from recon_graphrag import GraphBuilderPipeline
+from recon_graphrag.extraction.artifacts import save_graph_document_json
 
-pipeline = GraphBuilderPipeline(
-    graph_store=store,
-    llm=llm,
-    embedder=embedder,
-    schema=schema,
-    graph_writer=JsonSavingWriter(store, out_dir="extracted_graphs"),
-)
+save_graph_document_json(graph_document, "artifacts/my_graph.json")
 ```
+
+Use `load_graph_document_json()` later when you want to ingest the saved
+artifact without running extraction again.
 
 ### Saved JSON shape
 
-Using the writer above, the file `extracted_graphs/doc:inception-example.json` would contain:
+The file produced by `save_graph_document_json()` contains the complete
+`GraphDocument`:
 
 ```json
 {
@@ -356,6 +302,46 @@ Using the writer above, the file `extracted_graphs/doc:inception-example.json` w
 }
 ```
 
+### Save while using GraphBuilderPipeline
+
+If you want the normal pipeline to write to the database and also save each
+assembled `GraphDocument`, wrap the store with a small `GraphWriter`.
+
+```python
+from pathlib import Path
+
+from recon_graphrag import GraphBuilderPipeline
+from recon_graphrag.extraction.artifacts import save_graph_document_json
+from recon_graphrag.extraction.types import GraphDocument
+from recon_graphrag.graphdb.base import GraphWriter
+
+
+class ArtifactSavingWriter:
+    def __init__(self, inner: GraphWriter, out_dir: str | Path):
+        self.inner = inner
+        self.out_dir = Path(out_dir)
+
+    def write_graph_document(self, graph_document: GraphDocument) -> dict:
+        safe_id = "".join(
+            char if char.isalnum() or char in ("-", "_") else "_"
+            for char in graph_document.document.id
+        )
+        save_graph_document_json(
+            graph_document,
+            self.out_dir / f"{safe_id}.json",
+        )
+        return self.inner.write_graph_document(graph_document)
+
+
+pipeline = GraphBuilderPipeline(
+    graph_store=store,
+    llm=llm,
+    embedder=embedder,
+    schema=schema,
+    graph_writer=ArtifactSavingWriter(store, out_dir="artifacts"),
+)
+```
+
 ### Implement a custom GraphStore
 
 Implement every method in `GraphStore` to add a new backend. The unit tests for `Neo4jGraphStore` are the best reference for the expected behavior of each method.
@@ -373,6 +359,131 @@ class InMemoryGraphStore(GraphStore):
 
     # ... implement remaining GraphStore methods
 ```
+
+## Run entity resolution independently
+
+`GraphBuilderPipeline` calls entity resolution for you after writing extracted
+entities, but the same operation is also available directly on any graph store
+that implements `GraphStore.resolve_entities()`. Use this when you have already
+loaded graph data and want to inspect or merge duplicate entities without
+running extraction again.
+
+Start with a dry run:
+
+```python
+import asyncio
+
+from examples.config import get_neo4j_store
+
+
+async def main():
+    store = get_neo4j_store()
+
+    result = await store.resolve_entities(
+        graph_name="entity-graph",
+        strategy="normalized",
+        dry_run=True,
+    )
+    print(result)
+
+
+asyncio.run(main())
+```
+
+Then run the same strategy without `dry_run` to apply merges:
+
+```python
+result = await store.resolve_entities(
+    graph_name="entity-graph",
+    strategy="normalized",
+    dry_run=False,
+)
+```
+
+Supported strategies:
+
+| Strategy | Behavior |
+| ---- | ---- |
+| `exact` | Merge entities with the same raw `resolve_property` value. |
+| `normalized` | Merge case, punctuation, whitespace, and common organization-suffix variants. |
+| `fuzzy` | Use string similarity to merge high-confidence matches and return lower-confidence review candidates. |
+| `hybrid` | Combine normalized/fuzzy matching with optional aliases, embeddings, and LLM review. |
+
+For `hybrid`, pass the extra signals you want to use:
+
+```python
+from examples.config import get_embedder, get_llm, get_neo4j_store
+
+store = get_neo4j_store()
+embedder = get_embedder()
+llm = get_llm()
+
+result = await store.resolve_entities(
+    graph_name="entity-graph",
+    strategy="hybrid",
+    dry_run=True,
+    embedder=embedder,
+    llm=llm,
+    aliases={
+        "IBM": ["International Business Machines"],
+        "Person": {
+            "Bob Iger": ["Robert Iger"],
+        },
+    },
+    llm_guidance="Only merge people when the context clearly refers to the same individual.",
+)
+```
+
+By default, the LLM review is returned for audit but does not merge the review
+candidates. To let hybrid resolution apply LLM-approved merges, opt in
+explicitly:
+
+```python
+result = await store.resolve_entities(
+    graph_name="entity-graph",
+    strategy="hybrid",
+    embedder=embedder,
+    llm=llm,
+    allow_ai_auto_merge=True,
+)
+```
+
+Auto-merge only promotes candidates whose LLM review returns
+`same_entity=true`, `merge_allowed=true`, and a confidence at or above
+`merge_threshold / 100`. Use `dry_run=True` with the same options first when you
+want to inspect `ai_merged_review_groups` before mutating the graph.
+
+The returned dictionary includes `merged_groups`, `merged_nodes`,
+`candidate_groups`, `review_groups`, `ai_merged_review_groups`, and `signals`.
+In a dry run, `merged_groups` reports groups that would be merged, while
+`merged_nodes` stays `0` because no write occurs.
+
+### How this relates to pipeline deduplication
+
+There are two deduplication moments in the graph-building flow:
+
+| Step | Where it happens | Scope |
+| ---- | ---- | ---- |
+| Assembly deduplication | `GraphDocumentAssembler` | In-memory, within the `GraphDocument` being assembled from one extraction run. It collapses repeated extracted entities and relationships before database write. |
+| Entity resolution | `GraphStore.resolve_entities()` | Database-level, across persisted `__Entity__` nodes for a `graph_name`. This is the same resolver that `GraphBuilderPipeline` calls when `perform_entity_resolution=True`. |
+
+So independent entity resolution is not a different algorithm from the
+GraphBuilderPipeline step. It is the same store-level resolver, called manually.
+It is different from `GraphDocumentAssembler` deduplication, which happens
+earlier and only sees the current extraction artifact.
+
+For best results, run store-level entity resolution after graph writes and
+before entity embedding or community detection. If you resolve entities after
+building embeddings, communities, or summaries, treat those downstream artifacts
+as stale and rebuild or validate them before relying on search quality.
+
+Backend notes:
+
+- Neo4j non-dry-run merges require APOC. If APOC is unavailable, the resolver
+  returns a skipped result instead of failing the whole build.
+- Memgraph uses its own merge implementation and does not require APOC.
+- `graph_name` matters. Resolution only compares entities inside the requested
+  graph.
 
 ## Retrieval primitives
 
@@ -518,20 +629,22 @@ class MyEmbedder(BaseEmbedder):
         return self.embed_query(text)
 ```
 
-## Complete custom flow example
+## Manual extraction flow example
 
-Putting it together: extract, save to JSON, then ingest — all without `GraphBuilderPipeline`.
+Putting it together: extract and save a reusable JSON artifact without
+`GraphBuilderPipeline`. This is useful when you want to inspect the extraction,
+reuse the same artifact across backends, or ingest it later.
 
 ```python
-import asyncio
-import json
+import hashlib
 from pathlib import Path
 
+from recon_graphrag.extraction.artifacts import save_graph_document_json
+from recon_graphrag.extraction.assembler import GraphDocumentAssembler
 from recon_graphrag.extraction.chunking import TextChunker
 from recon_graphrag.extraction.extractor import LLMGraphExtractor
-from recon_graphrag.extraction.validator import SchemaValidator
-from recon_graphrag.extraction.assembler import GraphDocumentAssembler
 from recon_graphrag.extraction.schema import GraphSchema
+from recon_graphrag.extraction.validator import SchemaValidator
 
 
 async def extract_to_json(text: str, schema: GraphSchema, llm, out_path: Path):
@@ -549,28 +662,14 @@ async def extract_to_json(text: str, schema: GraphSchema, llm, out_path: Path):
 
     graph_doc = assembler.assemble(
         document_id="doc:custom",
-        text_hash="manual-hash",
+        text_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
         chunks=chunks,
         chunk_extractions=chunk_extractions,
         metadata={"source": "advanced"},
         graph_name="entity-graph",
     )
 
-    out_path.write_text(
-        json.dumps(
-            {
-                "document": {"id": graph_doc.document.id, **graph_doc.document.metadata},
-                "entities": [{"id": e.id, "type": e.type, **e.properties} for e in graph_doc.entities],
-                "relationships": [
-                    {"source": r.source_id, "target": r.target_id, "type": r.type, **r.properties}
-                    for r in graph_doc.relationships
-                ],
-            },
-            indent=2,
-            default=str,
-        ),
-        encoding="utf-8",
-    )
+    save_graph_document_json(graph_doc, out_path)
     return graph_doc
 ```
 
