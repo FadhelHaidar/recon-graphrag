@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.2.2...v0.2.3) (2026-06-18)
+
+
+### Bug Fixes
+
+* project Neo4j relationship weights for community detection ([#32](https://github.com/FadhelHaidar/recon-graphrag/issues/32)) ([8b69cf1](https://github.com/FadhelHaidar/recon-graphrag/commit/8b69cf1419cd58e447806a39e284a419afd08a55))
+
 ## [0.2.2](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.2.1...v0.2.2) (2026-06-18)
 
 
