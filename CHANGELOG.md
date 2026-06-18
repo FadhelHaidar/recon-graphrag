@@ -2,6 +2,13 @@
 
 ## [0.2.2](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.2.1...v0.2.2) (2026-06-18)
 
+
+### Bug Fixes
+
+* llm entity resolution  ([5fa5cdd](https://github.com/FadhelHaidar/recon-graphrag/commit/5fa5cddfd8059cc664770a3885b4d696878c6c6b))
+
+## [0.2.2](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.2.1...v0.2.2) (2026-06-18)
+
 ### Bug Fixes
 
 * wire hybrid entity-resolution LLM review into opt-in auto-merge behavior
