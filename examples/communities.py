@@ -5,7 +5,7 @@ This assumes the shared movie graph artifact has already been ingested.
 Usage:
   python communities.py --backend neo4j
   python communities.py --backend memgraph --community-gamma 3.0
-  python communities.py --backend both
+  python communities.py --backend all
 """
 
 from __future__ import annotations
@@ -14,26 +14,23 @@ import argparse
 import asyncio
 import os
 
-from recon_graphrag import CommunityPipeline, IndexManager as Neo4jIndexManager
-from recon_graphrag.graphdb.memgraph.index_manager import IndexManager as MemgraphIndexManager
+from recon_graphrag import CommunityPipeline
 
 try:
+    from .common import BACKEND_CHOICES, get_backend_targets
     from .config import (
         EMBEDDING_DIM,
         get_embedder,
         get_llm,
-        get_memgraph_store,
-        get_neo4j_store,
     )
     from .prompts import COMMUNITY_SUMMARY_PROMPT
     from .schema import COMMUNITY_RELATIONSHIP_TYPES
 except ImportError:
+    from common import BACKEND_CHOICES, get_backend_targets
     from config import (
         EMBEDDING_DIM,
         get_embedder,
         get_llm,
-        get_memgraph_store,
-        get_neo4j_store,
     )
     from prompts import COMMUNITY_SUMMARY_PROMPT
     from schema import COMMUNITY_RELATIONSHIP_TYPES
@@ -41,11 +38,11 @@ except ImportError:
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Build movie-industry communities for Neo4j, Memgraph, or both."
+        description="Build movie-industry communities for one or all graph backends."
     )
     parser.add_argument(
         "--backend",
-        choices=["neo4j", "memgraph", "both"],
+        choices=BACKEND_CHOICES,
         required=True,
         help="Graph backend to process.",
     )
@@ -98,15 +95,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def _backend_targets(backend: str):
-    targets = []
-    if backend in ("neo4j", "both"):
-        targets.append(("neo4j", get_neo4j_store(), Neo4jIndexManager))
-    if backend in ("memgraph", "both"):
-        targets.append(("memgraph", get_memgraph_store(), MemgraphIndexManager))
-    return targets
-
-
 async def build_communities(
     backend: str,
     llm_provider: str,
@@ -122,7 +110,7 @@ async def build_communities(
     embedder = get_embedder(embedder_provider)
     results = {}
 
-    for name, store, index_manager_cls in _backend_targets(backend):
+    for name, store, index_manager_cls in get_backend_targets(backend):
         print(f"\n=== Building {name} communities ===")
         index_manager_cls(store, embedding_dim=EMBEDDING_DIM).create_indexes()
 

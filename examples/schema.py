@@ -307,7 +307,6 @@ MOVIE_SCHEMA = GraphSchema(
 )
 
 # Relationship types for community detection projection
-# Relationship types for community detection projection
 COMMUNITY_RELATIONSHIP_TYPES = [
     # Strong person-movie links
     "DIRECTED",
