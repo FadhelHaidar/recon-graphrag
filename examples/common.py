@@ -7,16 +7,17 @@ import re
 from pathlib import Path
 from typing import Any
 
-from recon_graphrag import GraphRAG
+from recon_graphrag import GraphRAG, IndexManager as Neo4jIndexManager
 from recon_graphrag.communities.embeddings import CommunityEmbedder
 from recon_graphrag.extraction.assembler import GraphDocumentAssembler
 from recon_graphrag.extraction.chunking import PageWindowBuilder
 from recon_graphrag.extraction.extractor import LLMGraphExtractor
 from recon_graphrag.extraction.types import GraphDocument
 from recon_graphrag.extraction.validator import SchemaValidator
+from recon_graphrag.graphdb.memgraph.index_manager import IndexManager as MemgraphIndexManager
 
 try:
-    from .config import EMBEDDING_DIM
+    from .config import EMBEDDING_DIM, get_memgraph_store, get_neo4j_store
     from .prompts import (
         DRIFT_ANSWER_PROMPT,
         GLOBAL_MAP_PROMPT,
@@ -24,7 +25,7 @@ try:
         LOCAL_ANSWER_PROMPT,
     )
 except ImportError:
-    from config import EMBEDDING_DIM
+    from config import EMBEDDING_DIM, get_memgraph_store, get_neo4j_store
     from prompts import (
         DRIFT_ANSWER_PROMPT,
         GLOBAL_MAP_PROMPT,
@@ -34,6 +35,8 @@ except ImportError:
 
 
 DEFAULT_ARTIFACT_PATH = Path(__file__).with_name("artifacts") / "movie_graph.json"
+
+ALL_BACKENDS = "all"
 
 SEARCH_OPTIONS = {
     "local": {},
@@ -47,6 +50,27 @@ SEARCH_OPTIONS = {
         "community_level": "finest",
     },
 }
+
+BACKEND_REGISTRY = {
+    "neo4j": (get_neo4j_store, Neo4jIndexManager),
+    "memgraph": (get_memgraph_store, MemgraphIndexManager),
+}
+BACKEND_CHOICES = (*BACKEND_REGISTRY, ALL_BACKENDS)
+
+
+def get_backend_targets(backend: str) -> list[tuple[str, Any, type]]:
+    """Return backend name, store, and index manager targets for an example script."""
+    if backend == ALL_BACKENDS:
+        selected = BACKEND_REGISTRY.items()
+    elif backend in BACKEND_REGISTRY:
+        selected = [(backend, BACKEND_REGISTRY[backend])]
+    else:
+        raise ValueError(f"Unknown backend: {backend}")
+
+    return [
+        (name, store_factory(), index_manager_cls)
+        for name, (store_factory, index_manager_cls) in selected
+    ]
 
 
 def configure_movie_rag(graph_rag: GraphRAG) -> GraphRAG:
@@ -126,34 +150,6 @@ async def extract_graph_document_from_pages(
     )
 
 
-async def ingest_graph_document(
-    store,
-    graph_document: GraphDocument,
-    embedder,
-    index_manager_cls,
-    entity_resolution_strategy: str = "normalized",
-    create_indexes: bool = True,
-    resolve_entities: bool = True,
-    embed_entities: bool = True,
-) -> dict:
-    """Write one graph document and run standard post-write steps."""
-    write_stats = write_graph_document_for_ingest(
-        store,
-        graph_document,
-        index_manager_cls=index_manager_cls,
-        create_indexes=create_indexes,
-    )
-    post_stats = await finalize_graph_ingest(
-        store,
-        graph_document,
-        embedder,
-        entity_resolution_strategy=entity_resolution_strategy,
-        resolve_entities=resolve_entities,
-        embed_entities=embed_entities,
-    )
-    return {"write_stats": write_stats, **post_stats}
-
-
 def write_graph_document_for_ingest(
     store,
     graph_document: GraphDocument,
@@ -173,9 +169,11 @@ async def finalize_graph_ingest(
     store,
     graph_document: GraphDocument,
     embedder,
+    llm=None,
     entity_resolution_strategy: str = "normalized",
     resolve_entities: bool = True,
     embed_entities: bool = True,
+    allow_ai_auto_merge: bool = False,
 ) -> dict:
     """Run post-write graph maintenance for one backend."""
     store.backfill_descriptions()
@@ -185,6 +183,8 @@ async def finalize_graph_ingest(
             graph_name=graph_document.document.graph_name,
             strategy=entity_resolution_strategy,
             embedder=embedder if entity_resolution_strategy == "hybrid" else None,
+            llm=llm if entity_resolution_strategy == "hybrid" else None,
+            allow_ai_auto_merge=allow_ai_auto_merge,
         )
         print(f"Entity resolution result: {resolution}")
     else:

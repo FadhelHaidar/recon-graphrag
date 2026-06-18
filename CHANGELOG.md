@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.2](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.2.1...v0.2.2) (2026-06-18)
+
+### Bug Fixes
+
+* wire hybrid entity-resolution LLM review into opt-in auto-merge behavior
+
+### Documentation
+
+* document hybrid entity-resolution auto-merge and example ingest flags
+
 
 ## [0.2.1](https://github.com/FadhelHaidar/recon-graphrag/compare/v1.0.0...v0.2.1) (2026-06-17)
 

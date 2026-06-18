@@ -511,6 +511,106 @@ async def test_neo4j_resolver_hybrid_uses_llm_with_aliases_and_guidance():
     assert result["review_groups"][0]["llm_review"]["same_entity"] is True
 
 
+@pytest.mark.asyncio
+async def test_neo4j_resolver_hybrid_keeps_llm_review_when_auto_merge_disabled():
+    rows = [
+        {
+            "node_id": "4:a",
+            "entity_id": "e1",
+            "graph_name": "g1",
+            "resolve_value": "John Smith",
+            "labels": ["__Entity__", "Person"],
+            "properties": {},
+        },
+        {
+            "node_id": "4:b",
+            "entity_id": "e2",
+            "graph_name": "g1",
+            "resolve_value": "Jon Smith",
+            "labels": ["__Entity__", "Person"],
+            "properties": {},
+        },
+    ]
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(
+        return_value=MagicMock(
+            content=(
+                '{"same_entity": true, "confidence": 0.96, '
+                '"reason": "Names refer to the same person.", '
+                '"merge_allowed": true}'
+            )
+        )
+    )
+    store = FakeGraphStore(apoc_available=True, rows=rows)
+    resolver = _Neo4jEntityResolver(store)
+
+    result = await resolver.resolve(
+        strategy="hybrid",
+        merge_threshold=95.0,
+        review_threshold=85.0,
+        llm=llm,
+        allow_ai_auto_merge=False,
+    )
+
+    assert result["merged_groups"] == 0
+    assert result["merged_nodes"] == 0
+    assert len(result["review_groups"]) == 1
+    assert result["review_groups"][0]["llm_review"]["merge_allowed"] is True
+    assert result["ai_merged_review_groups"] == []
+
+
+@pytest.mark.asyncio
+async def test_neo4j_resolver_hybrid_auto_merges_llm_approved_review():
+    rows = [
+        {
+            "node_id": "4:a",
+            "entity_id": "e1",
+            "graph_name": "g1",
+            "resolve_value": "John Smith",
+            "labels": ["__Entity__", "Person"],
+            "properties": {},
+        },
+        {
+            "node_id": "4:b",
+            "entity_id": "e2",
+            "graph_name": "g1",
+            "resolve_value": "Jon Smith",
+            "labels": ["__Entity__", "Person"],
+            "properties": {},
+        },
+    ]
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(
+        return_value=MagicMock(
+            content=(
+                '{"same_entity": true, "confidence": 0.96, '
+                '"reason": "Names refer to the same person.", '
+                '"merge_allowed": true}'
+            )
+        )
+    )
+    store = FakeGraphStore(apoc_available=True, rows=rows)
+    resolver = _Neo4jEntityResolver(store)
+
+    result = await resolver.resolve(
+        strategy="hybrid",
+        merge_threshold=95.0,
+        review_threshold=85.0,
+        llm=llm,
+        allow_ai_auto_merge=True,
+    )
+
+    assert result["merged_groups"] == 1
+    assert result["merged_nodes"] == 2
+    assert result["review_groups"] == []
+    assert result["ai_merged_review_groups"][0]["decision"] == "merge"
+    merge_call = next(
+        call for call in store.calls
+        if "apoc.refactor.mergeNodes" in call[0] and "SET node.`name`" in call[0]
+    )
+    assert merge_call[1]["node_ids"] == ["4:a", "4:b"]
+
+
 # ------------------------------------------------------------------
 # Dry run
 # ------------------------------------------------------------------

@@ -12,18 +12,15 @@ import pytest
 EXAMPLE_DIR = Path(__file__).resolve().parents[2] / "examples"
 sys.path.insert(0, str(EXAMPLE_DIR))
 
-from common import SEARCH_OPTIONS, configure_movie_rag, ingest_graph_document, run_movie_search_suite  # noqa: E402
+import common  # noqa: E402
+from common import SEARCH_OPTIONS, configure_movie_rag, run_movie_search_suite  # noqa: E402
 from common import extract_graph_document_from_pages  # noqa: E402
 import ingest  # noqa: E402
 from ingest import ingest_artifact  # noqa: E402
 from query_suite import MOVIE_QUERY_SUITE  # noqa: E402
 from recon_graphrag.extraction.types import (  # noqa: E402
-    ChunkRecord,
     DocumentRecord,
-    EntityRecord,
-    EvidenceLink,
     GraphDocument,
-    RelationshipRecord,
 )
 from recon_graphrag.extraction.schema import (  # noqa: E402
     GraphSchema,
@@ -36,6 +33,37 @@ from recon_graphrag.extraction.schema import (  # noqa: E402
 def test_search_options_are_shared_for_global_and_drift():
     assert SEARCH_OPTIONS["global"]["community_level"] == "coarsest"
     assert SEARCH_OPTIONS["drift"]["community_level"] == "finest"
+
+
+def test_all_backend_targets_expand_to_registered_backends(monkeypatch):
+    assert "all" in common.BACKEND_CHOICES
+    assert "both" not in common.BACKEND_CHOICES
+
+    class FakeNeo4jIndexManager:
+        pass
+
+    class FakeMemgraphIndexManager:
+        pass
+
+    monkeypatch.setitem(
+        common.BACKEND_REGISTRY,
+        "neo4j",
+        (lambda: "neo4j-store", FakeNeo4jIndexManager),
+    )
+    monkeypatch.setitem(
+        common.BACKEND_REGISTRY,
+        "memgraph",
+        (lambda: "memgraph-store", FakeMemgraphIndexManager),
+    )
+
+    targets = common.get_backend_targets("all")
+
+    assert targets == [
+        ("neo4j", "neo4j-store", FakeNeo4jIndexManager),
+        ("memgraph", "memgraph-store", FakeMemgraphIndexManager),
+    ]
+    with pytest.raises(ValueError):
+        common.get_backend_targets("both")
 
 
 def test_movie_query_suite_is_shared():
@@ -119,105 +147,7 @@ async def test_extract_graph_document_from_pages_does_not_need_graph_store():
 
 
 @pytest.mark.asyncio
-async def test_ingest_graph_document_resolves_after_write_before_embeddings(monkeypatch):
-    events = []
-    graph_document = GraphDocument(
-        document=DocumentRecord(
-            id="doc:unit",
-            text_hash="hash",
-            graph_name="movie-graph",
-        ),
-        chunks=[
-            ChunkRecord(
-                id="chunk:1",
-                document_id="doc:unit",
-                text="Alice directed Inception.",
-                index=0,
-                graph_name="movie-graph",
-            )
-        ],
-        entities=[
-            EntityRecord(
-                id="alice",
-                type="Person",
-                properties={"name": "Alice"},
-                graph_name="movie-graph",
-            )
-        ],
-        relationships=[
-            RelationshipRecord(
-                id="rel:1",
-                source_id="alice",
-                target_id="alice",
-                type="KNOWS",
-                graph_name="movie-graph",
-            )
-        ],
-        evidence_links=[
-            EvidenceLink(
-                chunk_id="chunk:1",
-                entity_id="alice",
-                graph_name="movie-graph",
-            )
-        ],
-    )
-
-    class FakeStore:
-        def write_graph_document(self, document):
-            events.append("write")
-            assert document is graph_document
-            return {"entities": 1}
-
-        def backfill_descriptions(self):
-            events.append("backfill")
-
-        async def resolve_entities(self, **kwargs):
-            events.append(("resolve", kwargs))
-            return {"merged_nodes": 0}
-
-        def validate_graph_build(self):
-            events.append("validate")
-            return {"entity_count": 1}
-
-    class FakeIndexManager:
-        def __init__(self, store, embedding_dim):
-            events.append("index_init")
-
-        def create_indexes(self):
-            events.append("indexes")
-
-    class FakeCommunityEmbedder:
-        def __init__(self, store, embedder):
-            events.append("embedder_init")
-
-        async def embed_entities(self):
-            events.append("embed")
-
-    monkeypatch.setattr("common.CommunityEmbedder", FakeCommunityEmbedder)
-
-    result = await ingest_graph_document(
-        FakeStore(),
-        graph_document,
-        embedder=MagicMock(),
-        index_manager_cls=FakeIndexManager,
-        entity_resolution_strategy="normalized",
-    )
-
-    assert events == [
-        "index_init",
-        "indexes",
-        "write",
-        "backfill",
-        ("resolve", {"graph_name": "movie-graph", "strategy": "normalized", "embedder": None}),
-        "embedder_init",
-        "embed",
-        "validate",
-    ]
-    assert result["entity_resolution"] == {"merged_nodes": 0}
-
-
-@pytest.mark.asyncio
-async def test_ingest_artifact_finalizes_after_all_backend_writes(monkeypatch, tmp_path):
+async def test_ingest_artifact_finalizes_after_all_backend_writes(monkeypatch):
     events = []
     graph_document = GraphDocument(
         document=DocumentRecord(id="doc:unit", text_hash="hash"),
@@ -263,15 +193,19 @@ async def test_ingest_artifact_finalizes_after_all_backend_writes(monkeypatch, t
 
     monkeypatch.setattr(ingest, "load_graph_document_json", lambda path: graph_document)
     monkeypatch.setattr(ingest, "get_embedder", lambda provider: MagicMock())
-    monkeypatch.setattr(ingest, "get_neo4j_store", lambda: FakeStore("neo4j"))
-    monkeypatch.setattr(ingest, "get_memgraph_store", lambda: FakeStore("memgraph"))
-    monkeypatch.setattr(ingest, "Neo4jIndexManager", FakeIndexManager)
-    monkeypatch.setattr(ingest, "MemgraphIndexManager", FakeIndexManager)
+    monkeypatch.setattr(
+        ingest,
+        "get_backend_targets",
+        lambda backend: [
+            ("neo4j", FakeStore("neo4j"), FakeIndexManager),
+            ("memgraph", FakeStore("memgraph"), FakeIndexManager),
+        ],
+    )
     monkeypatch.setattr("common.CommunityEmbedder", FakeCommunityEmbedder)
 
     result = await ingest_artifact(
-        tmp_path / "movie_graph.json",
-        backend="both",
+        Path("movie_graph.json"),
+        backend="all",
         embedder_provider="openai",
     )
 
@@ -290,3 +224,80 @@ async def test_ingest_artifact_finalizes_after_all_backend_writes(monkeypatch, t
         ("memgraph", "validate"),
     ]
     assert set(result) == {"neo4j", "memgraph"}
+
+
+@pytest.mark.asyncio
+async def test_ingest_artifact_creates_llm_for_hybrid_resolution(monkeypatch):
+    events = []
+    graph_document = GraphDocument(
+        document=DocumentRecord(id="doc:unit", text_hash="hash"),
+        chunks=[],
+        entities=[],
+        relationships=[],
+        evidence_links=[],
+    )
+    embedder = MagicMock(name="embedder")
+    llm = MagicMock(name="llm")
+
+    class FakeStore:
+        def write_graph_document(self, document):
+            return {"entities": 0}
+
+    class FakeIndexManager:
+        def __init__(self, store, embedding_dim):
+            pass
+
+        def create_indexes(self):
+            pass
+
+    async def fake_finalize(
+        store,
+        graph_document,
+        embedder,
+        llm=None,
+        entity_resolution_strategy="normalized",
+        resolve_entities=True,
+        embed_entities=True,
+        allow_ai_auto_merge=False,
+    ):
+        events.append(
+            {
+                "embedder": embedder,
+                "llm": llm,
+                "strategy": entity_resolution_strategy,
+                "resolve_entities": resolve_entities,
+                "embed_entities": embed_entities,
+                "allow_ai_auto_merge": allow_ai_auto_merge,
+            }
+        )
+        return {"entity_resolution": {"merged_nodes": 0}}
+
+    monkeypatch.setattr(ingest, "load_graph_document_json", lambda path: graph_document)
+    monkeypatch.setattr(ingest, "get_embedder", lambda provider: embedder)
+    monkeypatch.setattr(ingest, "get_llm", lambda provider: llm)
+    monkeypatch.setattr(
+        ingest,
+        "get_backend_targets",
+        lambda backend: [("neo4j", FakeStore(), FakeIndexManager)],
+    )
+    monkeypatch.setattr(ingest, "finalize_graph_ingest", fake_finalize)
+
+    await ingest_artifact(
+        Path("movie_graph.json"),
+        backend="neo4j",
+        embedder_provider="openai",
+        llm_provider="openrouter",
+        entity_resolution_strategy="hybrid",
+        allow_ai_auto_merge=True,
+    )
+
+    assert events == [
+        {
+            "embedder": embedder,
+            "llm": llm,
+            "strategy": "hybrid",
+            "resolve_entities": True,
+            "embed_entities": True,
+            "allow_ai_auto_merge": True,
+        }
+    ]

@@ -103,6 +103,8 @@ class _MemgraphEntityResolver:
 
         entities = self._load_entities(graph_name, resolve_property)
 
+        ai_merged_review_groups = []
+
         if strategy == "exact":
             groups, review_groups = self._build_exact_groups(entities)
             signals = {"exact": "used"}
@@ -118,7 +120,11 @@ class _MemgraphEntityResolver:
             )
             signals = {"normalized": "used", "fuzzy": "used"}
         else:  # hybrid
-            groups, review_groups = await self._build_hybrid_groups(
+            (
+                groups,
+                review_groups,
+                ai_merged_review_groups,
+            ) = await self._build_hybrid_groups(
                 entities,
                 merge_threshold=merge_threshold,
                 review_threshold=review_threshold,
@@ -148,6 +154,7 @@ class _MemgraphEntityResolver:
             "merged_nodes": merged_nodes,
             "candidate_groups": len(groups) + len(review_groups),
             "review_groups": review_groups,
+            "ai_merged_review_groups": ai_merged_review_groups,
             "signals": signals,
         }
 
@@ -256,6 +263,7 @@ class _MemgraphEntityResolver:
                         {
                             "domain_label": e1.domain_label,
                             "names": [e1.resolve_value, e2.resolve_value],
+                            "node_ids": [e1.node_id, e2.node_id],
                             "reason": "fuzzy_candidate",
                             "scores": {
                                 "fuzzy": round(score, 2),
@@ -327,7 +335,7 @@ class _MemgraphEntityResolver:
         llm,
         llm_guidance: Optional[str],
         allow_ai_auto_merge: bool,
-    ) -> tuple[list[list[_EntityRecord]], list[dict]]:
+    ) -> tuple[list[list[_EntityRecord]], list[dict], list[dict]]:
         groups, review_groups = self._build_fuzzy_groups(
             entities,
             merge_threshold=merge_threshold,
@@ -360,7 +368,67 @@ class _MemgraphEntityResolver:
                 merge_threshold,
             )
 
-        return groups, review_groups
+        ai_merged_review_groups = []
+        if allow_ai_auto_merge and review_groups:
+            ai_groups, review_groups, ai_merged_review_groups = self._promote_ai_reviews(
+                review_groups=review_groups,
+                entities=entities,
+                merged_ids=merged_ids,
+                min_confidence=merge_threshold / 100,
+            )
+            groups.extend(ai_groups)
+
+        return groups, review_groups, ai_merged_review_groups
+
+    def _promote_ai_reviews(
+        self,
+        review_groups: list[dict],
+        entities: list[_EntityRecord],
+        merged_ids: set[int],
+        min_confidence: float,
+    ) -> tuple[list[list[_EntityRecord]], list[dict], list[dict]]:
+        entity_by_node_id = {e.node_id: e for e in entities}
+        promoted_groups: list[list[_EntityRecord]] = []
+        remaining_reviews: list[dict] = []
+        promoted_reviews: list[dict] = []
+
+        for rg in review_groups:
+            llm_review = rg.get("llm_review") or {}
+            node_ids = rg.get("node_ids") or []
+            confidence = llm_review.get("confidence")
+            try:
+                confidence_value = float(confidence)
+            except (TypeError, ValueError):
+                confidence_value = 0.0
+
+            can_merge = (
+                llm_review.get("same_entity") is True
+                and llm_review.get("merge_allowed") is True
+                and confidence_value >= min_confidence
+                and len(node_ids) >= 2
+                and all(node_id not in merged_ids for node_id in node_ids)
+            )
+            if not can_merge:
+                remaining_reviews.append(rg)
+                continue
+
+            group = [
+                entity_by_node_id[node_id]
+                for node_id in node_ids
+                if node_id in entity_by_node_id
+            ]
+            if len(group) < 2:
+                remaining_reviews.append(rg)
+                continue
+
+            for entity in group:
+                merged_ids.add(entity.node_id)
+            rg["decision"] = "merge"
+            rg["reason"] = "llm_auto_merge"
+            promoted_groups.append(group)
+            promoted_reviews.append(rg)
+
+        return promoted_groups, remaining_reviews, promoted_reviews
 
     def _build_alias_groups(
         self,

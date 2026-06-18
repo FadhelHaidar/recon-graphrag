@@ -17,6 +17,7 @@ from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
 class FakeGraphStore:
     def __init__(self):
         self.queries = []
+        self.resolve_kwargs = None
 
     def execute_query(self, query, parameters=None):
         self.queries.append(query.strip())
@@ -35,6 +36,7 @@ class FakeGraphStore:
         pass
 
     async def resolve_entities(self, **kwargs):
+        self.resolve_kwargs = kwargs
         return {"skipped": False, "merged_groups": 0}
 
     def get_unembedded_entities(self, limit=500):
@@ -360,3 +362,34 @@ def test_hash_text():
     assert h1 == h2
     assert h1 != h3
     assert len(h1) == 64
+
+
+@pytest.mark.asyncio
+async def test_hybrid_entity_resolution_forwards_llm_and_embedder(movie_schema):
+    store = FakeGraphStore()
+    llm = MagicMock()
+    embedder = MagicMock()
+    aliases = {"Person": {"John Smith": ["Jon Smith"]}}
+    guidance = "Only merge people with clear evidence."
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=llm,
+        embedder=embedder,
+        schema=movie_schema,
+        entity_resolution_strategy="hybrid",
+        entity_resolution_aliases=aliases,
+        entity_resolution_llm_guidance=guidance,
+        allow_ai_auto_merge=True,
+    )
+
+    await pipeline._resolve_entities()
+
+    assert store.resolve_kwargs == {
+        "graph_name": "entity-graph",
+        "strategy": "hybrid",
+        "embedder": embedder,
+        "llm": llm,
+        "aliases": aliases,
+        "llm_guidance": guidance,
+        "allow_ai_auto_merge": True,
+    }

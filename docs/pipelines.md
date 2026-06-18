@@ -79,6 +79,17 @@ result = await pipeline.build_from_documents(documents)
 | `schema` | A `GraphSchema` defining entities, relationships, and patterns. |
 | `chunk_size` | Target size in characters for each text chunk. |
 | `chunk_overlap` | Overlap in characters between consecutive chunks. |
+| `entity_resolution_strategy` | Duplicate entity resolution strategy: `exact`, `normalized`, `fuzzy`, or `hybrid`. |
+| `entity_resolution_aliases` | Optional alias hints used by the `hybrid` entity resolution strategy. |
+| `entity_resolution_llm_guidance` | Optional guidance included in `hybrid` LLM review prompts. |
+| `allow_ai_auto_merge` | Optional. When `True` with `hybrid`, LLM-approved review candidates can be promoted into actual merge groups. Defaults to `False`. |
+
+When `entity_resolution_strategy="hybrid"`, the pipeline forwards its `embedder`
+and `llm` to the store-level resolver so hybrid resolution can use embedding
+scores and LLM review candidates. By default, LLM output is audit/review
+metadata only. Set `allow_ai_auto_merge=True` to merge candidates where the LLM
+returns `same_entity=true`, `merge_allowed=true`, and confidence meets the merge
+threshold.
 
 ### Tips
 

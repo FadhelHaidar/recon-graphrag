@@ -39,6 +39,9 @@ class GraphBuilderPipeline:
         graph_writer: Optional[GraphWriter] = None,
         perform_entity_resolution: bool = True,
         entity_resolution_strategy: str = "normalized",
+        entity_resolution_aliases: Optional[dict] = None,
+        entity_resolution_llm_guidance: Optional[str] = None,
+        allow_ai_auto_merge: bool = False,
         embed_entities: bool = True,
         fail_on_resolution_error: bool = False,
         fail_on_embedding_error: bool = False,
@@ -52,6 +55,9 @@ class GraphBuilderPipeline:
         self.graph_name = graph_name
         self.perform_entity_resolution = perform_entity_resolution
         self.entity_resolution_strategy = entity_resolution_strategy
+        self.entity_resolution_aliases = entity_resolution_aliases
+        self.entity_resolution_llm_guidance = entity_resolution_llm_guidance
+        self.allow_ai_auto_merge = allow_ai_auto_merge
         self.embed_entity_nodes = embed_entities
         self.fail_on_resolution_error = fail_on_resolution_error
         self.fail_on_embedding_error = fail_on_embedding_error
@@ -283,9 +289,22 @@ class GraphBuilderPipeline:
     async def _resolve_entities(self):
         """Step 2: Merge duplicate entities with the internal resolver."""
         try:
+            kwargs = {
+                "graph_name": self.graph_name,
+                "strategy": self.entity_resolution_strategy,
+            }
+            if self.entity_resolution_strategy == "hybrid":
+                kwargs.update(
+                    {
+                        "embedder": self.embedder,
+                        "llm": self.llm,
+                        "aliases": self.entity_resolution_aliases,
+                        "llm_guidance": self.entity_resolution_llm_guidance,
+                        "allow_ai_auto_merge": self.allow_ai_auto_merge,
+                    }
+                )
             result = await self.graph_store.resolve_entities(
-                graph_name=self.graph_name,
-                strategy=self.entity_resolution_strategy,
+                **kwargs,
             )
             if isinstance(result, dict) and result.get("skipped"):
                 print(f"Entity resolution skipped: reason={result.get('reason')}")
