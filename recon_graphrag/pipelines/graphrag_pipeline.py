@@ -9,6 +9,7 @@ are handled separately by the CommunityPipeline — typically on a schedule.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 from typing import Optional
@@ -37,6 +38,7 @@ class GraphBuilderPipeline:
         chunk_overlap: int = 200,
         graph_name: str = "entity-graph",
         graph_writer: Optional[GraphWriter] = None,
+        extraction_concurrency: int = 5,
         perform_entity_resolution: bool = True,
         entity_resolution_strategy: str = "normalized",
         entity_resolution_aliases: Optional[dict] = None,
@@ -53,6 +55,7 @@ class GraphBuilderPipeline:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.graph_name = graph_name
+        self.extraction_concurrency = extraction_concurrency
         self.perform_entity_resolution = perform_entity_resolution
         self.entity_resolution_strategy = entity_resolution_strategy
         self.entity_resolution_aliases = entity_resolution_aliases
@@ -217,23 +220,47 @@ class GraphBuilderPipeline:
         extraction_errors = {}
         total = len(chunks)
 
-        print(f"Starting extraction: document_id={document_id} chunks={total}")
+        print(
+            f"Starting extraction: document_id={document_id} chunks={total} "
+            f"concurrency={self.extraction_concurrency}"
+        )
 
-        for i, chunk in enumerate(chunks, start=1):
-            print(f"[{i}/{total}] Extracting chunk {chunk.id} ...")
-            try:
-                raw_extraction = await self.extractor.extract(
-                    text=chunk.text,
-                    schema=self.schema,
-                )
-                validated = self.validator.validate(raw_extraction, self.schema)
-                chunk_extractions[chunk.id] = validated
-                node_count = len(validated.nodes)
-                rel_count = len(validated.relationships)
-                print(f"  [{i}/{total}] ✓ chunk {chunk.id} extracted ({node_count} nodes, {rel_count} rels)")
-            except Exception as e:
-                extraction_errors[chunk.id] = e
-                print(f"  [{i}/{total}] ✗ chunk {chunk.id} failed")
+        semaphore = asyncio.Semaphore(self.extraction_concurrency)
+
+        async def _extract_one(i: int, chunk):
+            async with semaphore:
+                print(f"[{i}/{total}] Extracting chunk {chunk.id} ...")
+                try:
+                    raw_extraction = await self.extractor.extract(
+                        text=chunk.text,
+                        schema=self.schema,
+                    )
+                    validated = self.validator.validate(raw_extraction, self.schema)
+                    node_count = len(validated.nodes)
+                    rel_count = len(validated.relationships)
+                    print(
+                        f"  [{i}/{total}] ✓ chunk {chunk.id} extracted "
+                        f"({node_count} nodes, {rel_count} rels)"
+                    )
+                    return chunk.id, validated, None
+                except Exception as e:
+                    print(f"  [{i}/{total}] ✗ chunk {chunk.id} failed")
+                    return chunk.id, None, e
+
+        tasks = [
+            asyncio.create_task(_extract_one(i, chunk))
+            for i, chunk in enumerate(chunks, start=1)
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for item in results:
+            if isinstance(item, Exception):
+                raise item
+            chunk_id, validated, error = item
+            if error is not None:
+                extraction_errors[chunk_id] = error
+            else:
+                chunk_extractions[chunk_id] = validated
 
         print(
             f"Extraction complete: {len(chunk_extractions)}/{total} succeeded, "

@@ -17,8 +17,11 @@ class PipelineConfig:
         chunk_overlap: Overlap between consecutive chunks.
         embedding_dim: Vector embedding dimension. Auto-detected for
             sentence-transformers; defaults to 1536 (OpenAI) if not specified.
+        extraction_concurrency: Maximum number of chunks to extract concurrently.
+            Set to 1 to process chunks sequentially.
     """
 
     chunk_size: int = 1000
     chunk_overlap: int = 200
     embedding_dim: int | None = None
+    extraction_concurrency: int = 5

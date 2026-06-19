@@ -2,6 +2,7 @@
 
 from unittest.mock import AsyncMock, MagicMock
 
+import asyncio
 import pytest
 
 from recon_graphrag.extraction.schema import (
@@ -10,6 +11,7 @@ from recon_graphrag.extraction.schema import (
     PropertyType,
     RelationshipType,
 )
+from recon_graphrag.graphdb.memgraph.store import MemgraphGraphStore
 from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
 from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
 
@@ -302,15 +304,22 @@ def test_make_document_id_with_source():
     assert doc_id == "doc:my-doc"
 
 
-def test_graph_store_name_uses_neo4j_class_name():
+@pytest.mark.parametrize(
+    ("store_cls", "expected_name"),
+    [
+        (Neo4jGraphStore, "Neo4j"),
+        (MemgraphGraphStore, "Memgraph"),
+    ],
+)
+def test_graph_store_name_uses_backend_class_name(store_cls, expected_name):
     pipeline = GraphBuilderPipeline(
-        graph_store=Neo4jGraphStore(driver=MagicMock()),
+        graph_store=store_cls(driver=MagicMock()),
         llm=MagicMock(),
         embedder=MagicMock(),
         schema=_make_test_schema(),
     )
 
-    assert pipeline._graph_store_name() == "Neo4j"
+    assert pipeline._graph_store_name() == expected_name
 
 
 def test_graph_store_name_trims_graph_store_suffix():
@@ -393,3 +402,121 @@ async def test_hybrid_entity_resolution_forwards_llm_and_embedder(movie_schema):
         "llm_guidance": guidance,
         "allow_ai_auto_merge": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_extract_chunks_concurrently(
+    movie_schema, fake_llm, fake_embedder, fake_writer
+):
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=fake_llm,
+        embedder=fake_embedder,
+        schema=movie_schema,
+        graph_writer=fake_writer,
+        chunk_size=15,
+        chunk_overlap=5,
+        extraction_concurrency=3,
+        perform_entity_resolution=False,
+        embed_entities=False,
+    )
+
+    text = "Alice directed Inception in 2010 with Christopher Nolan. " * 3
+    result = await pipeline.build_from_text(text, metadata={"source": "test"})
+
+    assert result["extraction"]["chunks"] > 1
+    assert fake_llm.ainvoke.call_count == result["extraction"]["chunks"]
+    fake_writer.write_graph_document.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_concurrency_limit_respected(
+    movie_schema, fake_embedder, fake_writer
+):
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=MagicMock(),
+        embedder=fake_embedder,
+        schema=movie_schema,
+        graph_writer=fake_writer,
+        chunk_size=15,
+        chunk_overlap=5,
+        extraction_concurrency=2,
+        perform_entity_resolution=False,
+        embed_entities=False,
+    )
+
+    chunks = pipeline.chunker.chunk_text(
+        "Alice directed Inception in 2010 with Christopher Nolan. " * 3,
+        document_id="doc:test",
+        metadata={},
+    )
+    assert len(chunks) >= 4
+
+    active = 0
+    max_active = 0
+    lock = asyncio.Lock()
+
+    async def tracked_invoke(prompt):
+        nonlocal active, max_active
+        async with lock:
+            active += 1
+            max_active = max(max_active, active)
+        await asyncio.sleep(0.05)
+        async with lock:
+            active -= 1
+        return MagicMock(content='{"nodes": [], "relationships": []}')
+
+    pipeline.llm.ainvoke = AsyncMock(side_effect=tracked_invoke)
+
+    await pipeline._extract_and_write_chunks(
+        document_id="doc:test",
+        text_hash="hash",
+        chunks=chunks,
+        metadata={},
+    )
+
+    assert max_active <= 2
+
+
+@pytest.mark.asyncio
+async def test_partial_extraction_failure_continues(
+    movie_schema, fake_embedder, fake_writer
+):
+    store = FakeGraphStore()
+    llm = MagicMock()
+    call_count = 0
+
+    async def fail_second_extraction(prompt):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise RuntimeError("provider error")
+        return MagicMock(content='{"nodes": [], "relationships": []}')
+
+    llm.ainvoke = AsyncMock(side_effect=fail_second_extraction)
+
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=llm,
+        embedder=fake_embedder,
+        schema=movie_schema,
+        graph_writer=fake_writer,
+        chunk_size=15,
+        chunk_overlap=5,
+        extraction_concurrency=3,
+        perform_entity_resolution=False,
+        embed_entities=False,
+    )
+
+    text = "Alice directed Inception in 2010 with Christopher Nolan. " * 3
+    expected_chunks = len(
+        pipeline.chunker.chunk_text(text, document_id="doc:test", metadata={})
+    )
+    result = await pipeline.build_from_text(text, metadata={"source": "test"})
+
+    assert result["extraction"]["chunks"] == expected_chunks
+    assert llm.ainvoke.await_count == expected_chunks
+    assert fake_writer.write_graph_document.call_count == 1
