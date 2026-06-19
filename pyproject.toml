@@ -9,7 +9,7 @@ description = "Domain-agnostic GraphRAG SDK built on Neo4j — extraction, commu
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
-authors = [{name = "recon-graphrag contributors"}]
+authors = [{name = "Recon-GraphRAG contributors"}]
 keywords = ["graphrag", "neo4j", "knowledge-graph", "retrieval", "rag"]
 
 dependencies = [
@@ -28,11 +28,11 @@ all = ["openai>=1.0", "ollama", "sentence-transformers>=2.0"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 
 [project.urls]
-Homepage = "https://github.com/FadhelHaidar/recon-graphrag"
-Documentation = "https://github.com/FadhelHaidar/recon-graphrag#readme"
-Repository = "https://github.com/FadhelHaidar/recon-graphrag.git"
-Issues = "https://github.com/FadhelHaidar/recon-graphrag/issues"
-Changelog = "https://github.com/FadhelHaidar/recon-graphrag/blob/master/CHANGELOG.md"
+Homepage = "https://github.com/FadhelHaidar/Recon-GraphRAG"
+Documentation = "https://github.com/FadhelHaidar/Recon-GraphRAG#readme"
+Repository = "https://github.com/FadhelHaidar/Recon-GraphRAG.git"
+Issues = "https://github.com/FadhelHaidar/Recon-GraphRAG/issues"
+Changelog = "https://github.com/FadhelHaidar/Recon-GraphRAG/blob/master/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 include = ["recon_graphrag*"]

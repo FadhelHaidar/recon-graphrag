@@ -37,8 +37,8 @@ For questions, troubleshooting help, or general discussion, use GitHub Discussio
 1. Fork and clone the repository:
 
    ```bash
-   git clone https://github.com/YOUR_USERNAME/recon-graphrag.git
-   cd recon-graphrag
+   git clone https://github.com/YOUR_USERNAME/Recon-GraphRAG.git
+   cd Recon-GraphRAG
    ```
 
 2. Install dependencies. We recommend using `uv`:

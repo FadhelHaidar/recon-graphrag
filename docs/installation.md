@@ -19,8 +19,8 @@ The repository includes a ready-to-use Neo4j Enterprise container with APOC and 
 
 ```bash
 # Clone the repo
-git clone https://github.com/FadhelHaidar/recon-graphrag.git
-cd recon-graphrag
+git clone https://github.com/FadhelHaidar/Recon-GraphRAG.git
+cd Recon-GraphRAG
 
 # Copy and customize the environment file (optional)
 cp .env.example .env
@@ -64,7 +64,7 @@ If you prefer to use your own Neo4j instance:
 If you are using `uv` to manage your project, add Recon-GraphRAG from GitHub and let `uv` resolve and lock the dependencies:
 
 ```bash
-uv add git+https://github.com/FadhelHaidar/recon-graphrag.git
+uv add git+https://github.com/FadhelHaidar/Recon-GraphRAG.git
 uv sync
 ```
 
@@ -92,12 +92,12 @@ With `uv`:
 
 ```bash
 # All providers
-uv add "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/recon-graphrag.git"
+uv add "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git"
 
 # Individual providers
-uv add "recon-graphrag[openai] @ git+https://github.com/FadhelHaidar/recon-graphrag.git"
-uv add "recon-graphrag[ollama] @ git+https://github.com/FadhelHaidar/recon-graphrag.git"
-uv add "recon-graphrag[sentence-transformers] @ git+https://github.com/FadhelHaidar/recon-graphrag.git"
+uv add "recon-graphrag[openai] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git"
+uv add "recon-graphrag[ollama] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git"
+uv add "recon-graphrag[sentence-transformers] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git"
 
 uv sync
 ```
@@ -107,21 +107,21 @@ uv sync
 Pin to a specific release tag so your build stays reproducible:
 
 ```bash
-uv add git+https://github.com/FadhelHaidar/recon-graphrag.git@v0.1.1
+uv add git+https://github.com/FadhelHaidar/Recon-GraphRAG.git@v0.1.1
 uv sync
 ```
 
 With extras:
 
 ```bash
-uv add "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/recon-graphrag.git@v0.1.1"
+uv add "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git@v0.1.1"
 uv sync
 ```
 
 With `pip`:
 
 ```bash
-pip install "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/recon-graphrag.git@v0.1.1"
+pip install "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git@v0.1.1"
 ```
 
 ## Install with pip
@@ -129,7 +129,7 @@ pip install "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/recon-gra
 If you do not use `uv`:
 
 ```bash
-pip install git+https://github.com/FadhelHaidar/recon-graphrag.git
+pip install git+https://github.com/FadhelHaidar/Recon-GraphRAG.git
 ```
 
 ## Editable install for development
@@ -139,8 +139,8 @@ If you plan to change the Recon-GraphRAG library code itself, install it in edit
 With `uv`:
 
 ```bash
-git clone https://github.com/FadhelHaidar/recon-graphrag.git
-cd recon-graphrag
+git clone https://github.com/FadhelHaidar/Recon-GraphRAG.git
+cd Recon-GraphRAG
 
 # With all provider extras and dev dependencies
 uv pip install -e ".[all,dev]"
@@ -149,8 +149,8 @@ uv pip install -e ".[all,dev]"
 Or use the uv project workflow:
 
 ```bash
-git clone https://github.com/FadhelHaidar/recon-graphrag.git
-cd recon-graphrag
+git clone https://github.com/FadhelHaidar/Recon-GraphRAG.git
+cd Recon-GraphRAG
 uv sync --group dev
 uv run pytest -m "not integration"
 ```
@@ -158,8 +158,8 @@ uv run pytest -m "not integration"
 With `pip`:
 
 ```bash
-git clone https://github.com/FadhelHaidar/recon-graphrag.git
-cd recon-graphrag
+git clone https://github.com/FadhelHaidar/Recon-GraphRAG.git
+cd Recon-GraphRAG
 pip install -e ".[all,dev]"
 ```
 
@@ -168,7 +168,7 @@ pip install -e ".[all,dev]"
 You can also clone the repository and import it directly without running `pip install`, as long as your script runs from the parent directory of the cloned folder:
 
 ```bash
-# From your project root (above the recon-graphrag folder)
+# From your project root (above the Recon-GraphRAG folder)
 python your_script.py
 ```
 
@@ -200,14 +200,14 @@ You should see the installed version, for example:
 You are using a provider that requires an optional extra. Re-install with the appropriate extra:
 
 ```bash
-uv add "recon-graphrag[openai] @ git+https://github.com/FadhelHaidar/recon-graphrag.git"
+uv add "recon-graphrag[openai] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git"
 uv sync
 ```
 
 Or with `pip`:
 
 ```bash
-pip install "recon-graphrag[openai] @ git+https://github.com/FadhelHaidar/recon-graphrag.git"
+pip install "recon-graphrag[openai] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git"
 ```
 
 ### Neo4j connection errors

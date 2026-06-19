@@ -39,21 +39,21 @@ Neo4j with APOC and GDS is the reference backend.
 The package is not yet on PyPI. Install it directly from GitHub with `uv`:
 
 ```bash
-uv add git+https://github.com/FadhelHaidar/recon-graphrag.git
+uv add git+https://github.com/FadhelHaidar/Recon-GraphRAG.git
 uv sync
 ```
 
 With optional extras:
 
 ```bash
-uv add "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/recon-graphrag.git"
+uv add "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git"
 uv sync
 ```
 
 Pin to a specific release:
 
 ```bash
-uv add git+https://github.com/FadhelHaidar/recon-graphrag.git@v0.1.1
+uv add git+https://github.com/FadhelHaidar/Recon-GraphRAG.git@v0.1.1
 uv sync
 ```
 
