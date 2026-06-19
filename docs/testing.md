@@ -57,6 +57,7 @@ These tests may be slower, flaky if external services are unhealthy, and may inc
 | `tests/retrieval/` | Fake only | Fake only | No | Retrieval, ranking, and answer-generation flow using fake LLM/embedder/store. |
 | `tests/integration/test_azure_openai_env.py` | Yes | Yes | No | Real Azure OpenAI LLM and embedding endpoint checks. |
 | `tests/integration/test_openrouter_env.py` | Yes | Yes | No | Real OpenRouter LLM and embedding endpoint checks. |
+| `tests/integration/test_llm_extraction.py` | Yes | No | No | Real LLM entity extraction through `GraphBuilderPipeline` without a graph database. |
 | `tests/integration/neo4j/test_neo4j_entity_resolution_integration.py` | Optional | Optional | Yes | Real Neo4j entity resolution; real LLM/embedder only with the AI flag. |
 | `tests/integration/memgraph/test_memgraph_entity_resolution_integration.py` | Optional | Optional | Yes | The same entity-resolution scenarios against Memgraph. |
 | `tests/integration/neo4j/test_neo4j_community_detection_integration.py` | No | No | Yes | Weighted Leiden community detection through APOC/GDS. |
@@ -80,6 +81,7 @@ Meaning:
 | Mandatory unit tests | No | No | No | None |
 | Azure OpenAI endpoint checks | Yes | Yes | No | Provider calls |
 | OpenRouter endpoint checks | Yes | Yes | No | Provider calls |
+| LLM extraction integration | Yes | No | No | Provider calls |
 | Store persistence smoke | No | No | Yes | Database only |
 | Community detection integration | No | No | Yes | Database only |
 | Entity resolution without AI flag | No | No | Yes | Database only |
@@ -116,6 +118,16 @@ RUN_AZURE_OPENAI_INTEGRATION_TESTS=1 pytest tests/integration/test_azure_openai_
 
 # OpenRouter LLM and embedding endpoints
 RUN_OPENROUTER_INTEGRATION_TESTS=1 pytest tests/integration/test_openrouter_env.py
+```
+
+### LLM extraction without a database
+
+```bash
+# Azure OpenAI
+LLM_PROVIDER=azure_openai RUN_LLM_EXTRACTION_INTEGRATION_TESTS=1 pytest tests/integration/test_llm_extraction.py
+
+# OpenRouter
+LLM_PROVIDER=openrouter RUN_LLM_EXTRACTION_INTEGRATION_TESTS=1 pytest tests/integration/test_llm_extraction.py
 ```
 
 Database only, without real LLM or embedding calls:
@@ -195,6 +207,7 @@ In PowerShell, set the same values with `$env:NAME="value"` on separate lines be
 | Neo4j store, indexes, writer queries | `pytest tests/graphdb/neo4j tests/pipelines/neo4j` |
 | Memgraph store, indexes, writer queries | `pytest tests/graphdb/memgraph tests/pipelines/memgraph` |
 | Graph builder pipeline | `pytest tests/pipelines/test_graph_builder.py tests/extraction tests/graphdb` |
+| Real LLM extraction through pipeline | `LLM_PROVIDER=azure_openai RUN_LLM_EXTRACTION_INTEGRATION_TESTS=1 pytest tests/integration/test_llm_extraction.py` |
 | Community detection/embedding helpers | `pytest tests/communities` |
 | Retrieval or search behavior | `pytest tests/retrieval` |
 | Provider credentials or provider request shape | Run `pytest tests/llm tests/embeddings`, then the relevant provider integration test |
