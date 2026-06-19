@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/FadhelHaidar/Recon-GraphRAG/compare/v0.2.3...v0.3.0) (2026-06-19)
+
+
+### Features
+
+* add configurable concurrency to entity extraction ([03adc25](https://github.com/FadhelHaidar/Recon-GraphRAG/commit/03adc2576bd36b544eabefa812c9dfa3704e89eb))
+
 ## [0.2.3](https://github.com/FadhelHaidar/Recon-GraphRAG/compare/v0.2.2...v0.2.3) (2026-06-18)
 
 

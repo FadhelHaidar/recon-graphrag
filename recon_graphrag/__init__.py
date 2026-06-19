@@ -1,6 +1,6 @@
 """Recon-GraphRAG: a GraphRAG SDK for Neo4j and Memgraph."""
 
-__version__ = "0.2.3"
+__version__ = "0.3.0"
 
 # Pipelines
 from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
