@@ -29,6 +29,7 @@ pipeline = GraphBuilderPipeline(
     schema=schema,
     chunk_size=1000,            # text chunking size (default: 1000)
     chunk_overlap=200,          # overlap between chunks (default: 200)
+    extraction_concurrency=5,   # max chunks extracted in parallel (default: 5)
 )
 ```
 
@@ -79,6 +80,7 @@ result = await pipeline.build_from_documents(documents)
 | `schema` | A `GraphSchema` defining entities, relationships, and patterns. |
 | `chunk_size` | Target size in characters for each text chunk. |
 | `chunk_overlap` | Overlap in characters between consecutive chunks. |
+| `extraction_concurrency` | Maximum number of chunks to extract in parallel. Set to `1` for sequential extraction. |
 | `entity_resolution_strategy` | Duplicate entity resolution strategy: `exact`, `normalized`, `fuzzy`, or `hybrid`. |
 | `entity_resolution_aliases` | Optional alias hints used by the `hybrid` entity resolution strategy. |
 | `entity_resolution_llm_guidance` | Optional guidance included in `hybrid` LLM review prompts. |
