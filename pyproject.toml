@@ -43,6 +43,7 @@ asyncio_default_fixture_loop_scope = "function"
 pythonpath = ["."]
 markers = [
     "integration: tests that call external services and require explicit opt-in",
+    "characterization: tests that document current behavior, including known defects",
 ]
 
 [dependency-groups]

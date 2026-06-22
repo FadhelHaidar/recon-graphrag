@@ -11,3 +11,6 @@ build/
 .mypy_cache/
 .claude/
 plans/
+# Evaluation run outputs (fixtures and README are committed)
+evaluation/runs/*
+!evaluation/runs/.gitkeep

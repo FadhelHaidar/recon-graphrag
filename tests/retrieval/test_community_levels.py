@@ -98,6 +98,7 @@ def test_resolve_community_level_aliases():
     assert resolve_community_level(store, "entity-graph", None) is None
     assert resolve_community_level(store, "entity-graph", "all") is None
     assert resolve_community_level(store, "entity-graph", "finest") == 0
+    assert resolve_community_level(store, "entity-graph", 0) == 0
     assert resolve_community_level(store, "entity-graph", 1) == 1
     assert resolve_community_level(store, "entity-graph", "coarsest") == 2
 
