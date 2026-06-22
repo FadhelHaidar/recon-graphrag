@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from recon_graphrag.models.artifacts import ClaimRecord
+
 
 @dataclass
 class ExtractedNode:
@@ -81,3 +83,4 @@ class GraphDocument:
     entities: list[EntityRecord]
     relationships: list[RelationshipRecord]
     evidence_links: list[EvidenceLink]
+    claims: list[ClaimRecord] = field(default_factory=list)
