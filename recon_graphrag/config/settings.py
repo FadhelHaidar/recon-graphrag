@@ -58,6 +58,7 @@ class PipelineConfig:
     chunk_overlap: int = 200
     embedding_dim: int | None = None
     extraction_concurrency: int = 5
+    max_gleanings: int = 0
     budget: BudgetConfig | None = None
     token_counter: TokenCounter | None = None
 
@@ -68,3 +69,5 @@ class PipelineConfig:
             raise ValueError("chunk_overlap must be >= 0")
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError("chunk_overlap must be < chunk_size")
+        if self.max_gleanings < 0:
+            raise ValueError("max_gleanings must be >= 0")

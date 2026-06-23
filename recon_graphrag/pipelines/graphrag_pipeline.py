@@ -39,6 +39,7 @@ class GraphBuilderPipeline:
         graph_name: str = "entity-graph",
         graph_writer: Optional[GraphWriter] = None,
         extraction_concurrency: int = 5,
+        max_gleanings: int = 0,
         perform_entity_resolution: bool = True,
         entity_resolution_strategy: str = "normalized",
         entity_resolution_aliases: Optional[dict] = None,
@@ -56,6 +57,7 @@ class GraphBuilderPipeline:
         self.chunk_overlap = chunk_overlap
         self.graph_name = graph_name
         self.extraction_concurrency = extraction_concurrency
+        self.max_gleanings = max_gleanings
         self.perform_entity_resolution = perform_entity_resolution
         self.entity_resolution_strategy = entity_resolution_strategy
         self.entity_resolution_aliases = entity_resolution_aliases
@@ -234,6 +236,7 @@ class GraphBuilderPipeline:
                     raw_extraction = await self.extractor.extract(
                         text=chunk.text,
                         schema=self.schema,
+                        max_gleanings=self.max_gleanings,
                     )
                     validated = self.validator.validate(raw_extraction, self.schema)
                     node_count = len(validated.nodes)

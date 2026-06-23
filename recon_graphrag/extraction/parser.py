@@ -46,3 +46,18 @@ class GraphExtractionParser:
             return fenced.group(1).strip()
 
         return content
+
+
+class AssessmentParser:
+    """Parse a binary yes/no assessment response from the LLM."""
+
+    def parse(self, content: str) -> bool:
+        """Return True if the LLM indicates entities were missed."""
+        normalized = content.strip().lower()
+        # Check the first meaningful token
+        tokens = normalized.split()
+        if tokens and tokens[0] == "yes":
+            return True
+        if "yes" in normalized[:30]:
+            return True
+        return False
