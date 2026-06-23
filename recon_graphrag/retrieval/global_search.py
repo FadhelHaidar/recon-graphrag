@@ -1,9 +1,8 @@
 """Global search: community-summaries-based map-reduce retrieval.
 
-Finds relevant communities via vector search on summary embeddings, then uses
-a map-reduce pattern (Microsoft GraphRAG style):
-  - Map: Generate a partial answer from each community summary
-  - Reduce: Synthesize partial answers into a final coherent answer
+Supports two strategies:
+  - semantic (default): vector search top-k communities → sequential map → reduce
+  - paper: all-report, token-batched, scored, parallel map → reduce
 
 This enables answering broad, corpus-wide questions by aggregating insights
 across hierarchical community levels.
@@ -76,13 +75,26 @@ class GlobalSearchRetriever(BaseRetriever):
         top_k: int = 5,
         level: CommunityLevelSelector = None,
         community_level: CommunityLevelSelector = None,
+        strategy: str = "semantic",
+        random_seed: int | None = 42,
     ) -> SearchResult:
         """Run global search over community summaries.
 
-        1. Embed query → vector search on Community.summary embeddings
-        2. Map: LLM generates partial answer from each community summary
-        3. Reduce: LLM synthesizes all partial answers into final answer
+        Args:
+            query: User question.
+            top_k: Number of communities for semantic strategy.
+            level/community_level: Community hierarchy level.
+            strategy: "semantic" (vector top-k) or "paper" (all-report scored).
+            random_seed: Seed for paper strategy shuffling.
         """
+        if strategy == "paper":
+            return await self._paper_search(query, community_level or level, random_seed)
+        elif strategy != "semantic":
+            raise ValueError(
+                f"Unknown global strategy: '{strategy}'. Use 'semantic' or 'paper'."
+            )
+
+        # Semantic strategy (current behavior)
         selected_level = community_level if community_level is not None else level
         resolved_level = resolve_community_level(
             self.graph_store,
@@ -107,6 +119,34 @@ class GlobalSearchRetriever(BaseRetriever):
         partial_answers = await self._map_phase(query, communities)
         answer = await self._reduce_phase(query, partial_answers)
         return SearchResult(query=query, mode="global", answer=answer, context=context)
+
+    async def _paper_search(
+        self,
+        query: str,
+        selected_level: CommunityLevelSelector,
+        random_seed: int | None,
+    ) -> SearchResult:
+        """Run paper-style global search.
+
+        Uses paper-specific prompts (not semantic map/reduce prompts).
+        """
+        from recon_graphrag.retrieval.global_paper import PaperGlobalSearch
+
+        resolved_level = resolve_community_level(
+            self.graph_store,
+            self.graph_name,
+            selected_level,
+        )
+        paper = PaperGlobalSearch(
+            graph_store=self.graph_store,
+            llm=self.llm,
+            graph_name=self.graph_name,
+        )
+        return await paper.search(
+            query=query,
+            level=resolved_level,
+            random_seed=random_seed,
+        )
 
     async def _map_phase(
         self, query: str, communities: list[dict]
