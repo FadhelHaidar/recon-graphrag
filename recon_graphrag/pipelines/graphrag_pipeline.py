@@ -40,6 +40,7 @@ class GraphBuilderPipeline:
         graph_writer: Optional[GraphWriter] = None,
         extraction_concurrency: int = 5,
         max_gleanings: int = 0,
+        extract_claims: bool = False,
         perform_entity_resolution: bool = True,
         entity_resolution_strategy: str = "normalized",
         entity_resolution_aliases: Optional[dict] = None,
@@ -58,6 +59,7 @@ class GraphBuilderPipeline:
         self.graph_name = graph_name
         self.extraction_concurrency = extraction_concurrency
         self.max_gleanings = max_gleanings
+        self.extract_claims = extract_claims
         self.perform_entity_resolution = perform_entity_resolution
         self.entity_resolution_strategy = entity_resolution_strategy
         self.entity_resolution_aliases = entity_resolution_aliases
@@ -219,6 +221,7 @@ class GraphBuilderPipeline:
         metadata: dict,
     ) -> dict:
         chunk_extractions = {}
+        chunk_claims = {}
         extraction_errors = {}
         total = len(chunks)
 
@@ -245,10 +248,29 @@ class GraphBuilderPipeline:
                         f"  [{i}/{total}] OK chunk {chunk.id} extracted "
                         f"({node_count} nodes, {rel_count} rels)"
                     )
-                    return chunk.id, validated, None
+
+                    # Optionally extract claims
+                    claims = []
+                    if self.extract_claims and validated.nodes:
+                        entity_ids = [n.id for n in validated.nodes]
+                        try:
+                            claims = await self.extractor.extract_claims(
+                                text=chunk.text,
+                                entity_ids=entity_ids,
+                            )
+                            print(
+                                f"  [{i}/{total}] Claims chunk {chunk.id}: "
+                                f"{len(claims)} claims"
+                            )
+                        except Exception as ce:
+                            print(
+                                f"  [{i}/{total}] Claims chunk {chunk.id} failed: {ce}"
+                            )
+
+                    return chunk.id, validated, claims, None
                 except Exception as e:
                     print(f"  [{i}/{total}] FAIL chunk {chunk.id} failed")
-                    return chunk.id, None, e
+                    return chunk.id, None, [], e
 
         tasks = [
             asyncio.create_task(_extract_one(i, chunk))
@@ -259,11 +281,13 @@ class GraphBuilderPipeline:
         for item in results:
             if isinstance(item, Exception):
                 raise item
-            chunk_id, validated, error = item
+            chunk_id, validated, claims, error = item
             if error is not None:
                 extraction_errors[chunk_id] = error
             else:
                 chunk_extractions[chunk_id] = validated
+                if claims:
+                    chunk_claims[chunk_id] = claims
 
         print(
             f"Extraction complete: {len(chunk_extractions)}/{total} succeeded, "
@@ -277,6 +301,10 @@ class GraphBuilderPipeline:
                 f"First failure was for {first_chunk_id}: {first_error}"
             ) from first_error
 
+        total_claims = sum(len(c) for c in chunk_claims.values())
+        if total_claims:
+            print(f"Total claims extracted: {total_claims}")
+
         graph_document = self.assembler.assemble(
             document_id=document_id,
             text_hash=text_hash,
@@ -284,6 +312,7 @@ class GraphBuilderPipeline:
             chunk_extractions=chunk_extractions,
             metadata=metadata,
             graph_name=self.graph_name,
+            chunk_claims=chunk_claims if chunk_claims else None,
         )
 
         write_stats = self.graph_writer.write_graph_document(graph_document)

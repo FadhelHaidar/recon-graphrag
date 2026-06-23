@@ -8,11 +8,12 @@ from recon_graphrag.extraction.types import (
     DocumentRecord,
     EntityRecord,
     EvidenceLink,
+    ExtractedClaim,
     GraphDocument,
     GraphExtraction,
     RelationshipRecord,
 )
-from recon_graphrag.models.artifacts import DescriptionObservation, SourceReference
+from recon_graphrag.models.artifacts import ClaimRecord, DescriptionObservation, SourceReference
 
 
 # Maximum characters for consolidated entity descriptions.
@@ -28,10 +29,12 @@ class GraphDocumentAssembler:
         chunk_extractions: dict[str, GraphExtraction],
         metadata: dict,
         graph_name: str,
+        chunk_claims: dict[str, list[ExtractedClaim]] | None = None,
     ) -> GraphDocument:
         entities_by_id: dict[str, EntityRecord] = {}
         relationships_by_key: dict[tuple, RelationshipRecord] = {}
         evidence_links = []
+        claim_records: list[ClaimRecord] = []
 
         chunk_records = [
             ChunkRecord(
@@ -106,6 +109,23 @@ class GraphDocumentAssembler:
                         chunk.id
                     )
 
+            # Convert extracted claims to ClaimRecord
+            if chunk_claims:
+                for extracted_claim in chunk_claims.get(chunk.id, []):
+                    claim_id = _build_claim_id(
+                        document_id, chunk.id, extracted_claim
+                    )
+                    claim_records.append(
+                        ClaimRecord(
+                            id=claim_id,
+                            entity_id=extracted_claim.subject_entity_id,
+                            claim_type=extracted_claim.claim_type,
+                            description=extracted_claim.description,
+                            source=_build_source_ref(document_id, chunk, metadata),
+                            status=extracted_claim.status,
+                        )
+                    )
+
         # Consolidate descriptions into properties["description"]
         for entity in entities_by_id.values():
             consolidated = _consolidate_descriptions(entity.description_observations)
@@ -122,7 +142,19 @@ class GraphDocumentAssembler:
             entities=list(entities_by_id.values()),
             relationships=list(relationships_by_key.values()),
             evidence_links=evidence_links,
+            claims=claim_records,
         )
+
+
+def _build_claim_id(
+    document_id: str, chunk_id: str, claim: ExtractedClaim
+) -> str:
+    """Build a deterministic claim ID from document, chunk, and claim content."""
+    import hashlib
+
+    content = f"{claim.subject_entity_id}:{claim.claim_type}:{claim.description}"
+    short_hash = hashlib.sha256(content.encode()).hexdigest()[:12]
+    return f"claim:{document_id}:{chunk_id}:{short_hash}"
 
 
 def _build_source_ref(

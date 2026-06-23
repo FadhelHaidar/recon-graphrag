@@ -241,6 +241,18 @@ class GraphStore(Protocol):
         """Fetch child community summaries for a parent community."""
         ...
 
+    def get_claims_for_entities(
+        self,
+        graph_name: str,
+        entity_ids: list[str],
+    ) -> list[dict]:
+        """Fetch claims linked to the given entity IDs.
+
+        Returns rows with keys: claim_id, entity_id, claim_type, description,
+        status, chunk_id.
+        """
+        ...
+
     def get_community_summaries_by_keys(
         self,
         graph_name: str,

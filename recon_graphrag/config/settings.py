@@ -59,6 +59,7 @@ class PipelineConfig:
     embedding_dim: int | None = None
     extraction_concurrency: int = 5
     max_gleanings: int = 0
+    extract_claims: bool = False
     budget: BudgetConfig | None = None
     token_counter: TokenCounter | None = None
 

@@ -28,6 +28,18 @@ class ExtractedRelationship:
 
 
 @dataclass
+class ExtractedClaim:
+    """A claim extracted by the LLM before validation and persistence."""
+
+    subject_entity_id: str
+    claim_type: str
+    description: str
+    status: str = "active"
+    start_date: str | None = None
+    end_date: str | None = None
+
+
+@dataclass
 class GraphExtraction:
     nodes: list[ExtractedNode] = field(default_factory=list)
     relationships: list[ExtractedRelationship] = field(default_factory=list)

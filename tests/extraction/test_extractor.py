@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -267,3 +268,77 @@ async def test_gleaning_duplicate_entities_not_added():
     # No new items added
     assert len(result.nodes) == 2
     assert len(result.relationships) == 1
+
+
+# ---------------------------------------------------------------------------
+# Claim extraction tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_extract_claims_returns_claims():
+    """extract_claims makes one LLM call and returns parsed claims."""
+    claim_response = json.dumps([
+        {
+            "subject_entity_id": "person:alice",
+            "claim_type": "role",
+            "description": "Alice is the CEO.",
+            "status": "active",
+        }
+    ])
+
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(return_value=MagicMock(content=claim_response))
+
+    extractor = LLMGraphExtractor(llm)
+    claims = await extractor.extract_claims(
+        text="Alice runs the company.",
+        entity_ids=["person:alice"],
+    )
+
+    assert llm.ainvoke.call_count == 1
+    assert len(claims) == 1
+    assert claims[0].subject_entity_id == "person:alice"
+    assert claims[0].claim_type == "role"
+
+
+@pytest.mark.asyncio
+async def test_extract_claims_skips_unknown_entities():
+    """Claims referencing unknown entity IDs are filtered out."""
+    claim_response = json.dumps([
+        {
+            "subject_entity_id": "person:alice",
+            "claim_type": "role",
+            "description": "Alice is the CEO.",
+        },
+        {
+            "subject_entity_id": "person:unknown",
+            "claim_type": "role",
+            "description": "Unknown did something.",
+        },
+    ])
+
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(return_value=MagicMock(content=claim_response))
+
+    extractor = LLMGraphExtractor(llm)
+    claims = await extractor.extract_claims(
+        text="text",
+        entity_ids=["person:alice"],
+    )
+
+    assert len(claims) == 1
+    assert claims[0].subject_entity_id == "person:alice"
+
+
+@pytest.mark.asyncio
+async def test_extract_claims_empty_entity_ids_skips_call():
+    """No LLM call is made when entity_ids is empty."""
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock()
+
+    extractor = LLMGraphExtractor(llm)
+    claims = await extractor.extract_claims(text="text", entity_ids=[])
+
+    assert llm.ainvoke.call_count == 0
+    assert claims == []

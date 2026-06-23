@@ -35,6 +35,7 @@ class MemgraphGraphWriter:
         self._write_entities(graph_document.entities)
         self._write_evidence_links(graph_document.evidence_links)
         self._write_relationships(graph_document.relationships)
+        self._write_claims(graph_document.claims)
 
         return {
             "documents": 1,
@@ -42,6 +43,7 @@ class MemgraphGraphWriter:
             "entities": len(graph_document.entities),
             "relationships": len(graph_document.relationships),
             "evidence_links": len(graph_document.evidence_links),
+            "claims": len(graph_document.claims),
         }
 
     def _write_documents(self, documents: list) -> None:
@@ -195,3 +197,41 @@ class MemgraphGraphWriter:
                 """,
                 {"relationships": rows},
             )
+
+    def _write_claims(self, claims: list) -> None:
+        """Write Claim nodes with SUBJECT_OF and SOURCED_FROM edges."""
+        if not claims:
+            return
+
+        rows = [
+            {
+                "id": claim.id,
+                "entity_id": claim.entity_id,
+                "chunk_id": claim.source.chunk_id,
+                "claim_type": claim.claim_type,
+                "description": claim.description,
+                "status": claim.status,
+                "graph_name": claim.source.document_id,
+            }
+            for claim in claims
+        ]
+
+        self.graph_store.execute_query(
+            """
+            UNWIND $claims AS row
+            MERGE (c:Claim {id: row.id})
+            SET c.claim_type = row.claim_type,
+                c.description = row.description,
+                c.status = row.status,
+                c.graph_name = row.graph_name,
+                c.updated = timestamp(),
+                c.created = coalesce(c.created, timestamp())
+            WITH c, row
+            MATCH (e:__Entity__ {id: row.entity_id})
+            MERGE (c)-[:SUBJECT_OF]->(e)
+            WITH c, row
+            MATCH (ch:Chunk {id: row.chunk_id})
+            MERGE (c)-[:SOURCED_FROM]->(ch)
+            """,
+            {"claims": rows},
+        )

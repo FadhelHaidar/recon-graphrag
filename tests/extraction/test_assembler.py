@@ -2,7 +2,7 @@
 
 from recon_graphrag.extraction.assembler import GraphDocumentAssembler
 from recon_graphrag.extraction.chunking import TextChunk
-from recon_graphrag.extraction.types import GraphExtraction
+from recon_graphrag.extraction.types import ExtractedClaim, GraphExtraction
 from recon_graphrag.extraction.types import (
     ExtractedNode,
     ExtractedRelationship,
@@ -138,3 +138,119 @@ def test_assembler_skips_missing_extractions():
     )
     assert len(result.entities) == 0
     assert len(result.evidence_links) == 0
+
+
+def test_assembler_converts_claims_to_claim_records():
+    assembler = GraphDocumentAssembler()
+    chunks = [
+        TextChunk(id="c1", text="Alice is CEO.", index=0, metadata={}),
+    ]
+    extractions = {
+        "c1": GraphExtraction(
+            nodes=[
+                ExtractedNode(id="person:alice", label="Person", properties={"name": "Alice"}),
+            ],
+            relationships=[],
+        ),
+    }
+    chunk_claims = {
+        "c1": [
+            ExtractedClaim(
+                subject_entity_id="person:alice",
+                claim_type="role",
+                description="Alice is the CEO of Acme.",
+                status="active",
+            ),
+            ExtractedClaim(
+                subject_entity_id="person:alice",
+                claim_type="opinion",
+                description="Alice supports the merger.",
+                status="active",
+            ),
+        ],
+    }
+    result = assembler.assemble(
+        document_id="doc1",
+        text_hash="abc",
+        chunks=chunks,
+        chunk_extractions=extractions,
+        metadata={"source": "test"},
+        graph_name="entity-graph",
+        chunk_claims=chunk_claims,
+    )
+    assert len(result.claims) == 2
+    assert all(c.entity_id == "person:alice" for c in result.claims)
+    assert result.claims[0].claim_type == "role"
+    assert result.claims[1].claim_type == "opinion"
+    assert result.claims[0].source.document_id == "doc1"
+    assert result.claims[0].source.chunk_id == "c1"
+    # Claim IDs should be deterministic and unique
+    assert result.claims[0].id != result.claims[1].id
+
+
+def test_assembler_no_claims_when_none_provided():
+    assembler = GraphDocumentAssembler()
+    chunks = [
+        TextChunk(id="c1", text="Alice.", index=0, metadata={}),
+    ]
+    extractions = {
+        "c1": GraphExtraction(
+            nodes=[ExtractedNode(id="person:alice", label="Person", properties={})],
+            relationships=[],
+        ),
+    }
+    result = assembler.assemble(
+        document_id="doc1",
+        text_hash="abc",
+        chunks=chunks,
+        chunk_extractions=extractions,
+        metadata={},
+        graph_name="entity-graph",
+    )
+    assert result.claims == []
+
+
+def test_assembler_claims_from_multiple_chunks():
+    assembler = GraphDocumentAssembler()
+    chunks = [
+        TextChunk(id="c1", text="Alice.", index=0, metadata={}),
+        TextChunk(id="c2", text="Bob.", index=1, metadata={}),
+    ]
+    extractions = {
+        "c1": GraphExtraction(
+            nodes=[ExtractedNode(id="person:alice", label="Person", properties={})],
+            relationships=[],
+        ),
+        "c2": GraphExtraction(
+            nodes=[ExtractedNode(id="person:bob", label="Person", properties={})],
+            relationships=[],
+        ),
+    }
+    chunk_claims = {
+        "c1": [
+            ExtractedClaim(
+                subject_entity_id="person:alice",
+                claim_type="role",
+                description="Alice is CEO.",
+            ),
+        ],
+        "c2": [
+            ExtractedClaim(
+                subject_entity_id="person:bob",
+                claim_type="role",
+                description="Bob is CTO.",
+            ),
+        ],
+    }
+    result = assembler.assemble(
+        document_id="doc1",
+        text_hash="abc",
+        chunks=chunks,
+        chunk_extractions=extractions,
+        metadata={},
+        graph_name="entity-graph",
+        chunk_claims=chunk_claims,
+    )
+    assert len(result.claims) == 2
+    entity_ids = {c.entity_id for c in result.claims}
+    assert entity_ids == {"person:alice", "person:bob"}

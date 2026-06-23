@@ -206,3 +206,52 @@ Text:
             for rel in extraction.relationships:
                 lines.append(f"  - {rel.source_id} -[{rel.type}]-> {rel.target_id}")
         return "\n".join(lines) if lines else "(none)"
+
+    @staticmethod
+    def build_claim_prompt(
+        text: str,
+        entity_ids: list[str],
+    ) -> str:
+        """Build a prompt to extract claims/covariates about entities.
+
+        Args:
+            text: The source text to extract claims from.
+            entity_ids: IDs of entities already extracted from this text.
+                Claims must reference one of these IDs.
+
+        Returns:
+            Prompt string for claim extraction.
+        """
+        entity_list = "\n".join(f"  - {eid}" for eid in entity_ids)
+        return f"""
+You are extracting claims, assertions, and covariates about entities from text.
+
+Known entities (use these exact IDs as subject_entity_id):
+{entity_list}
+
+Rules:
+1. Extract only claims explicitly supported by the text.
+2. Each claim must have a subject_entity_id matching one of the known entities.
+3. claim_type should be a short label for the kind of claim (e.g. "role",
+   "status", "opinion", "action", "attribute", "event").
+4. description is the claim text as stated or implied by the source.
+5. status is "active" by default; use "resolved", "expired", or "rejected"
+   only if the text explicitly indicates a state change.
+6. Return valid JSON only. Do not include markdown.
+7. If there are no valid claims, return an empty array.
+
+JSON format:
+[
+  {{
+    "subject_entity_id": "person:example",
+    "claim_type": "role",
+    "description": "Example held the position of CEO.",
+    "status": "active",
+    "start_date": null,
+    "end_date": null
+  }}
+]
+
+Text:
+{text}
+""".strip()

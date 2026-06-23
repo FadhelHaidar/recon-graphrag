@@ -540,6 +540,33 @@ class Neo4jGraphStore:
         )
 
     # ------------------------------------------------------------------
+    # Claims
+    # ------------------------------------------------------------------
+    def get_claims_for_entities(
+        self,
+        graph_name: str,
+        entity_ids: list[str],
+    ) -> list[dict]:
+        if not entity_ids:
+            return []
+        query = """
+        UNWIND $entity_ids AS eid
+        MATCH (c:Claim)-[:SUBJECT_OF]->(e:__Entity__ {id: eid})
+        OPTIONAL MATCH (c)-[:SOURCED_FROM]->(ch:Chunk)
+        RETURN c.id AS claim_id,
+               e.id AS entity_id,
+               c.claim_type AS claim_type,
+               c.description AS description,
+               c.status AS status,
+               ch.id AS chunk_id
+        ORDER BY c.claim_type, c.id
+        """
+        return self.execute_query(
+            query,
+            {"entity_ids": entity_ids},
+        )
+
+    # ------------------------------------------------------------------
     # Stats / validation
     # ------------------------------------------------------------------
     def get_entity_count(self) -> int:

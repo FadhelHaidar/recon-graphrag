@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from recon_graphrag.extraction.parser import AssessmentParser, GraphExtractionParser
+from recon_graphrag.extraction.parser import AssessmentParser, ClaimParser, GraphExtractionParser
 from recon_graphrag.extraction.prompts import SchemaPromptBuilder
 from recon_graphrag.extraction.schema import GraphSchema
-from recon_graphrag.extraction.types import GraphExtraction
+from recon_graphrag.extraction.types import ExtractedClaim, GraphExtraction
 
 
 class LLMGraphExtractor:
@@ -14,6 +14,7 @@ class LLMGraphExtractor:
         self.prompt_builder = prompt_builder or SchemaPromptBuilder()
         self.parser = GraphExtractionParser()
         self.assessment_parser = AssessmentParser()
+        self.claim_parser = ClaimParser()
 
     async def extract(
         self,
@@ -67,6 +68,36 @@ class LLMGraphExtractor:
             current.relationships.extend(new_rels)
 
         return current
+
+    async def extract_claims(
+        self,
+        text: str,
+        entity_ids: list[str],
+    ) -> list[ExtractedClaim]:
+        """Extract claims/covariates about known entities.
+
+        This is a separate LLM call that runs after entity extraction.
+        Claims reference entity IDs already extracted from the same text.
+
+        Args:
+            text: Source text to extract claims from.
+            entity_ids: IDs of entities extracted from this text.
+
+        Returns:
+            List of validated ExtractedClaim instances.
+        """
+        if not entity_ids:
+            return []
+
+        prompt = SchemaPromptBuilder.build_claim_prompt(
+            text=text,
+            entity_ids=entity_ids,
+        )
+        response = await self.llm.ainvoke(prompt)
+        return self.claim_parser.parse(
+            response.content,
+            valid_entity_ids=set(entity_ids),
+        )
 
     async def _single_extract(self, text: str, schema: GraphSchema) -> GraphExtraction:
         """Run a single extraction call."""

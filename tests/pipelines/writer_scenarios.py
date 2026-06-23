@@ -228,6 +228,7 @@ def assert_writer_stats_and_query_shape(writer_cls) -> None:
         "entities": 3,
         "relationships": 2,
         "evidence_links": 1,
+        "claims": 0,
     }
     query_text = "\n".join(store.queries)
     for fragment in (
