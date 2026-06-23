@@ -118,3 +118,39 @@ RETURN DISTINCT e.name AS name, labels(e) AS labels,
 ORDER BY name
 LIMIT 50
 """
+
+# ------------------------------------------------------------------
+# Community summarization — degree-ranked context (Phase 4A)
+# ------------------------------------------------------------------
+COMMUNITY_RANKED_CONTEXT_QUERY = """
+MATCH (c:Community {
+    graph_name: $graph_name,
+    id: $cid,
+    level: $level
+})<-[:IN_COMMUNITY]-(e:__Entity__)
+OPTIONAL MATCH (e)-[r]-(other:__Entity__)
+WHERE (other)-[:IN_COMMUNITY]->(c)
+  AND id(e) < id(other)
+WITH e, r, other,
+     SIZE([(e)-[r1]-()
+       WHERE NOT type(r1) IN ['IN_COMMUNITY', 'FROM_CHUNK', 'SOURCED_FROM']
+     | r1]) AS e_degree,
+     SIZE([(other)-[r2]-()
+       WHERE NOT type(r2) IN ['IN_COMMUNITY', 'FROM_CHUNK', 'SOURCED_FROM']
+     | r2]) AS other_degree
+RETURN e.id AS e_id,
+       coalesce(e.name, e.id) AS e_name,
+       coalesce(e.description, '') AS e_description,
+       labels(e) AS e_labels,
+       e_degree,
+       type(r) AS rel_type,
+       coalesce(r.description, '') AS rel_description,
+       coalesce(r.observation_count, 1) AS observation_count,
+       e_degree + other_degree AS combined_degree,
+       other.id AS other_id,
+       coalesce(other.name, other.id) AS other_name,
+       coalesce(other.description, '') AS other_description,
+       labels(other) AS other_labels,
+       other_degree
+ORDER BY combined_degree DESC, observation_count DESC, type(r) ASC
+"""

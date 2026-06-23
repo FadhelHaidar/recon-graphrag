@@ -217,6 +217,20 @@ class GraphStore(Protocol):
         """Fetch entity and relationship rows for a community."""
         ...
 
+    def get_community_ranked_context(
+        self,
+        graph_name: str,
+        community_id: str,
+        level: int = 0,
+    ) -> list[dict]:
+        """Fetch degree-ranked entity and relationship rows for a community.
+
+        Returns rows with keys: e_id, e_name, e_description, e_labels, e_degree,
+        rel_type, rel_description, observation_count, combined_degree,
+        other_id, other_name, other_description, other_labels, other_degree.
+        """
+        ...
+
     def get_community_child_summary_context(
         self,
         graph_name: str,

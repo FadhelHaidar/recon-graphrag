@@ -10,6 +10,11 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Optional
 
+from recon_graphrag.communities.context import (
+    CommunityContext,
+    parse_community_context,
+    render_community_context,
+)
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM, LLMResponse
 
@@ -79,20 +84,34 @@ class CommunitySummarizer:
     def _fetch_community_context(self, community_id: str, level: int = 0) -> str:
         """Fetch context for a community.
 
-        Level 0: entities and intra-community relationships.
+        Level 0: degree-ranked entities and intra-community relationships.
         Level > 0: child community summaries first, then entity context fallback.
         """
         if level == 0:
-            return self._fetch_entity_context(community_id, level)
+            return self._fetch_ranked_entity_context(community_id, level)
 
         child_context = self._fetch_child_summary_context(community_id, level)
         if child_context.strip():
             return child_context
 
-        return self._fetch_entity_context(community_id, level)
+        return self._fetch_ranked_entity_context(community_id, level)
+
+    def _fetch_ranked_entity_context(self, community_id: str, level: int = 0) -> str:
+        """Fetch degree-ranked entity and relationship context."""
+        rows = self.graph_store.get_community_ranked_context(
+            graph_name=self.graph_name,
+            community_id=community_id,
+            level=level,
+        )
+        context = parse_community_context(community_id, level, rows)
+        return render_community_context(context)
 
     def _fetch_entity_context(self, community_id: str, level: int = 0) -> str:
-        """Fetch all entities and intra-community relationships as text."""
+        """Fetch all entities and intra-community relationships as text.
+
+        Legacy method using raw backend node objects. Kept for backward
+        compatibility during transition.
+        """
         results = self.graph_store.get_community_entity_context(
             graph_name=self.graph_name,
             community_id=community_id,

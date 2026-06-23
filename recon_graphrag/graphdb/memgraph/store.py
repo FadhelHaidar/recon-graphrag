@@ -519,6 +519,21 @@ class MemgraphGraphStore:
             {"graph_name": graph_name, "cid": community_id, "level": level},
         )
 
+    def get_community_ranked_context(
+        self,
+        graph_name: str,
+        community_id: str,
+        level: int = 0,
+    ) -> list[dict]:
+        from recon_graphrag.retrieval.memgraph.queries import (
+            COMMUNITY_RANKED_CONTEXT_QUERY,
+        )
+
+        return self.execute_query(
+            COMMUNITY_RANKED_CONTEXT_QUERY,
+            {"graph_name": graph_name, "cid": community_id, "level": level},
+        )
+
     def get_community_child_summary_context(
         self,
         graph_name: str,
