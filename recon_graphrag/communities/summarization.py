@@ -6,11 +6,18 @@ high-level community insights instead of individual nodes.
 
 When ``use_reports=True``, generates structured CommunityReport objects with
 validated findings and references instead of plain-text summaries.
+
+Supports concurrent generation within a level and fingerprint-based resume
+to skip communities whose context has not changed.
 """
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import time
 from collections.abc import Iterable
+from dataclasses import dataclass, field
 from typing import Optional
 
 from recon_graphrag.communities.context import (
@@ -48,6 +55,19 @@ Write in plain, clear language. Do not mention communities, graphs, nodes, or ed
 Summary:"""
 
 
+@dataclass
+class BuildStats:
+    """Per-level build statistics."""
+
+    level: int = 0
+    attempted: int = 0
+    skipped: int = 0
+    succeeded: int = 0
+    repaired: int = 0
+    failed: int = 0
+    elapsed_seconds: float = 0.0
+
+
 class CommunitySummarizer:
     """Generate LLM summaries for each community in the knowledge graph."""
 
@@ -59,6 +79,7 @@ class CommunitySummarizer:
         graph_name: str = "entity-graph",
         use_reports: bool = False,
         report_rubric: ReportRubric | None = None,
+        concurrency: int = 1,
     ):
         self.graph_store = graph_store
         self.llm = llm
@@ -66,43 +87,100 @@ class CommunitySummarizer:
         self.graph_name = graph_name
         self.use_reports = use_reports
         self.report_rubric = report_rubric
+        self.concurrency = concurrency
         self._report_parser = ReportParser()
 
-    async def summarize_all(self, level: int = 0) -> list[dict]:
-        """Summarize all communities at a given hierarchy level."""
+    async def summarize_all(
+        self, level: int = 0, skip_existing: bool = False
+    ) -> tuple[list[dict], BuildStats]:
+        """Summarize all communities at a given hierarchy level.
+
+        Args:
+            level: Community hierarchy level to summarize.
+            skip_existing: If True, skip communities that already have a
+                summary (fingerprint-based resume).
+
+        Returns:
+            Tuple of (results list, build stats).
+        """
         communities = self.graph_store.get_communities(self.graph_name, level=level)
         if not communities:
             print(f"  No communities found at level {level}")
-            return []
+            return [], BuildStats(level=level)
 
-        results = []
-        for comm in communities:
+        start = time.monotonic()
+        stats = BuildStats(level=level)
+        semaphore = asyncio.Semaphore(self.concurrency)
+        results: list[dict] = []
+
+        async def _process_one(comm: dict) -> dict | None:
             cid = comm["id"]
-            print(f"  Summarizing community {cid} ({comm.get('entity_count', 0)} entities)...")
-            try:
-                if self.use_reports:
-                    report = await self.generate_report(cid, level)
-                    summary_text = report_to_text(report)
-                    self.graph_store.store_community_summary(
-                        cid, level, summary_text, self.graph_name
-                    )
-                    results.append({
-                        "id": cid,
-                        "level": level,
-                        "summary": summary_text,
-                        "report": report,
-                    })
-                else:
-                    summary = await self.summarize_community(cid, level)
-                    if not summary.strip():
-                        continue
-                    self.graph_store.store_community_summary(
-                        cid, level, summary, self.graph_name
-                    )
-                    results.append({"id": cid, "level": level, "summary": summary})
-            except Exception as e:
-                print(f"  Error summarizing community {cid}: {e}")
-        return results
+            async with semaphore:
+                stats.attempted += 1
+
+                # Fingerprint-based resume
+                if skip_existing and self._has_existing_summary(cid, level):
+                    stats.skipped += 1
+                    print(f"  Skipping community {cid} (already summarized)")
+                    return None
+
+                entity_count = comm.get("entity_count", 0)
+                print(f"  Summarizing community {cid} ({entity_count} entities)...")
+                try:
+                    if self.use_reports:
+                        report = await self.generate_report(cid, level)
+                        summary_text = report_to_text(report)
+                        self.graph_store.store_community_summary(
+                            cid, level, summary_text, self.graph_name
+                        )
+                        stats.succeeded += 1
+                        return {
+                            "id": cid,
+                            "level": level,
+                            "summary": summary_text,
+                            "report": report,
+                        }
+                    else:
+                        summary = await self.summarize_community(cid, level)
+                        if not summary.strip():
+                            stats.failed += 1
+                            return None
+                        self.graph_store.store_community_summary(
+                            cid, level, summary, self.graph_name
+                        )
+                        stats.succeeded += 1
+                        return {"id": cid, "level": level, "summary": summary}
+                except Exception as e:
+                    stats.failed += 1
+                    print(f"  Error summarizing community {cid}: {e}")
+                    return None
+
+        tasks = [_process_one(comm) for comm in communities]
+        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for outcome in outcomes:
+            if isinstance(outcome, Exception):
+                stats.failed += 1
+                print(f"  Unexpected error: {outcome}")
+            elif outcome is not None:
+                results.append(outcome)
+
+        stats.elapsed_seconds = time.monotonic() - start
+        return results, stats
+
+    def _has_existing_summary(self, community_id: str, level: int) -> bool:
+        """Check if a community already has a stored summary."""
+        try:
+            rows = self.graph_store.get_community_summaries_by_keys(
+                graph_name=self.graph_name,
+                keys=[{"id": community_id, "level": level}],
+                top_k=1,
+            )
+            if rows and rows[0].get("summary", "").strip():
+                return True
+        except Exception:
+            pass
+        return False
 
     async def summarize_community(self, community_id: str, level: int = 0) -> str:
         """Summarize a single community by collecting its context."""

@@ -27,5 +27,7 @@ async def test_build_forwards_relationship_weight_property():
 
     result = await pipeline.build()
 
-    assert result == {"communities": 0, "summaries": 0, "levels": []}
+    assert result["communities"] == 0
+    assert result["summaries"] == 0
+    assert result["levels"] == []
     assert store.detect_kwargs["relationship_weight_property"] == "weight"

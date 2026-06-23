@@ -184,6 +184,7 @@ async def _run_smoke_pipeline(store, graph_name: str):
             relationship_types=COMMUNITY_RELATIONSHIP_TYPES,
             graph_name=graph_name,
             summary_prompt=COMMUNITY_SUMMARY_PROMPT,
+            summarize_concurrency=5,
         )
         community_result = await community.build()
         assert community_result.get("communities", 0) > 0
