@@ -67,6 +67,8 @@ class RelationshipRecord:
     type: str
     properties: dict[str, Any] = field(default_factory=dict)
     graph_name: str = "entity-graph"
+    observation_count: int = 1
+    strength: float | None = None
 
 
 @dataclass

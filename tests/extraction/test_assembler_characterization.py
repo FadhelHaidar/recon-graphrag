@@ -92,11 +92,13 @@ def test_entity_description_first_wins_no_merge():
     assert e1.properties["description"] == "desc from c1"
 
 
-def test_relationship_weight_aggregated():
+def test_relationship_observation_count_aggregated():
     doc = make_cross_chunk_graph_document()
     assert len(doc.relationships) == 1
     rel = doc.relationships[0]
-    assert rel.properties["weight"] == 3.0
+    assert rel.observation_count == 3
+    assert rel.strength == 1.0  # first extracted weight preserved
+    assert rel.properties["weight"] == 3.0  # backward compat alias
 
 
 def test_relationship_source_chunk_ids_accumulated():

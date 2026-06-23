@@ -65,6 +65,10 @@ class GraphDocumentAssembler:
                 key = (rel.source_id, rel.type, rel.target_id)
 
                 if key not in relationships_by_key:
+                    extracted_weight = rel.properties.get("weight")
+                    strength = (
+                        float(extracted_weight) if extracted_weight is not None else None
+                    )
                     relationships_by_key[key] = RelationshipRecord(
                         id=f"{rel.source_id}:{rel.type}:{rel.target_id}",
                         source_id=rel.source_id,
@@ -73,15 +77,16 @@ class GraphDocumentAssembler:
                         properties={
                             **rel.properties,
                             "source_chunk_ids": [chunk.id],
-                            "weight": float(rel.properties.get("weight", 1.0)),
+                            "weight": 1.0,
                         },
                         graph_name=graph_name,
+                        observation_count=1,
+                        strength=strength,
                     )
                 else:
                     existing = relationships_by_key[key]
-                    existing.properties["weight"] = (
-                        float(existing.properties.get("weight", 1.0)) + 1.0
-                    )
+                    existing.observation_count += 1
+                    existing.properties["weight"] = float(existing.observation_count)
                     existing.properties.setdefault("source_chunk_ids", []).append(
                         chunk.id
                     )
