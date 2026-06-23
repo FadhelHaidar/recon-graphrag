@@ -22,6 +22,7 @@ from typing import Optional
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.models.types import SearchResult
+from recon_graphrag.retrieval.citations import resolve_entity_citations
 from recon_graphrag.retrieval.community_levels import (
     CommunityLevelSelector,
     resolve_community_level,
@@ -130,6 +131,23 @@ class PaperSearchDiagnostics:
 # ---------------------------------------------------------------------------
 
 
+def _diag_to_dict(diag: PaperSearchDiagnostics) -> dict:
+    """Convert diagnostics to a plain dict for SearchResult.metadata."""
+    return {
+        "strategy": diag.strategy,
+        "selected_level": diag.selected_level,
+        "random_seed": diag.random_seed,
+        "reports_available": diag.reports_available,
+        "reports_used": diag.reports_used,
+        "map_batches": diag.map_batches,
+        "map_succeeded": diag.map_succeeded,
+        "map_failed": diag.map_failed,
+        "map_filtered_zero": diag.map_filtered_zero,
+        "reduce_partials_used": diag.reduce_partials_used,
+        "elapsed_ms": diag.elapsed_ms,
+    }
+
+
 class PaperGlobalSearch:
     """Paper-style global search with scored map-reduce."""
 
@@ -234,6 +252,7 @@ class PaperGlobalSearch:
                 query=query,
                 mode="global",
                 answer="No relevant information found in community reports.",
+                metadata=_diag_to_dict(diag),
             )
 
         # 7. Sort by helpfulness DESC
@@ -250,7 +269,28 @@ class PaperGlobalSearch:
             context_parts.append(f"[Batch {p.batch_id}] (score: {p.helpfulness})\n{p.answer}")
         context = "\n\n---\n\n".join(context_parts)
 
-        return SearchResult(query=query, mode="global", answer=answer, context=context)
+        # Resolve citations from used communities
+        citations = []
+        try:
+            used_report_ids = set()
+            for p in scored:
+                used_report_ids.update(p.report_ids)
+            entity_ids = self._get_community_entity_ids(list(used_report_ids))
+            if entity_ids:
+                citations = resolve_entity_citations(
+                    self.graph_store, entity_ids, self.graph_name
+                )
+        except Exception:
+            pass  # Citations are non-fatal
+
+        return SearchResult(
+            query=query,
+            mode="global",
+            answer=answer,
+            context=context,
+            metadata=_diag_to_dict(diag),
+            citations=citations,
+        )
 
     def _read_reports(self, level: int) -> list[dict]:
         """Read all community reports at a given level."""
@@ -263,6 +303,20 @@ class PaperGlobalSearch:
         return self.graph_store.execute_query(
             query, {"graph_name": self.graph_name, "level": level}
         )
+
+    def _get_community_entity_ids(self, report_ids: list[str]) -> list[str]:
+        """Get entity IDs belonging to the given community report IDs."""
+        if not report_ids:
+            return []
+        query = """
+        UNWIND $report_ids AS rid
+        MATCH (c:Community {id: rid})<-[:IN_COMMUNITY]-(e:__Entity__)
+        RETURN DISTINCT e.id AS entity_id
+        """
+        rows = self.graph_store.execute_query(
+            query, {"report_ids": report_ids}
+        )
+        return [r["entity_id"] for r in rows if r.get("entity_id")]
 
     @staticmethod
     def _shuffle(reports: list[dict], seed: int | None) -> list[dict]:

@@ -253,6 +253,17 @@ class GraphStore(Protocol):
         """
         ...
 
+    def resolve_chunk_citations(
+        self,
+        chunk_ids: list[str],
+    ) -> list[dict]:
+        """Resolve chunk IDs to citation metadata.
+
+        Returns rows with keys: chunk_id, document_id, document_name,
+        page_start, page_end, text (excerpt).
+        """
+        ...
+
     def get_community_summaries_by_keys(
         self,
         graph_name: str,

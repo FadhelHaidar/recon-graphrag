@@ -224,6 +224,19 @@ async def _run_smoke_pipeline(store, graph_name: str):
         for result in results:
             assert result.answer.strip(), f"Empty answer for {result.mode} search"
 
+        # Validate paper search diagnostics
+        paper_result = results[3]
+        assert paper_result.metadata.get("strategy") == "paper"
+        assert paper_result.metadata.get("reports_available", 0) > 0
+        assert paper_result.metadata.get("map_batches", 0) > 0
+        assert paper_result.metadata.get("elapsed_ms", 0) > 0
+        print(f"  Paper search diagnostics: {paper_result.metadata}")
+
+        # Validate semantic search metadata
+        semantic_result = results[1]
+        assert semantic_result.metadata.get("strategy") == "semantic"
+        assert semantic_result.metadata.get("communities_used", 0) > 0
+
         print(f"\n{'='*60}")
         print(f"SMOKE TEST PASSED ({graph_name})")
         print(f"{'='*60}")

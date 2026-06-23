@@ -611,6 +611,25 @@ class MemgraphGraphStore:
             {"entity_ids": entity_ids},
         )
 
+    def resolve_chunk_citations(
+        self,
+        chunk_ids: list[str],
+    ) -> list[dict]:
+        if not chunk_ids:
+            return []
+        query = """
+        UNWIND $chunk_ids AS cid
+        MATCH (c:Chunk {id: cid})
+        OPTIONAL MATCH (c)-[:PART_OF]->(d:Document)
+        RETURN c.id AS chunk_id,
+               d.id AS document_id,
+               d.title AS document_name,
+               c.page_start AS page_start,
+               c.page_end AS page_end,
+               substring(c.text, 0, 200) AS excerpt
+        """
+        return self.execute_query(query, {"chunk_ids": chunk_ids})
+
     # ------------------------------------------------------------------
     # Stats / validation
     # ------------------------------------------------------------------

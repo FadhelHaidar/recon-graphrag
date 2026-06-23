@@ -118,7 +118,15 @@ class GlobalSearchRetriever(BaseRetriever):
         context = self._format_communities(communities)
         partial_answers = await self._map_phase(query, communities)
         answer = await self._reduce_phase(query, partial_answers)
-        return SearchResult(query=query, mode="global", answer=answer, context=context)
+        return SearchResult(
+            query=query, mode="global", answer=answer, context=context,
+            metadata={
+                "strategy": "semantic",
+                "top_k": top_k,
+                "communities_used": len(communities),
+                "selected_level": resolved_level,
+            },
+        )
 
     async def _paper_search(
         self,
