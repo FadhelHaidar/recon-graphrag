@@ -1,15 +1,19 @@
-"""Full end-to-end smoke test with 5-page corpus.
+"""Backend-neutral end-to-end smoke test with 5-page corpus.
 
 Validates the complete pipeline: extraction -> aggregation -> community ->
 search, and checks that PR 5/6 features (observation_count, strength,
 description_observations) are populated correctly.
+
+Runs on both Neo4j and Memgraph when their respective run flags are set.
 """
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
-from examples.config import get_embedder, get_llm, get_neo4j_store
+from examples.config import get_embedder, get_llm, get_memgraph_store, get_neo4j_store
 from examples.prompts import (
     COMMUNITY_SUMMARY_PROMPT,
     DRIFT_ANSWER_PROMPT,
@@ -19,15 +23,10 @@ from examples.prompts import (
 )
 from examples.schema import COMMUNITY_RELATIONSHIP_TYPES, MOVIE_SCHEMA
 from recon_graphrag import CommunityPipeline, GraphBuilderPipeline, GraphRAG, IndexManager
-from recon_graphrag.extraction.assembler import DESCRIPTION_CONSOLIDATION_CAP
 from tests.integration.movie_smoke_support import cleanup_graph, close_resources, single_count
 from tests.integration.support import require_integration_env, require_selected_provider_env
 
-RUN_FLAG = "RUN_NEO4J_MOVIE_EXAMPLE_SMOKE_TESTS"
-GRAPH_NAME = "neo4j-smoke-full"
-REQUIRED_ENV = ["NEO4J_URL", "NEO4J_USERNAME", "NEO4J_PASSWORD"]
-
-# Reduced 5-page corpus covering key entities and cross-document observations
+# 5-page corpus covering key entities and cross-document observations
 SMOKE_PAGES = [
     # Page 1: Nolan, Interstellar, Hathaway, Zimmer
     """
@@ -64,34 +63,41 @@ SMOKE_PAGES = [
 ]
 
 
-@pytest.fixture
-def neo4j_store():
-    require_integration_env(
-        RUN_FLAG,
-        REQUIRED_ENV,
-        "Full smoke test",
-        fail_on_missing=True,
-    )
-    store = get_neo4j_store()
-    cleanup_graph(store, GRAPH_NAME)
-    yield store
-    # Cleanup handled by the test's finally block (close_resources)
+def _make_store_fixture(store_factory, run_flag, required_env, graph_name):
+    """Create a parameterized store fixture."""
+
+    @pytest.fixture
+    def fixture():
+        require_integration_env(run_flag, required_env, "Full smoke test", fail_on_missing=True)
+        store = store_factory()
+        cleanup_graph(store, graph_name)
+        yield store, graph_name
+
+    return fixture
 
 
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_full_smoke_pipeline(neo4j_store):
-    """Run full pipeline with 5-page corpus and validate all PR 5/6 features."""
-    require_integration_env(
-        RUN_FLAG,
-        REQUIRED_ENV,
-        "Full smoke test",
-        fail_on_missing=True,
-    )
-    llm_provider, embedder_provider = require_selected_provider_env("Full smoke test")
-    store = neo4j_store
-    llm = get_llm(llm_provider)
-    embedder = get_embedder(embedder_provider)
+# Neo4j fixture
+neo4j_smoke = _make_store_fixture(
+    get_neo4j_store,
+    "RUN_NEO4J_MOVIE_EXAMPLE_SMOKE_TESTS",
+    ["NEO4J_URL", "NEO4J_USERNAME", "NEO4J_PASSWORD"],
+    "smoke-full-neo4j",
+)
+
+# Memgraph fixture
+memgraph_smoke = _make_store_fixture(
+    get_memgraph_store,
+    "RUN_MEMGRAPH_MOVIE_EXAMPLE_SMOKE_TESTS",
+    ["MEMGRAPH_URL"],
+    "smoke-full-memgraph",
+)
+
+
+async def _run_smoke_pipeline(store, graph_name: str):
+    """Run the full pipeline and validate all features."""
+    require_selected_provider_env("Full smoke test")
+    llm = get_llm()
+    embedder = get_embedder()
 
     try:
         # --- Index setup ---
@@ -104,11 +110,11 @@ async def test_full_smoke_pipeline(neo4j_store):
             llm=llm,
             embedder=embedder,
             schema=MOVIE_SCHEMA,
-            graph_name=GRAPH_NAME,
+            graph_name=graph_name,
         )
         build_result = await builder.build_from_pages(
             SMOKE_PAGES,
-            metadata={"source": f"{GRAPH_NAME}-source"},
+            metadata={"source": f"{graph_name}-source"},
             window_size=2,
             window_overlap=1,
         )
@@ -121,7 +127,6 @@ async def test_full_smoke_pipeline(neo4j_store):
         # --- Validate PR 5/6 features: observation semantics ---
         writer_doc = build_result.get("graph_document")
         if writer_doc:
-            # Check that entities have description_observations
             entities_with_observations = [
                 e for e in writer_doc.entities if e.description_observations
             ]
@@ -129,7 +134,6 @@ async def test_full_smoke_pipeline(neo4j_store):
                 "Expected some entities to have description_observations"
             )
 
-            # Check that consolidated descriptions are non-empty for entities with descriptions
             for entity in writer_doc.entities:
                 if entity.description_observations:
                     has_non_empty = any(
@@ -140,13 +144,11 @@ async def test_full_smoke_pipeline(neo4j_store):
                             f"Entity {entity.id} has observations but empty consolidated description"
                         )
 
-            # Check that relationships have observation_count
             for rel in writer_doc.relationships:
                 assert rel.observation_count >= 1, (
                     f"Relationship {rel.id} has observation_count < 1"
                 )
 
-            # Check that source references have document_name
             for entity in entities_with_observations:
                 for obs in entity.description_observations:
                     assert obs.source.document_id, "Source missing document_id"
@@ -154,7 +156,7 @@ async def test_full_smoke_pipeline(neo4j_store):
 
         # --- Graph shape ---
         assert all(
-            single_count(store, q, GRAPH_NAME) > 0
+            single_count(store, q, graph_name) > 0
             for q in [
                 "MATCH (d:Document {graph_name: $graph_name}) RETURN count(d) AS count",
                 "MATCH (c:Chunk {graph_name: $graph_name}) RETURN count(c) AS count",
@@ -168,7 +170,7 @@ async def test_full_smoke_pipeline(neo4j_store):
             llm=llm,
             embedder=embedder,
             relationship_types=COMMUNITY_RELATIONSHIP_TYPES,
-            graph_name=GRAPH_NAME,
+            graph_name=graph_name,
             summary_prompt=COMMUNITY_SUMMARY_PROMPT,
         )
         community_result = await community.build()
@@ -176,7 +178,7 @@ async def test_full_smoke_pipeline(neo4j_store):
         assert community_result.get("summaries", 0) > 0
 
         # --- Search ---
-        graph_rag = GraphRAG(store, llm, embedder, graph_name=GRAPH_NAME)
+        graph_rag = GraphRAG(store, llm, embedder, graph_name=graph_name)
         graph_rag.local.answer_prompt = LOCAL_ANSWER_PROMPT
         graph_rag.global_.map_prompt = GLOBAL_MAP_PROMPT
         graph_rag.global_.reduce_prompt = GLOBAL_REDUCE_PROMPT
@@ -204,7 +206,7 @@ async def test_full_smoke_pipeline(neo4j_store):
             assert result.context.strip(), f"Empty context for {result.mode} search"
 
         print(f"\n{'='*60}")
-        print("SMOKE TEST PASSED")
+        print(f"SMOKE TEST PASSED ({graph_name})")
         print(f"{'='*60}")
         print(f"Build: {validation}")
         print(f"Communities: {community_result}")
@@ -213,3 +215,17 @@ async def test_full_smoke_pipeline(neo4j_store):
 
     finally:
         await close_resources(store, llm)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_smoke_neo4j(neo4j_smoke):
+    store, graph_name = neo4j_smoke
+    await _run_smoke_pipeline(store, graph_name)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_smoke_memgraph(memgraph_smoke):
+    store, graph_name = memgraph_smoke
+    await _run_smoke_pipeline(store, graph_name)
