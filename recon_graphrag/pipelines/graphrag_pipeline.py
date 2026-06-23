@@ -239,12 +239,12 @@ class GraphBuilderPipeline:
                     node_count = len(validated.nodes)
                     rel_count = len(validated.relationships)
                     print(
-                        f"  [{i}/{total}] ✓ chunk {chunk.id} extracted "
+                        f"  [{i}/{total}] OK chunk {chunk.id} extracted "
                         f"({node_count} nodes, {rel_count} rels)"
                     )
                     return chunk.id, validated, None
                 except Exception as e:
-                    print(f"  [{i}/{total}] ✗ chunk {chunk.id} failed")
+                    print(f"  [{i}/{total}] FAIL chunk {chunk.id} failed")
                     return chunk.id, None, e
 
         tasks = [
