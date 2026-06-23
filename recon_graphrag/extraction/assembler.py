@@ -123,6 +123,7 @@ class GraphDocumentAssembler:
                             description=extracted_claim.description,
                             source=_build_source_ref(document_id, chunk, metadata),
                             status=extracted_claim.status,
+                            graph_name=graph_name,
                         )
                     )
 

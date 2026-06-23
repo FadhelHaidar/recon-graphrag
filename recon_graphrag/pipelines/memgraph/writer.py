@@ -211,7 +211,7 @@ class MemgraphGraphWriter:
                 "claim_type": claim.claim_type,
                 "description": claim.description,
                 "status": claim.status,
-                "graph_name": claim.source.document_id,
+                "graph_name": claim.graph_name,
             }
             for claim in claims
         ]

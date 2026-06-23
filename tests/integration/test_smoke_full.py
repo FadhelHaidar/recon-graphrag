@@ -111,6 +111,7 @@ async def _run_smoke_pipeline(store, graph_name: str):
             embedder=embedder,
             schema=MOVIE_SCHEMA,
             graph_name=graph_name,
+            extract_claims=True,
         )
         build_result = await builder.build_from_pages(
             SMOKE_PAGES,
@@ -153,6 +154,17 @@ async def _run_smoke_pipeline(store, graph_name: str):
                 for obs in entity.description_observations:
                     assert obs.source.document_id, "Source missing document_id"
                     assert obs.source.chunk_id, "Source missing chunk_id"
+
+        # --- Validate claims (Phase 5A) ---
+        write_stats = build_result.get("extraction", {}).get("write_stats", {})
+        claims_written = write_stats.get("claims", 0)
+        print(f"Claims written: {claims_written}")
+
+        claim_count_query = "MATCH (c:Claim {graph_name: $graph_name}) RETURN count(c) AS count"
+        claim_count = single_count(store, claim_count_query, graph_name)
+        print(f"Claim nodes in graph: {claim_count}")
+        # Claims depend on LLM output; at minimum the pipeline should not crash
+        # when extract_claims=True
 
         # --- Graph shape ---
         assert all(

@@ -111,6 +111,7 @@ class ClaimRecord:
     description: str
     source: SourceReference
     status: str = "active"
+    graph_name: str = "entity-graph"
     created_at: str | None = None
 
 
