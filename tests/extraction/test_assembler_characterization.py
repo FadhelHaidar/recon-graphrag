@@ -1,14 +1,6 @@
-"""Characterization tests for GraphDocumentAssembler aggregation behavior.
-
-These tests document the current behavior of ``GraphDocumentAssembler`` so that
-later phases can change it intentionally. Tests that assert known-defect
-behavior are marked with ``pytest.mark.characterization`` and reference the
-Phase 2 aggregation/provenance plan.
-"""
+"""Tests for GraphDocumentAssembler aggregation and observation behavior."""
 
 from __future__ import annotations
-
-import pytest
 
 from recon_graphrag.extraction.assembler import GraphDocumentAssembler
 from recon_graphrag.extraction.chunking import TextChunk
@@ -83,13 +75,74 @@ def make_cross_chunk_graph_document(graph_name: str = "entity-graph"):
     )
 
 
-@pytest.mark.characterization(
-    reason="Entity properties are first-wins; Phase 2 will merge observations."
-)
-def test_entity_description_first_wins_no_merge():
+def test_entity_descriptions_accumulated_and_consolidated():
     doc = make_cross_chunk_graph_document()
     e1 = next(e for e in doc.entities if e.id == "e1")
-    assert e1.properties["description"] == "desc from c1"
+    # All three unique descriptions are consolidated
+    assert "desc from c1" in e1.properties["description"]
+    assert "desc from c2" in e1.properties["description"]
+    assert "desc from c3" in e1.properties["description"]
+    # Observations are preserved with provenance
+    assert len(e1.description_observations) == 3
+    assert e1.description_observations[0].source.chunk_id == "c1"
+    assert e1.description_observations[1].source.chunk_id == "c2"
+    assert e1.description_observations[2].source.chunk_id == "c3"
+
+
+def test_entity_empty_descriptions_excluded_from_consolidation():
+    assembler = _make_assembler()
+    chunks = [_chunk("c1", "Alice works at Acme.", index=0)]
+    extractions = {
+        "c1": GraphExtraction(
+            nodes=[_node("e1", ""), _node("e2", "Bob works here")],
+            relationships=[],
+        ),
+    }
+    doc = assembler.assemble(
+        document_id="doc1",
+        text_hash="hash",
+        chunks=chunks,
+        chunk_extractions=extractions,
+        metadata={},
+        graph_name="entity-graph",
+    )
+    e1 = next(e for e in doc.entities if e.id == "e1")
+    # Empty description excluded from consolidation
+    assert e1.properties["description"] == ""
+    assert len(e1.description_observations) == 1
+
+
+def test_entity_description_source_includes_document_metadata():
+    assembler = _make_assembler()
+    chunks = [_chunk("c1", "Alice works at Acme.", index=0)]
+    chunks[0].metadata = {"page_start": 5, "page_end": 6, "char_start": 0, "char_end": 20}
+    extractions = {
+        "c1": GraphExtraction(
+            nodes=[ExtractedNode(
+                id="e1",
+                label="Person",
+                properties={"name": "Alice", "description": "CEO"},
+            )],
+            relationships=[],
+        ),
+    }
+    doc = assembler.assemble(
+        document_id="doc1",
+        text_hash="hash",
+        chunks=chunks,
+        chunk_extractions=extractions,
+        metadata={"source": "Annual Report"},
+        graph_name="entity-graph",
+    )
+    e1 = doc.entities[0]
+    source = e1.description_observations[0].source
+    assert source.document_id == "doc1"
+    assert source.chunk_id == "c1"
+    assert source.document_name == "Annual Report"
+    assert source.page_start == 5
+    assert source.page_end == 6
+    assert source.char_start == 0
+    assert source.char_end == 20
 
 
 def test_relationship_observation_count_aggregated():

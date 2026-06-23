@@ -1,5 +1,7 @@
 """Assemble validated extractions into a GraphDocument."""
 
+from __future__ import annotations
+
 from recon_graphrag.extraction.chunking import TextChunk
 from recon_graphrag.extraction.types import (
     ChunkRecord,
@@ -10,6 +12,11 @@ from recon_graphrag.extraction.types import (
     GraphExtraction,
     RelationshipRecord,
 )
+from recon_graphrag.models.artifacts import DescriptionObservation, SourceReference
+
+
+# Maximum characters for consolidated entity descriptions.
+DESCRIPTION_CONSOLIDATION_CAP = 2000
 
 
 class GraphDocumentAssembler:
@@ -22,8 +29,8 @@ class GraphDocumentAssembler:
         metadata: dict,
         graph_name: str,
     ) -> GraphDocument:
-        entities_by_id = {}
-        relationships_by_key = {}
+        entities_by_id: dict[str, EntityRecord] = {}
+        relationships_by_key: dict[tuple, RelationshipRecord] = {}
         evidence_links = []
 
         chunk_records = [
@@ -44,15 +51,23 @@ class GraphDocumentAssembler:
                 continue
 
             for node in extraction.nodes:
-                entities_by_id.setdefault(
-                    node.id,
-                    EntityRecord(
+                if node.id not in entities_by_id:
+                    entities_by_id[node.id] = EntityRecord(
                         id=node.id,
                         type=node.label,
                         properties=node.properties,
                         graph_name=graph_name,
-                    ),
+                    )
+
+                # Accumulate description observation
+                description = node.properties.get("description", "")
+                observation = DescriptionObservation(
+                    entity_id=node.id,
+                    description=description,
+                    source=_build_source_ref(document_id, chunk, metadata),
                 )
+                entities_by_id[node.id].description_observations.append(observation)
+
                 evidence_links.append(
                     EvidenceLink(
                         chunk_id=chunk.id,
@@ -91,6 +106,11 @@ class GraphDocumentAssembler:
                         chunk.id
                     )
 
+        # Consolidate descriptions into properties["description"]
+        for entity in entities_by_id.values():
+            consolidated = _consolidate_descriptions(entity.description_observations)
+            entity.properties["description"] = consolidated
+
         return GraphDocument(
             document=DocumentRecord(
                 id=document_id,
@@ -103,3 +123,47 @@ class GraphDocumentAssembler:
             relationships=list(relationships_by_key.values()),
             evidence_links=evidence_links,
         )
+
+
+def _build_source_ref(
+    document_id: str, chunk: TextChunk, metadata: dict
+) -> SourceReference:
+    """Build a SourceReference from chunk metadata."""
+    return SourceReference(
+        document_id=document_id,
+        chunk_id=chunk.id,
+        document_name=metadata.get("title") or metadata.get("source"),
+        page_start=chunk.metadata.get("page_start"),
+        page_end=chunk.metadata.get("page_end"),
+        char_start=chunk.metadata.get("char_start"),
+        char_end=chunk.metadata.get("char_end"),
+    )
+
+
+def _consolidate_descriptions(
+    observations: list[DescriptionObservation],
+    cap: int = DESCRIPTION_CONSOLIDATION_CAP,
+) -> str:
+    """Deterministically consolidate description observations.
+
+    1. Collect non-empty, unique descriptions.
+    2. Sort by source document/chunk for determinism.
+    3. Join with "; " within a character cap.
+    """
+    seen: set[str] = set()
+    unique: list[DescriptionObservation] = []
+    for obs in observations:
+        normalized = obs.description.strip()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            unique.append(obs)
+
+    unique.sort(key=lambda o: (o.source.document_id, o.source.chunk_id))
+
+    parts = [o.description.strip() for o in unique]
+    result = "; ".join(parts)
+
+    if len(result) > cap:
+        result = result[:cap] + "..."
+
+    return result

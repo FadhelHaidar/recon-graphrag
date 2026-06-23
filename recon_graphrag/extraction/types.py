@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from recon_graphrag.models.artifacts import ClaimRecord
+from recon_graphrag.models.artifacts import ClaimRecord, DescriptionObservation
 
 
 @dataclass
@@ -57,6 +57,7 @@ class EntityRecord:
     type: str
     properties: dict[str, Any] = field(default_factory=dict)
     graph_name: str = "entity-graph"
+    description_observations: list[DescriptionObservation] = field(default_factory=list)
 
 
 @dataclass
