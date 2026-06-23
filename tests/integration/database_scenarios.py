@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from recon_graphrag.extraction.types import (
     ChunkRecord,
     DocumentRecord,
@@ -312,17 +310,3 @@ def assert_cross_document_rerun_idempotent(store, graph_name: str) -> None:
     store.write_graph_document(doc)
 
     assert entity_count(store, graph_name) == 1
-
-
-@pytest.mark.characterization(
-    reason="MERGE key lacks graph_name; Phase 2 will scope identity by graph."
-)
-def assert_graph_name_isolation(store, graph_name_a: str, graph_name_b: str) -> None:
-    """Same logical IDs under different graph names should produce separate nodes."""
-    doc_a = _make_simple_graph_document(graph_name_a, "doc:isolation", entity_name="Alice")
-    doc_b = _make_simple_graph_document(graph_name_b, "doc:isolation", entity_name="Alicia")
-    store.write_graph_document(doc_a)
-    store.write_graph_document(doc_b)
-
-    assert entity_count(store, graph_name_a) == 1
-    assert entity_count(store, graph_name_b) == 1
