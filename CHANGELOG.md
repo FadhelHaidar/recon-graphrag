@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/FadhelHaidar/Recon-GraphRAG/compare/v0.3.0...v0.4.0) (2026-06-24)
+
+
+### Features
+
+* **search:** page metadata propagation and citation metadata in LLM context ([#38](https://github.com/FadhelHaidar/Recon-GraphRAG/issues/38)) ([eb8f0da](https://github.com/FadhelHaidar/Recon-GraphRAG/commit/eb8f0da001615052528197401244e5256ac4a9cc))
+
 ## [0.3.0](https://github.com/FadhelHaidar/Recon-GraphRAG/compare/v0.2.3...v0.3.0) (2026-06-19)
 
 
