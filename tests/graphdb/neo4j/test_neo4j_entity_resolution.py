@@ -5,10 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from recon_graphrag.graphdb.neo4j.entity_resolution import (
-    ExactMatchEntityResolver,
-    _Neo4jEntityResolver,
-)
+from recon_graphrag.graphdb.neo4j.entity_resolution import _Neo4jEntityResolver
 
 
 class FakeGraphStore:
@@ -39,32 +36,6 @@ class FakeGraphStore:
 
     def upsert_vectors(self, **kwargs):
         pass
-
-
-# ------------------------------------------------------------------
-# ExactMatchEntityResolver backward compatibility
-# ------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_exact_resolver_skips_when_apoc_is_unavailable():
-    store = FakeGraphStore(apoc_available=False)
-    resolver = ExactMatchEntityResolver(store)
-    result = await resolver.run()
-    assert result["skipped"] is True
-    assert result["merged_groups"] == 0
-
-
-@pytest.mark.asyncio
-async def test_exact_resolver_merges_duplicate_entities_with_apoc():
-    store = FakeGraphStore(apoc_available=True)
-    resolver = ExactMatchEntityResolver(store)
-    result = await resolver.run()
-    assert result == {"skipped": False, "merged_groups": 2}
-    merge_query = store.calls[1][0]
-    assert "MATCH (e:__Entity__)" in merge_query
-    assert "e.`name` AS resolve_value" in merge_query
-    assert "graph_name, domain_label, resolve_value" in merge_query
-    assert "apoc.refactor.mergeNodes" in merge_query
 
 
 # ------------------------------------------------------------------

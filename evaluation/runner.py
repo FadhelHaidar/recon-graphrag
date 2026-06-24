@@ -2,9 +2,9 @@
 
 The runner supports two modes:
 
-- ``--fake``: deterministic fake LLM/embedder/graph-store run for CI. No external
+- ``--fake``: deterministic fake LLM/graph-store run for CI. No external
   services are called.
-- real (default): uses configured LLM/embedder and a provided graph store. This
+- real (default): uses configured LLM and a provided graph store. This
   mode is opt-in and documented in ``evaluation/README.md``.
 
 Each run writes a ``manifest.json`` plus ``results.jsonl`` under the output
@@ -22,7 +22,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from recon_graphrag._version import __version__, get_git_sha
-from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM, LLMResponse, LLMUsage
 from recon_graphrag.retrieval.global_search import GlobalSearchRetriever
@@ -54,14 +53,6 @@ class FakeLLM:
         )
 
 
-class FakeEmbedder:
-    """Deterministic fake embedder for CI baseline runs."""
-
-    async def async_embed_query(self, text: str, **kwargs) -> list[float]:
-        h = hashlib.sha256(text.encode()).hexdigest()
-        return [float(int(h[i : i + 2], 16)) / 255.0 for i in range(0, 16, 2)]
-
-
 class FakeGraphStore:
     """Minimal fake graph store that serves deterministic communities."""
 
@@ -71,6 +62,13 @@ class FakeGraphStore:
 
     def execute_query(self, query: str, parameters: dict | None = None):
         self.calls.append(("execute_query", {"query": query.strip(), "params": parameters or {}}))
+        params = parameters or {}
+        # Global search reads reports at a level
+        if "Community" in query and "report_text" in query:
+            level = params.get("level", 0)
+            return [
+                c for c in self._communities if c.get("level") == level
+            ]
         return []
 
     def search_communities(self, index_name, query_vector, graph_name, top_k, level=None):
@@ -161,7 +159,6 @@ async def run_baseline(
     output_dir: Path,
     graph_store: GraphStore | None = None,
     llm: BaseLLM | None = None,
-    embedder: BaseEmbedder | None = None,
     pipeline_config: PipelineConfigSnapshot | None = None,
     search_config: SearchConfigSnapshot | None = None,
     model_identifiers: dict | None = None,
@@ -169,8 +166,8 @@ async def run_baseline(
 ) -> RunManifest:
     """Run a baseline evaluation and write artifacts to ``output_dir``.
 
-    If ``graph_store``, ``llm``, and ``embedder`` are not provided, a fake
-    deterministic run is performed.
+    If ``graph_store`` and ``llm`` are not provided, a fake deterministic run
+    is performed.
     """
     corpus = _load_jsonl(corpus_path)
     questions = _load_jsonl(questions_path)
@@ -183,16 +180,14 @@ async def run_baseline(
     model_identifiers = model_identifiers or {}
     prompt_versions = prompt_versions or {}
 
-    fake_run = graph_store is None or llm is None or embedder is None
+    fake_run = graph_store is None or llm is None
     if fake_run:
         graph_store = FakeGraphStore(_make_fake_communities(corpus))
         llm = FakeLLM()
-        embedder = FakeEmbedder()
 
     retriever = GlobalSearchRetriever(
         graph_store=graph_store,
         llm=llm,
-        embedder=embedder,
     )
 
     run_id = uuid.uuid4().hex
@@ -210,29 +205,34 @@ async def run_baseline(
         try:
             search_result = await retriever.search(
                 question,
-                top_k=search_config.top_k,
                 level=search_config.level,
             )
             answer = search_result.answer
-            # Re-run retrieval to capture the raw retrieved contexts without
-            # changing the production SearchResult type.
-            query_vector = await embedder.async_embed_query(question)
-            raw_communities = graph_store.search_communities(
-                index_name=retriever.vector_index_name,
-                query_vector=query_vector,
-                graph_name=retriever.graph_name,
-                top_k=search_config.top_k,
-                level=search_config.level,
-            )
-            retrieved = [
-                RetrievedContext(
-                    community_id=str(c.get("id", "")),
-                    level=int(c.get("level", 0)),
-                    summary=str(c.get("summary", "")),
-                    score=float(c.get("score", 0.0)),
+            # Extract retrieved contexts from the search diagnostics
+            reports_used = search_result.metadata.get("reports_used", 0)
+            if reports_used > 0:
+                # Re-read reports for context capture
+                raw_communities = graph_store.execute_query(
+                    """
+                    MATCH (c:Community {graph_name: $graph_name, level: $level})
+                    WHERE coalesce(c.report_status, 'success') <> 'failed'
+                      AND coalesce(c.report_text, c.summary, '') <> ''
+                    RETURN c.id AS id,
+                           c.level AS level,
+                           coalesce(c.report_text, c.summary) AS summary
+                    ORDER BY c.id
+                    """,
+                    {"graph_name": retriever.graph_name, "level": search_config.level},
                 )
-                for c in raw_communities
-            ]
+                retrieved = [
+                    RetrievedContext(
+                        community_id=str(c.get("id", "")),
+                        level=int(c.get("level", 0)),
+                        summary=str(c.get("summary", "")),
+                        score=0.0,
+                    )
+                    for c in raw_communities[:search_config.top_k]
+                ]
         except Exception as exc:  # pragma: no cover - defensive
             errors.append(str(exc))
         elapsed = time.perf_counter() - start
@@ -289,7 +289,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--fake",
         action="store_true",
-        help="Use deterministic fake LLM/embedder/graph store for CI.",
+        help="Use deterministic fake LLM/graph store for CI.",
     )
     parser.add_argument("--top-k", type=int, default=5, help="Global search top_k")
     parser.add_argument("--level", type=int, default=None, help="Community level")
@@ -311,7 +311,7 @@ async def _async_main():
         )
     else:
         raise NotImplementedError(
-            "Real baseline runs require a configured graph store, LLM, and embedder. "
+            "Real baseline runs require a configured graph store and LLM. "
             "Use --fake for deterministic CI runs or wire your providers here."
         )
 

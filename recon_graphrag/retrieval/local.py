@@ -82,8 +82,6 @@ class LocalSearchRetriever(BaseRetriever):
         alpha: float | None = None,
         synthesize_citation_metadata: bool = False,
         synthesis_metadata_keys: list[str] | None = None,
-        include_citation_metadata: bool | None = None,
-        citation_metadata_keys: list[str] | None = None,
     ) -> SearchResult:
         """Run local search: vector search on entities → subgraph traversal → LLM answer."""
         retriever_result = await self._retriever.search(
@@ -95,21 +93,11 @@ class LocalSearchRetriever(BaseRetriever):
             ranker=ranker,
             alpha=alpha,
         )
-        synthesize_metadata = (
-            synthesize_citation_metadata
-            if include_citation_metadata is None
-            else include_citation_metadata
-        )
-        metadata_keys = (
-            synthesis_metadata_keys
-            if synthesis_metadata_keys is not None
-            else citation_metadata_keys
-        )
         citations = self._resolve_citations(retriever_result)
         context = self._format_context(
             retriever_result,
-            citations=citations if synthesize_metadata else None,
-            citation_metadata_keys=metadata_keys,
+            citations=citations if synthesize_citation_metadata else None,
+            citation_metadata_keys=synthesis_metadata_keys,
         )
         answer = await self._generate_answer(query, context)
         return SearchResult(

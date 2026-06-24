@@ -60,22 +60,6 @@ ORDER BY score DESC, title
 """
 
 # ------------------------------------------------------------------
-# Community summarization — entity context (level 0)
-# ------------------------------------------------------------------
-COMMUNITY_ENTITY_CONTEXT_QUERY = """
-MATCH (c:Community {
-    graph_name: $graph_name,
-    id: $cid,
-    level: $level
-})<-[:IN_COMMUNITY]-(e:__Entity__)
-OPTIONAL MATCH (e)-[r]-(other:__Entity__)
-WHERE (other)-[:IN_COMMUNITY]->(c)
-  AND id(e) < id(other)
-RETURN e, type(r) AS rel_type, other
-ORDER BY coalesce(e.name, e.description), rel_type, coalesce(other.name, other.description)
-"""
-
-# ------------------------------------------------------------------
 # Community summarization — child summary context (level > 0)
 # ------------------------------------------------------------------
 COMMUNITY_CHILD_SUMMARY_QUERY = """

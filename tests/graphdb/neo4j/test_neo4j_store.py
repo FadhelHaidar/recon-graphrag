@@ -274,7 +274,7 @@ def test_claim_and_citation_reads_are_graph_scoped():
     assert params == {"graph_name": "graph-a", "chunk_ids": ["chunk:1"]}
 
 
-def test_fetch_entity_context_uses_element_id():
+def test_local_context_uses_element_id():
     driver = FakeDriver()
     store = Neo4jGraphStore(driver)
 

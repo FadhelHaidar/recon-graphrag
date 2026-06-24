@@ -1,7 +1,6 @@
 """Neo4j-specific entity resolution implementations.
 
-Includes ExactMatchEntityResolver for backward compatibility and an internal
-_Neo4jEntityResolver that powers store.resolve_entities(...) with exact,
+_Neo4jEntityResolver powers store.resolve_entities(...) with exact,
 normalized, fuzzy, and hybrid strategies.
 """
 
@@ -83,53 +82,6 @@ class _EntityRecord:
     resolve_value: str
     normalized_value: str
     properties: dict = field(default_factory=dict)
-
-
-# ------------------------------------------------------------------
-# Exact match resolver (preserved for backward compatibility)
-# ------------------------------------------------------------------
-
-class ExactMatchEntityResolver:
-    """Merge duplicate entity nodes using APOC when available."""
-
-    def __init__(self, graph_store, resolve_property: str = "name"):
-        self.graph_store = graph_store
-        self.resolve_property = resolve_property
-
-    async def run(self) -> dict:
-        try:
-            self.graph_store.execute_query("RETURN apoc.version() AS version")
-        except Exception as exc:
-            return {
-                "skipped": True,
-                "reason": f"APOC is unavailable: {exc}",
-                "merged_groups": 0,
-            }
-
-        prop = escape_cypher_identifier(self.resolve_property)
-        result = self.graph_store.execute_query(
-            f"""
-            MATCH (e:__Entity__)
-            WHERE e.{prop} IS NOT NULL
-            WITH e,
-                 coalesce(e.graph_name, '') AS graph_name,
-                 e.{prop} AS resolve_value,
-                 [label IN labels(e) WHERE label <> '__Entity__'] AS domain_labels
-            UNWIND CASE
-                WHEN size(domain_labels) = 0 THEN ['__Entity__']
-                ELSE domain_labels
-            END AS domain_label
-            WITH graph_name, domain_label, resolve_value, collect(DISTINCT e) AS nodes
-            WHERE size(nodes) > 1
-            CALL apoc.refactor.mergeNodes(
-                nodes,
-                {{properties: 'combine', mergeRels: true}}
-            ) YIELD node
-            RETURN count(node) AS merged_groups
-            """
-        )
-        merged_groups = result[0].get("merged_groups", 0) if result else 0
-        return {"skipped": False, "merged_groups": merged_groups}
 
 
 # ------------------------------------------------------------------

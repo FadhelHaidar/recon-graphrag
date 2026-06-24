@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -24,9 +23,11 @@ from recon_graphrag.communities.context import (
     CommunityContext,
     enrich_context_with_claims,
     build_reference_ids,
+    pack_community_context,
     parse_community_context,
     render_community_context,
 )
+from recon_graphrag.utils.tokens import TokenCounter
 from recon_graphrag.communities.reports import (
     ReportParser,
     ReportRubric,
@@ -80,6 +81,8 @@ class CommunitySummarizer:
         use_reports: bool = False,
         report_rubric: ReportRubric | None = None,
         concurrency: int = 1,
+        max_context_tokens: int | None = None,
+        token_counter: TokenCounter | None = None,
     ):
         self.graph_store = graph_store
         self.llm = llm
@@ -88,6 +91,8 @@ class CommunitySummarizer:
         self.use_reports = use_reports
         self.report_rubric = report_rubric
         self.concurrency = concurrency
+        self.max_context_tokens = max_context_tokens
+        self.token_counter = token_counter
         self._report_parser = ReportParser()
 
     async def summarize_all(
@@ -225,8 +230,16 @@ class CommunitySummarizer:
         reference_ids = build_reference_ids(context)
         valid_ids = set(reference_ids)
 
-        # Render context text
-        context_text = render_community_context(context)
+        # Render context text (packed if budget is set)
+        if self.max_context_tokens is not None:
+            packed = pack_community_context(
+                context,
+                max_tokens=self.max_context_tokens,
+                counter=self.token_counter,
+            )
+            context_text = packed.text
+        else:
+            context_text = render_community_context(context)
 
         # Build prompt
         prompt = build_report_prompt(
@@ -325,70 +338,14 @@ class CommunitySummarizer:
             level=level,
         )
         context = parse_community_context(community_id, level, rows)
-        return render_community_context(context)
-
-    def _fetch_entity_context(self, community_id: str, level: int = 0) -> str:
-        """Fetch all entities and intra-community relationships as text.
-
-        Legacy method using raw backend node objects. Kept for backward
-        compatibility during transition.
-        """
-        results = self.graph_store.get_community_entity_context(
-            graph_name=self.graph_name,
-            community_id=community_id,
-            level=level,
-        )
-        lines = []
-        seen_entities = set()
-        for record in results:
-            entity = record["e"]
-            non_entity_labels = self._domain_labels(entity)
-            label = list(non_entity_labels)[0] if non_entity_labels else "Entity"
-            name = self._node_property(entity, "name") or self._node_property(
-                entity, "description"
+        if self.max_context_tokens is not None:
+            packed = pack_community_context(
+                context,
+                max_tokens=self.max_context_tokens,
+                counter=self.token_counter,
             )
-            key = f"{label}:{name}"
-            if key not in seen_entities:
-                lines.append(f"- [{label}] {name}")
-                seen_entities.add(key)
-
-            other = record["other"]
-            if other and record["rel_type"]:
-                other_name = self._node_property(other, "name") or self._node_property(
-                    other, "description"
-                )
-                lines.append(f"  {name} --[{record['rel_type']}]--> {other_name}")
-
-        return "\n".join(lines)
-
-    @staticmethod
-    def _domain_labels(entity) -> list[str]:
-        """Return labels excluding the internal entity marker."""
-        labels = getattr(entity, "labels", [])
-        if isinstance(labels, str):
-            labels = [labels]
-        elif not isinstance(labels, Iterable):
-            labels = []
-
-        return [label for label in labels if label != "__Entity__"]
-
-    @staticmethod
-    def _node_property(entity, key: str, default: str = ""):
-        """Read a node property from dict-like or backend node objects."""
-        if entity is None:
-            return default
-
-        if hasattr(entity, "get"):
-            return entity.get(key, default)
-
-        properties = getattr(entity, "properties", None)
-        if isinstance(properties, dict):
-            return properties.get(key, default)
-
-        try:
-            return entity[key]
-        except (KeyError, TypeError, AttributeError):
-            return default
+            return packed.text
+        return render_community_context(context)
 
     def _fetch_child_summary_context(self, community_id: str, level: int) -> str:
         """Fetch child community summaries for higher-level communities."""
