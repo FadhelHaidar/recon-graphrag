@@ -10,11 +10,8 @@ from recon_graphrag.models.artifacts import (
     CommunityReport,
     DescriptionObservation,
     DocumentSource,
-    PartialAnswer,
-    RelationshipObservation,
     SourceReference,
     citation_excerpt,
-    entity_ref,
     report_to_json,
     report_to_text,
     source_ref,
@@ -31,16 +28,13 @@ __all__ = [
     "DocumentSource",
     # Observation types
     "DescriptionObservation",
-    "RelationshipObservation",
     # Claim types
     "ClaimRecord",
     # Community report types
     "CommunityFinding",
     "ArtifactVersion",
     "CommunityReport",
-    "PartialAnswer",
     # Canonical rendering
-    "entity_ref",
     "source_ref",
     "report_to_json",
     "report_to_text",

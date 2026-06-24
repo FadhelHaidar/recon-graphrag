@@ -10,7 +10,6 @@ from recon_graphrag.communities.context import (
     pack_community_context,
     parse_community_context,
     render_community_context,
-    substitute_child_reports,
 )
 from recon_graphrag.utils.tokens import ApproximateTokenCounter
 
@@ -319,41 +318,3 @@ class TestPackCommunityContext:
         # Recount from actual text — allow ±1 token rounding difference
         actual_tokens = counter.count(packed.text)
         assert abs(packed.used_tokens - actual_tokens) <= 1
-
-
-class TestSubstituteChildReports:
-    def test_uses_raw_when_fits(self):
-        ctx = _make_large_context(3)
-        counter = ApproximateTokenCounter(ratio=4.0)
-        full_text = render_community_context(ctx)
-        full_tokens = counter.count(full_text)
-
-        result = substitute_child_reports(
-            ctx,
-            child_reports={},
-            max_tokens=full_tokens + 100,
-            counter=counter,
-        )
-
-        assert result.truncated is False
-        assert "Entity0" in result.text
-
-    def test_substitutes_when_raw_too_large(self):
-        ctx = _make_large_context(10)
-        counter = ApproximateTokenCounter(ratio=4.0)
-
-        # Child report is much smaller than raw context
-        child_reports = {
-            "child1": ("Summary of child community 1.", counter.count("Summary of child community 1.")),
-            "child2": ("Summary of child community 2.", counter.count("Summary of child community 2.")),
-        }
-
-        result = substitute_child_reports(
-            ctx,
-            child_reports=child_reports,
-            max_tokens=100,
-            counter=counter,
-        )
-
-        assert result.used_tokens <= 100
-        assert len(result.text) > 0

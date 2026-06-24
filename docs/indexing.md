@@ -29,7 +29,8 @@ These indexes power:
 
 - Semantic search over chunks and entities.
 - Keyword search over entity names.
-- Community summary retrieval.
+- Custom community-summary vector retrieval. Built-in global search reads all
+  reports at a selected level instead of using this index.
 
 ## When to create indexes
 

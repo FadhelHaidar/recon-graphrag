@@ -86,18 +86,6 @@ class DescriptionObservation:
     created_at: str | None = None
 
 
-@dataclass
-class RelationshipObservation:
-    """A single observation about a relationship."""
-
-    source_id: str
-    target_id: str
-    relationship_type: str
-    description: str
-    source: SourceReference
-    weight: float = 1.0
-    created_at: str | None = None
-
 
 # ---------------------------------------------------------------------------
 # Claim types
@@ -170,24 +158,10 @@ class CommunityReport:
     version: ArtifactVersion = field(default_factory=ArtifactVersion)
 
 
-@dataclass
-class PartialAnswer:
-    """A partial answer from one community during global search map phase."""
-
-    community_id: str
-    level: int
-    answer: str
-    token_usage: int | None = None
-
 
 # ---------------------------------------------------------------------------
 # Canonical rendering
 # ---------------------------------------------------------------------------
-
-
-def entity_ref(entity_id: str) -> str:
-    """Stable reference rendering for an entity."""
-    return f"[Entity:{entity_id}]"
 
 
 def source_ref(source: SourceReference) -> str:
@@ -236,7 +210,7 @@ def report_to_text(report: CommunityReport) -> str:
 
     Title, summary, rating (if present), and findings in stable order.
     This produces a stable text representation suitable for embedding models
-    and backward-compatible with semantic global search.
+    and community-report retrieval.
     """
     sorted_findings = sorted(report.findings, key=lambda f: (-f.rank, f.id))
     lines = []
@@ -275,14 +249,11 @@ __all__ = [
     "Citation",
     "DocumentSource",
     "DescriptionObservation",
-    "RelationshipObservation",
     "ClaimRecord",
     "FindingReference",
     "CommunityFinding",
     "ArtifactVersion",
     "CommunityReport",
-    "PartialAnswer",
-    "entity_ref",
     "source_ref",
     "report_to_json",
     "report_to_text",

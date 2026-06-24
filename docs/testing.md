@@ -206,7 +206,7 @@ pytest tests/integration/test_smoke_full.py
 
 The full smoke validates that extraction, optional claim extraction,
 aggregation, community detection, summarization, embeddings, local search,
-semantic global search, DRIFT, and paper global search run end to end on both
+global search and DRIFT run end to end on both
 backends. Because it uses live LLM output, it does not require nondeterministic
 behaviors such as `claims_written > 0` or non-empty answer citations. Those
 behavioral contracts are covered by focused tests.
@@ -216,8 +216,8 @@ Focused coverage for the gaps-with-paper alignment:
 | Behavior | Focused tests |
 | --- | --- |
 | Structured report persistence: `report_json`, `report_text`, `report_status` | `tests/graphdb/neo4j/test_neo4j_store.py`, `tests/graphdb/memgraph/test_memgraph_store.py`, `tests/communities/test_summarization.py` |
-| Graph-scoped claim and citation reads | `tests/graphdb/neo4j/test_neo4j_store.py`, `tests/graphdb/memgraph/test_memgraph_store.py`, `tests/retrieval/test_global_paper.py` |
-| Paper global explicit references and citations | `tests/retrieval/test_global_paper.py` |
+| Graph-scoped claim and citation reads | `tests/graphdb/neo4j/test_neo4j_store.py`, `tests/graphdb/memgraph/test_memgraph_store.py`, `tests/retrieval/test_global_search.py` |
+| Global explicit references and citations | `tests/retrieval/test_global_search.py` |
 | Local and DRIFT citations from source chunks | `tests/retrieval/test_hybrid.py`, `tests/retrieval/test_community_levels.py` |
 | Arbitrary source metadata on citations | `tests/models/test_artifacts.py`, `tests/retrieval/test_hybrid.py`, `tests/graphdb/neo4j/test_neo4j_store.py`, `tests/graphdb/memgraph/test_memgraph_store.py` |
 | Shared token packing API: `PackItem`, `PackResult`, `pack_items` | `tests/utils/test_tokens.py` |

@@ -536,21 +536,6 @@ class Neo4jGraphStore:
         """
         return self.execute_query(query, {"limit": limit})
 
-    def get_community_entity_context(
-        self,
-        graph_name: str,
-        community_id: str,
-        level: int = 0,
-    ) -> list[dict]:
-        from recon_graphrag.retrieval.neo4j.queries import (
-            COMMUNITY_ENTITY_CONTEXT_QUERY,
-        )
-
-        return self.execute_query(
-            COMMUNITY_ENTITY_CONTEXT_QUERY,
-            {"graph_name": graph_name, "cid": community_id, "level": level},
-        )
-
     def get_community_ranked_context(
         self,
         graph_name: str,

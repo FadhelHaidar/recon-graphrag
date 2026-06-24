@@ -651,12 +651,11 @@ from recon_graphrag.retrieval.global_search import GlobalSearchRetriever
 retriever = GlobalSearchRetriever(
     graph_store=store,
     llm=llm,
-    embedder=embedder,
     map_prompt=GLOBAL_MAP_PROMPT,
     reduce_prompt=GLOBAL_REDUCE_PROMPT,
     graph_name="entity-graph",
 )
-result = await retriever.search("What are the main themes?", top_k=5, community_level="coarsest")
+result = await retriever.search("What are the main themes?", community_level="coarsest")
 ```
 
 ### `DriftSearchRetriever`

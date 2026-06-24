@@ -15,11 +15,8 @@ from recon_graphrag.models.artifacts import (
     FindingReference,
     DescriptionObservation,
     DocumentSource,
-    PartialAnswer,
-    RelationshipObservation,
     SourceReference,
     citation_excerpt,
-    entity_ref,
     report_to_json,
     report_to_text,
     source_ref,
@@ -112,20 +109,6 @@ class TestDescriptionObservation:
         assert obs.source.document_id == "doc:1"
 
 
-class TestRelationshipObservation:
-    def test_construction(self):
-        source = SourceReference(document_id="doc:1", chunk_id="c1")
-        obs = RelationshipObservation(
-            source_id="e1",
-            target_id="e2",
-            relationship_type="WORKS_AT",
-            description="Alice works at Acme",
-            source=source,
-            weight=2.0,
-        )
-        assert obs.weight == 2.0
-        assert obs.relationship_type == "WORKS_AT"
-
 
 class TestClaimRecord:
     def test_construction(self):
@@ -182,25 +165,8 @@ class TestCommunityReport:
         assert report.summary == ""
 
 
-class TestPartialAnswer:
-    def test_construction(self):
-        pa = PartialAnswer(
-            community_id="c1",
-            level=0,
-            answer="partial answer",
-            token_usage=100,
-        )
-        assert pa.token_usage == 100
-
-    def test_default_token_usage_none(self):
-        pa = PartialAnswer(community_id="c1", level=0, answer="text")
-        assert pa.token_usage is None
-
 
 class TestCanonicalRendering:
-    def test_entity_ref(self):
-        assert entity_ref("person:ada") == "[Entity:person:ada]"
-
     def test_source_ref(self):
         ref = SourceReference(document_id="doc:1", chunk_id="c1")
         assert source_ref(ref) == "[Source:doc:1:c1]"

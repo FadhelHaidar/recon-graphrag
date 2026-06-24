@@ -64,21 +64,6 @@ RETURN node.name + ' (' + labels(node)[-1] + ')' AS title,
 """
 
 # ------------------------------------------------------------------
-# Community summarization — entity context (level 0)
-# ------------------------------------------------------------------
-COMMUNITY_ENTITY_CONTEXT_QUERY = """
-MATCH (c:Community {
-    graph_name: $graph_name,
-    id: $cid,
-    level: $level
-})<-[:IN_COMMUNITY]-(e:__Entity__)
-OPTIONAL MATCH (e)-[r]-(other:__Entity__)
-WHERE (other)-[:IN_COMMUNITY]->(c)
-  AND elementId(e) < elementId(other)
-RETURN e, type(r) AS rel_type, other
-"""
-
-# ------------------------------------------------------------------
 # Community summarization — child summary context (level > 0)
 # ------------------------------------------------------------------
 COMMUNITY_CHILD_SUMMARY_QUERY = """
