@@ -15,6 +15,7 @@ from recon_graphrag.communities.summarization import BuildStats, CommunitySummar
 from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM
+from recon_graphrag.utils.tokens import TokenCounter
 
 
 class CommunityPipeline:
@@ -38,6 +39,8 @@ class CommunityPipeline:
         report_rubric: ReportRubric | None = None,
         summarize_concurrency: int = 1,
         skip_existing: bool = False,
+        max_context_tokens: int | None = None,
+        token_counter: TokenCounter | None = None,
     ):
         """Initialize the community pipeline.
 
@@ -60,6 +63,11 @@ class CommunityPipeline:
             report_rubric: Rating rubric for structured reports.
             summarize_concurrency: Max concurrent LLM calls per level.
             skip_existing: Skip communities that already have a summary.
+            max_context_tokens: Maximum tokens for community context passed to the
+                LLM. When set, degree-ranked context is greedily packed to fit
+                this budget. When None, all context is included.
+            token_counter: Token counter for context packing. Defaults to
+                ApproximateTokenCounter when max_context_tokens is set.
         """
         self.graph_store = graph_store
         self.llm = llm
@@ -77,6 +85,8 @@ class CommunityPipeline:
         self.report_rubric = report_rubric
         self.summarize_concurrency = summarize_concurrency
         self.skip_existing = skip_existing
+        self.max_context_tokens = max_context_tokens
+        self.token_counter = token_counter
 
     async def build(self, level: Optional[int] = None) -> dict:
         """Run steps 4-6: detect communities, summarize, and embed.
@@ -123,6 +133,8 @@ class CommunityPipeline:
             use_reports=self.use_reports,
             report_rubric=self.report_rubric,
             concurrency=self.summarize_concurrency,
+            max_context_tokens=self.max_context_tokens,
+            token_counter=self.token_counter,
         )
         community_embedder = CommunityEmbedder(
             self.graph_store,

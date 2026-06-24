@@ -24,9 +24,11 @@ from recon_graphrag.communities.context import (
     CommunityContext,
     enrich_context_with_claims,
     build_reference_ids,
+    pack_community_context,
     parse_community_context,
     render_community_context,
 )
+from recon_graphrag.utils.tokens import TokenCounter
 from recon_graphrag.communities.reports import (
     ReportParser,
     ReportRubric,
@@ -80,6 +82,8 @@ class CommunitySummarizer:
         use_reports: bool = False,
         report_rubric: ReportRubric | None = None,
         concurrency: int = 1,
+        max_context_tokens: int | None = None,
+        token_counter: TokenCounter | None = None,
     ):
         self.graph_store = graph_store
         self.llm = llm
@@ -88,6 +92,8 @@ class CommunitySummarizer:
         self.use_reports = use_reports
         self.report_rubric = report_rubric
         self.concurrency = concurrency
+        self.max_context_tokens = max_context_tokens
+        self.token_counter = token_counter
         self._report_parser = ReportParser()
 
     async def summarize_all(
@@ -225,8 +231,16 @@ class CommunitySummarizer:
         reference_ids = build_reference_ids(context)
         valid_ids = set(reference_ids)
 
-        # Render context text
-        context_text = render_community_context(context)
+        # Render context text (packed if budget is set)
+        if self.max_context_tokens is not None:
+            packed = pack_community_context(
+                context,
+                max_tokens=self.max_context_tokens,
+                counter=self.token_counter,
+            )
+            context_text = packed.text
+        else:
+            context_text = render_community_context(context)
 
         # Build prompt
         prompt = build_report_prompt(
@@ -325,6 +339,13 @@ class CommunitySummarizer:
             level=level,
         )
         context = parse_community_context(community_id, level, rows)
+        if self.max_context_tokens is not None:
+            packed = pack_community_context(
+                context,
+                max_tokens=self.max_context_tokens,
+                counter=self.token_counter,
+            )
+            return packed.text
         return render_community_context(context)
 
     def _fetch_entity_context(self, community_id: str, level: int = 0) -> str:
