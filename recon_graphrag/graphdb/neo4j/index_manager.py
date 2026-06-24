@@ -11,10 +11,7 @@ from typing import Optional
 from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.neo4j.cypher import escape_cypher_identifier
-from recon_graphrag.graphdb.neo4j.entity_resolution import (
-    ExactMatchEntityResolver,
-    _Neo4jEntityResolver,
-)
+from recon_graphrag.graphdb.neo4j.entity_resolution import _Neo4jEntityResolver
 from recon_graphrag.models.types import IndexConfig
 
 

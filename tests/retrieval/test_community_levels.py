@@ -77,11 +77,6 @@ class FakeGraphStore:
         ]
 
 
-class FakeEmbedder:
-    async def async_embed_query(self, text):
-        return [0.1, 0.2, 0.3]
-
-
 class FakeLLM:
     def __init__(self):
         self.prompts = []
@@ -140,7 +135,7 @@ def test_resolve_community_level_rejects_negative_level():
 @pytest.mark.asyncio
 async def test_global_search_accepts_coarsest_alias():
     store = FakeGraphStore()
-    retriever = GlobalSearchRetriever(store, FakeLLM(), FakeEmbedder())
+    retriever = GlobalSearchRetriever(store, FakeLLM())
 
     result = await retriever.search("themes", community_level="coarsest")
 

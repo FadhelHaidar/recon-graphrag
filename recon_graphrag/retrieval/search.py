@@ -39,7 +39,6 @@ class GraphRAG:
         self.global_ = GlobalSearchRetriever(
             graph_store,
             llm,
-            embedder,
             graph_name=graph_name,
             token_counter=token_counter,
             map_budget_tokens=map_budget_tokens,
@@ -59,7 +58,7 @@ class GraphRAG:
             mode: One of "local", "global", "drift".
             **kwargs: Additional arguments passed to the specific retriever:
                 - local: top_k (int)
-                - global: top_k (int), level/community_level
+                - global: level/community_level
                   (int | "all" | "finest" | "coarsest")
                 - drift: top_k (int), community_top_k (int), community_level
                   (int | "all" | "finest" | "coarsest")

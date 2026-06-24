@@ -162,10 +162,8 @@ class GlobalSearchRetriever(BaseRetriever):
         self,
         graph_store: GraphStore,
         llm: BaseLLM,
-        embedder: BaseEmbedder,
         map_prompt: Optional[str] = None,
         reduce_prompt: Optional[str] = None,
-        vector_index_name: str = "community-embeddings",
         graph_name: str = "entity-graph",
         token_counter: TokenCounter | None = None,
         map_budget_tokens: int = 12000,
@@ -175,10 +173,8 @@ class GlobalSearchRetriever(BaseRetriever):
     ):
         self.graph_store = graph_store
         self.llm = llm
-        self.embedder = embedder
         self.map_prompt = map_prompt or DEFAULT_MAP_PROMPT
         self.reduce_prompt = reduce_prompt or DEFAULT_REDUCE_PROMPT
-        self.vector_index_name = vector_index_name
         self.graph_name = graph_name
         self.token_counter = token_counter or ApproximateTokenCounter()
         self.map_budget_tokens = map_budget_tokens
@@ -446,12 +442,24 @@ class GlobalSearchRetriever(BaseRetriever):
         fenced = re.search(r"```(?:json)?\s*(.*?)```", content, re.DOTALL)
         if fenced:
             content = fenced.group(1).strip()
-        data = json.loads(content)
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            data = self._extract_json_object(content)
+        if not isinstance(data, dict):
+            raise ValueError("Map response must be a JSON object")
 
         # Validate helpfulness range
         score = data.get("helpfulness", 0)
+        if isinstance(score, str):
+            try:
+                score = float(score)
+            except ValueError:
+                score = 0
         if not isinstance(score, (int, float)) or score < 0 or score > 100:
             data["helpfulness"] = 0
+        else:
+            data["helpfulness"] = int(score)
 
         allowed_types = {"entity", "relationship", "claim"}
         references = []
@@ -467,6 +475,19 @@ class GlobalSearchRetriever(BaseRetriever):
         data["references"] = references
 
         return data
+
+    @staticmethod
+    def _extract_json_object(content: str) -> dict:
+        """Extract the first JSON object from a response with surrounding prose."""
+        decoder = json.JSONDecoder()
+        for match in re.finditer(r"\{", content):
+            try:
+                data, _ = decoder.raw_decode(content[match.start() :])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict):
+                return data
+        raise ValueError("Map response did not contain a JSON object")
 
     # ------------------------------------------------------------------
     # Reduce phase

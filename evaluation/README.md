@@ -38,7 +38,7 @@ keys.
 
 ## Real-model baseline (opt-in)
 
-Real baseline runs require a configured graph store, LLM, and embedder. Wire
+Real baseline runs require a configured graph store and LLM. Wire
 your providers into `evaluation.runner.run_baseline(...)` and call it directly;
 there is no required real-model command in CI.
 

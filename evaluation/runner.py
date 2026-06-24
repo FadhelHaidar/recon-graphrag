@@ -2,9 +2,9 @@
 
 The runner supports two modes:
 
-- ``--fake``: deterministic fake LLM/embedder/graph-store run for CI. No external
+- ``--fake``: deterministic fake LLM/graph-store run for CI. No external
   services are called.
-- real (default): uses configured LLM/embedder and a provided graph store. This
+- real (default): uses configured LLM and a provided graph store. This
   mode is opt-in and documented in ``evaluation/README.md``.
 
 Each run writes a ``manifest.json`` plus ``results.jsonl`` under the output
@@ -22,7 +22,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from recon_graphrag._version import __version__, get_git_sha
-from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM, LLMResponse, LLMUsage
 from recon_graphrag.retrieval.global_search import GlobalSearchRetriever
@@ -52,14 +51,6 @@ class FakeLLM:
             content=content,
             usage=LLMUsage(request_tokens=0, response_tokens=0, total_tokens=0),
         )
-
-
-class FakeEmbedder:
-    """Deterministic fake embedder for CI baseline runs."""
-
-    async def async_embed_query(self, text: str, **kwargs) -> list[float]:
-        h = hashlib.sha256(text.encode()).hexdigest()
-        return [float(int(h[i : i + 2], 16)) / 255.0 for i in range(0, 16, 2)]
 
 
 class FakeGraphStore:
@@ -168,7 +159,6 @@ async def run_baseline(
     output_dir: Path,
     graph_store: GraphStore | None = None,
     llm: BaseLLM | None = None,
-    embedder: BaseEmbedder | None = None,
     pipeline_config: PipelineConfigSnapshot | None = None,
     search_config: SearchConfigSnapshot | None = None,
     model_identifiers: dict | None = None,
@@ -176,8 +166,8 @@ async def run_baseline(
 ) -> RunManifest:
     """Run a baseline evaluation and write artifacts to ``output_dir``.
 
-    If ``graph_store``, ``llm``, and ``embedder`` are not provided, a fake
-    deterministic run is performed.
+    If ``graph_store`` and ``llm`` are not provided, a fake deterministic run
+    is performed.
     """
     corpus = _load_jsonl(corpus_path)
     questions = _load_jsonl(questions_path)
@@ -190,16 +180,14 @@ async def run_baseline(
     model_identifiers = model_identifiers or {}
     prompt_versions = prompt_versions or {}
 
-    fake_run = graph_store is None or llm is None or embedder is None
+    fake_run = graph_store is None or llm is None
     if fake_run:
         graph_store = FakeGraphStore(_make_fake_communities(corpus))
         llm = FakeLLM()
-        embedder = FakeEmbedder()
 
     retriever = GlobalSearchRetriever(
         graph_store=graph_store,
         llm=llm,
-        embedder=embedder,
     )
 
     run_id = uuid.uuid4().hex
@@ -301,7 +289,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--fake",
         action="store_true",
-        help="Use deterministic fake LLM/embedder/graph store for CI.",
+        help="Use deterministic fake LLM/graph store for CI.",
     )
     parser.add_argument("--top-k", type=int, default=5, help="Global search top_k")
     parser.add_argument("--level", type=int, default=None, help="Community level")
@@ -323,7 +311,7 @@ async def _async_main():
         )
     else:
         raise NotImplementedError(
-            "Real baseline runs require a configured graph store, LLM, and embedder. "
+            "Real baseline runs require a configured graph store and LLM. "
             "Use --fake for deterministic CI runs or wire your providers here."
         )
 

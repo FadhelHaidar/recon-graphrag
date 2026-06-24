@@ -50,61 +50,87 @@ written:
 result = await graph_rag.search(
     "Who directed Inception?",
     mode="local",
-    include_citation_metadata=True,
-    citation_metadata_keys=["record_id", "collection"],
+    synthesize_citation_metadata=True,
+    synthesis_metadata_keys=["record_id", "collection"],
 )
 ```
 
 ## Global Search
 
-Global search answers broad questions from community reports. It supports two
-strategies.
+Global search answers broad questions from community reports. It is an
+all-report map/reduce flow over one resolved community level:
 
-### Semantic Strategy
-
-`strategy="semantic"` is the default. It embeds the query, retrieves the top-k
-community summaries from the `community-embeddings` vector index, then maps and
-reduces those summaries into one answer.
-
-```python
-result = await graph_rag.search(
-    "What are the main themes in this dataset?",
-    mode="global",
-    strategy="semantic",
-    top_k=5,
-    community_level="coarsest",
-)
+```text
+resolve level
+  -> read all successful reports at that level
+  -> shuffle reports with random_seed
+  -> pack reports into map batches using map_budget_tokens
+  -> run one LLM map call per batch, concurrently
+  -> filter map answers with helpfulness == 0
+  -> sort remaining partial answers by helpfulness DESC
+  -> pack partial answers using reduce_budget_tokens
+  -> run one LLM reduce call for the final answer
+  -> resolve citations from map references
 ```
 
-| Parameter | Description |
-| --- | --- |
-| `top_k` | Number of communities to include. |
-| `level` / `community_level` | Which community level to search. |
-
-Semantic global preserves the lower-cost legacy behavior and may return an
-empty citation list.
-
-### Paper Strategy
-
-`strategy="paper"` reads all eligible successful reports at one resolved
-community level, shuffles them with a reproducible seed, packs them into token
-batches, scores map outputs for helpfulness, filters/sorts partial answers, and
-reduces the highest-scoring partials.
-
 ```python
 result = await graph_rag.search(
     "What are the main themes in this dataset?",
     mode="global",
-    strategy="paper",
     community_level="coarsest",
     random_seed=42,
 )
 ```
 
-Paper strategy ignores vector community top-k retrieval. It requires a selected
-level and skips failed or empty community reports.
+| Parameter | Description |
+| --- | --- |
+| `level` / `community_level` | Which community level to search. Use `"coarsest"` when you do not know the numeric levels. |
+| `random_seed` | Seed for reproducible report shuffling. Defaults to `42`. |
+| `map_budget_tokens` | Constructor option on `GlobalSearchRetriever`; maximum report text packed into one map prompt. |
+| `reduce_budget_tokens` | Constructor option on `GlobalSearchRetriever`; maximum partial-answer text packed into the final reduce prompt. |
 
-Paper global citations resolve only explicit map-phase references to entities,
+Global search does not embed the user query, query the
+`community-embeddings` vector index, choose communities by vector similarity,
+or traverse raw entity nodes at query time. It reads stored
+`Community.report_text` / `Community.summary` values directly from the graph.
+
+One map batch means one map LLM call, followed by one reduce LLM call:
+
+```text
+3 reports, each ~2k tokens
+map_budget_tokens=12000
+
+batch 0 = reports [c2, c1, c3]
+
+LLM calls:
+  map(batch 0)
+  reduce(partial answers)
+```
+
+Multiple map batches means multiple map LLM calls, usually concurrent, followed
+by one reduce LLM call:
+
+```text
+10 reports, each ~2k tokens
+map_budget_tokens=6000
+
+batch 0 = reports [c8, c1, c4]
+batch 1 = reports [c9, c2, c6]
+batch 2 = reports [c5, c3, c7]
+batch 3 = reports [c10]
+
+LLM calls:
+  map(batch 0), map(batch 1), map(batch 2), map(batch 3)
+  reduce(sorted partial answers)
+```
+
+`community_level="coarsest"` resolves to the highest level currently stored in
+the graph, so callers do not need to know whether the database has levels
+`0..1`, `0..2`, or something else.
+
+Global search skips failed or empty community reports.
+
+Global citations resolve only explicit map-phase references to entities,
 relationships, or claims. It does not cite every source in every used community.
 
 ## DRIFT Search
@@ -130,8 +156,8 @@ result = await graph_rag.search(
 
 DRIFT returns citations for the retrieved local source chunks. Community-summary
 citations are a separate extension point.
-Like local search, DRIFT accepts `include_citation_metadata=True` and optional
-`citation_metadata_keys=[...]` to include compact citation metadata in the
+Like local search, DRIFT accepts `synthesize_citation_metadata=True` and optional
+`synthesis_metadata_keys=[...]` to include compact citation metadata in the
 answer synthesis context.
 
 ## Citations And Sources
@@ -184,9 +210,9 @@ The same keys are returned on `citation.metadata`, so callers can use
 page metadata exists.
 
 Citation metadata is normally returned in the response envelope after answer
-synthesis. For Local and DRIFT search, set `include_citation_metadata=True` to
+synthesis. For Local and DRIFT search, set `synthesize_citation_metadata=True` to
 also include compact citation metadata in the LLM context. Use
-`citation_metadata_keys` to keep that prompt context small.
+`synthesis_metadata_keys` to keep that prompt context small.
 
 Current citation behavior:
 
@@ -194,9 +220,8 @@ Current citation behavior:
   document/chunk citations.
 - **DRIFT** includes the same local evidence citations alongside community
   context.
-- **Paper global** resolves validated map references with `target_type` of
+- **Global** resolves validated map references with `target_type` of
   `entity`, `relationship`, or `claim`.
-- **Semantic global** may return an empty citation list.
 
 Citation resolution is graph-scoped. A query on one `graph_name` will not resolve
 chunks, claims, or entities from another graph.
@@ -210,12 +235,10 @@ and monitoring:
 result = await graph_rag.search(
     "What are the main themes?",
     mode="global",
-    strategy="paper",
     community_level="coarsest",
 )
 print(result.metadata)
 # {
-#   "strategy": "paper",
 #   "selected_level": 1,
 #   "random_seed": 42,
 #   "reports_available": 5,
@@ -233,16 +256,14 @@ Common keys across modes:
 
 | Key | Modes | Meaning |
 | --- | --- | --- |
-| `strategy` | global | `"semantic"` or `"paper"` |
-| `communities_used` | global/semantic | Number of communities retrieved |
-| `reports_available` | global/paper | Total reports at the selected level |
-| `reports_used` | global/paper | Reports that passed quality filters |
-| `map_batches` | global/paper | Number of map-phase batches |
-| `map_succeeded` | global/paper | Batches that produced a partial answer |
-| `map_failed` | global/paper | Batches that errored |
-| `map_filtered_zero` | global/paper | Batches filtered for zero helpfulness |
-| `reduce_partials_used` | global/paper | Partial answers included in reduce |
-| `elapsed_ms` | global/paper | Total wall-clock time |
+| `reports_available` | global | Total reports at the selected level |
+| `reports_used` | global | Reports that passed quality filters |
+| `map_batches` | global | Number of map-phase batches |
+| `map_succeeded` | global | Batches that produced a partial answer |
+| `map_failed` | global | Batches that errored |
+| `map_filtered_zero` | global | Batches filtered for zero helpfulness |
+| `reduce_partials_used` | global | Partial answers included in reduce |
+| `elapsed_ms` | global | Total wall-clock time |
 
 Diagnostics are read-only. Use them for logging, dashboards, or tuning search
 parameters.
@@ -289,6 +310,24 @@ Passing `level=0` does not mean "most global" in this codebase. It means
 "finest / most local community summaries." For Microsoft-style global summaries,
 prefer `community_level="coarsest"`.
 
+`community_level="all"` means "no level filter" for APIs that support it.
+Built-in global search does not run across every level at once; it requires one
+resolved level.
+
+## Token Budgets
+
+There are three separate token budgets. They happen at different times:
+
+| Setting | Where | When | What it controls |
+| --- | --- | --- | --- |
+| `max_context_tokens` | `CommunityPipeline` / `CommunitySummarizer` | Indexing time | How much entity, relationship, and claim context fits into one community report-generation prompt. |
+| `map_budget_tokens` | `GlobalSearchRetriever` | Query time | How many stored community reports fit into one map prompt. |
+| `reduce_budget_tokens` | `GlobalSearchRetriever` | Query time | How many scored partial answers fit into the final reduce prompt. |
+
+`max_context_tokens` shapes the report that gets stored on a `Community`.
+`map_budget_tokens` and `reduce_budget_tokens` shape how those already-stored
+reports are read during global search. They do not overlap.
+
 ## Customization
 
 Each retriever exposes prompt attributes that you can override for
@@ -302,14 +341,16 @@ graph_rag.local.answer_prompt = (
 )
 ```
 
-### Semantic Global Prompts
+### Global Map/Reduce Prompts
 
 ```python
 graph_rag.global_.map_prompt = (
-    "Based on this report segment about films, answer: {query}\n\nSegment: {summary}"
+    "Answer from this batch of community reports.\n\n"
+    "Question: {query}\n\nReports:\n{batch_text}"
 )
 graph_rag.global_.reduce_prompt = (
-    "Synthesize these film perspectives:\n{partial_answers}\n\nQuestion: {query}"
+    "Synthesize these partial answers.\n\n"
+    "Question: {query}\n\nPartials:\n{partial_text}"
 )
 ```
 
@@ -399,36 +440,31 @@ query
 The LLM sees the matched entities, one-hop relationships, and source snippets.
 It does not see community summaries.
 
-### Semantic Global Flow
+### Global Flow
 
 ```text
-query
-  -> query embedding
-  -> top-k community summary vector search
-  -> map prompt per selected community
-  -> reduce prompt
-```
-
-This is the lower-cost default strategy. It searches summaries semantically and
-does not attempt to process every report at the selected level.
-
-### Paper Global Flow
-
-```text
-successful reports at one level
+query + selected community_level
+  -> resolve numeric level ("coarsest" = highest stored level)
+  -> graph query reads all successful non-empty reports at that level
   -> deterministic shuffle
-  -> token-batched map prompts
-  -> helpfulness-scored partial answers
-  -> sorted reduce prompt
+  -> pack reports into map batches
+  -> concurrent map LLM calls, one per batch
+  -> helpfulness filter and sort
+  -> pack partial answers
+  -> one reduce LLM call
   -> validated references resolved to citations
 ```
 
 Structured report generation stores `report_json`, `report_text`, title,
 compatibility `summary`, rating fields, version fields, `report_status`, and
 `report_error`. Failed report generations are marked with
-`report_status="failed"` and are not embedded or read by paper global search.
+`report_status="failed"` and are not embedded or read by global search.
 
-Paper map outputs may include stable references:
+The map phase reads summaries/reports, not raw nodes. The reduce phase reads
+map partial answers, not the original reports. Neither phase performs vector
+similarity search.
+
+Global map outputs may include stable references:
 
 ```json
 {"target_id": "person:alice", "target_type": "entity"}
@@ -482,7 +518,7 @@ Related: [Movie] Inception
     Connected to: ACTED_IN -> DiCaprio
 ```
 
-Semantic global context:
+Global context:
 
 ```text
 Report Segment 12 (level 0):
@@ -505,7 +541,7 @@ Token budgeting uses shared utilities from `recon_graphrag.utils.tokens`:
 - `pack_items(items, max_tokens, counter)` — greedy packing for already ordered
   items. Returns included/excluded lists with token telemetry.
 
-These are used internally by paper global search (map/reduce batching) and
+These are used internally by global search (map/reduce batching) and
 community context packing. You can also use them directly for custom workflows:
 
 ```python
@@ -524,7 +560,7 @@ Search depends on indexes created by `IndexManager`:
 | Index | Type | Indexed property | Used by |
 | --- | --- | --- | --- |
 | `entity-embeddings` | Vector | `__Entity__.embedding` | Local, DRIFT |
-| `community-embeddings` | Vector | `Community.embedding` | Global, DRIFT |
+| `community-embeddings` | Vector | `Community.embedding` | Maintained for custom community retrieval; not used by built-in Global search |
 | `chunk-embeddings` | Vector | `Chunk.embedding` | Not used directly by search modes |
 | `entity-names` | Full-text / text | `__Entity__.name` | Local, DRIFT |
 
@@ -538,10 +574,10 @@ Global and DRIFT search need communities. The community pipeline:
 1. Detects communities with Leiden.
 2. Writes `Community` nodes and hierarchy edges.
 3. Summarizes or generates structured reports.
-4. Embeds canonical report text for semantic retrieval.
+4. Optionally embeds canonical report text for custom workflows that use
+   community vectors.
 
-Only after embeddings exist can semantic global search retrieve communities by
-vector similarity.
+Built-in global search uses step 3. It does not require step 4.
 
 ## Current Limits
 
@@ -551,17 +587,14 @@ vector similarity.
 - Local and DRIFT collect immediate neighbors and source chunks, not arbitrary
   multi-hop paths.
 - Global search uses one community level at a time.
-- Semantic global map calls are sequential. Paper global uses bounded parallel
-  map calls.
+- Global search uses bounded parallel map calls.
 
 ## When To Use Each Mode
 
 - **Local** when the question names a specific entity or asks for a concrete
   fact.
-- **Global semantic** when the question is broad and you want lower-cost top-k
-  community search.
-- **Global paper** when you want paper-style all-report processing at a selected
-  level and can afford the extra LLM calls.
+- **Global** when you want all-report processing at a selected community level
+  for broad themes, risks, or corpus-level questions.
 - **DRIFT** when the question needs specific evidence plus broader context.
 
 ## Next Steps

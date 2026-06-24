@@ -57,7 +57,7 @@ The indexes created are:
 
 - `chunk-embeddings` — vector index on `Chunk.embedding`
 - `entity-embeddings` — vector index on `__Entity__.embedding`
-- `community-embeddings` — vector index on `Community.embedding`
+- `community-embeddings` — vector index on `Community.embedding` for custom community retrieval
 - `entity-names` — fulltext index on `__Entity__.name`
 
 Use `manager.verify()` to print the created indexes and node/relationship counts.
@@ -181,8 +181,7 @@ local_result = await graph_rag.search(
 global_result = await graph_rag.search(
     "What are the main themes?",
     mode="global",
-    top_k=5,
-    level=0,
+    community_level="coarsest",
 )
 
 # Hybrid detail + context

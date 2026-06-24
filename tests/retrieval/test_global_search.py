@@ -78,11 +78,6 @@ class FakeLLM:
         return MagicMock(content=content)
 
 
-class FakeEmbedder:
-    async def async_embed_query(self, text):
-        return [0.1, 0.2, 0.3]
-
-
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -113,7 +108,7 @@ class TestCreateBatches:
     def test_single_batch_fits_all(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm, FakeEmbedder(), map_budget_tokens=10000)
+        search = GlobalSearchRetriever(store, llm, map_budget_tokens=10000)
         reports = _make_reports(3)
         batches = search._create_batches("test query", reports)
         assert len(batches) == 1
@@ -122,7 +117,7 @@ class TestCreateBatches:
     def test_multiple_batches_when_budget_small(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm, FakeEmbedder(), map_budget_tokens=300)
+        search = GlobalSearchRetriever(store, llm, map_budget_tokens=300)
         reports = _make_reports(5)
         batches = search._create_batches("test query", reports)
         assert len(batches) > 1
@@ -133,7 +128,7 @@ class TestMapPhase:
     async def test_map_parses_response(self):
         store = FakeGraphStore()
         llm = FakeLLM(map_responses=[_make_map_response(helpfulness=80, answer="Nolan directed.")])
-        search = GlobalSearchRetriever(store, llm, FakeEmbedder())
+        search = GlobalSearchRetriever(store, llm)
         batches = [MapBatch(batch_id="0", report_ids=["r1"], text="content", token_count=100)]
 
         partials = await search._map_phase("Who directed?", batches)
@@ -150,7 +145,7 @@ class TestMapPhase:
 
         llm = MagicMock()
         llm.ainvoke = fail
-        search = GlobalSearchRetriever(store, llm, FakeEmbedder())
+        search = GlobalSearchRetriever(store, llm)
         batches = [MapBatch(batch_id="0", report_ids=["r1"], text="content", token_count=100)]
 
         partials = await search._map_phase("query", batches)
@@ -164,7 +159,7 @@ class TestReducePhase:
     async def test_reduce_calls_llm(self):
         store = FakeGraphStore()
         llm = FakeLLM(reduce_response="Combined final answer.")
-        search = GlobalSearchRetriever(store, llm, FakeEmbedder())
+        search = GlobalSearchRetriever(store, llm)
 
         partials = [
             PartialAnswer(batch_id="0", answer="Part 1.", helpfulness=80, report_ids=["r1"]),
@@ -187,7 +182,7 @@ class TestFullSearch:
             ],
             reduce_response="Final synthesized answer.",
         )
-        search = GlobalSearchRetriever(store, llm, FakeEmbedder())
+        search = GlobalSearchRetriever(store, llm)
         result = await search.search("test query", level=0, random_seed=42)
 
         assert result.mode == "global"
@@ -213,7 +208,7 @@ class TestFullSearch:
             ],
             reduce_response="Final synthesized answer.",
         )
-        search = GlobalSearchRetriever(store, llm, FakeEmbedder())
+        search = GlobalSearchRetriever(store, llm)
 
         result = await search.search("test query", level=0, random_seed=42)
 
@@ -225,7 +220,7 @@ class TestFullSearch:
     async def test_search_requires_level(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm, FakeEmbedder())
+        search = GlobalSearchRetriever(store, llm)
         result = await search.search("query", level=None)
         assert "requires" in result.answer.lower()
 
@@ -233,7 +228,7 @@ class TestFullSearch:
     async def test_search_empty_reports(self):
         store = FakeGraphStore(reports=[])
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm, FakeEmbedder())
+        search = GlobalSearchRetriever(store, llm)
         result = await search.search("query", level=0)
         assert "No community reports" in result.answer
 
@@ -247,7 +242,7 @@ class TestFullSearch:
                 _make_map_response(helpfulness=0),
             ]
         )
-        search = GlobalSearchRetriever(store, llm, FakeEmbedder())
+        search = GlobalSearchRetriever(store, llm)
         result = await search.search("query", level=0)
         assert "No relevant" in result.answer
 
@@ -256,36 +251,51 @@ class TestParseMapResponse:
     def test_parse_valid_json(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm, FakeEmbedder())
+        search = GlobalSearchRetriever(store, llm)
         data = search._parse_map_response(_make_map_response(helpfulness=85))
         assert data["helpfulness"] == 85
 
     def test_parse_strips_fences(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm, FakeEmbedder())
+        search = GlobalSearchRetriever(store, llm)
         fenced = f"```json\n{_make_map_response()}\n```"
         data = search._parse_map_response(fenced)
         assert "answer" in data
 
+    def test_parse_extracts_json_from_wrapped_response(self):
+        store = FakeGraphStore()
+        llm = FakeLLM()
+        search = GlobalSearchRetriever(store, llm)
+        wrapped = f"Here is the JSON:\n{_make_map_response(helpfulness=80)}\nThanks."
+        data = search._parse_map_response(wrapped)
+        assert data["helpfulness"] == 80
+
+    def test_parse_accepts_numeric_string_score(self):
+        store = FakeGraphStore()
+        llm = FakeLLM()
+        search = GlobalSearchRetriever(store, llm)
+        data = search._parse_map_response(json.dumps({"answer": "x", "helpfulness": "70"}))
+        assert data["helpfulness"] == 70
+
     def test_parse_clamps_invalid_score(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm, FakeEmbedder())
+        search = GlobalSearchRetriever(store, llm)
         data = search._parse_map_response(json.dumps({"answer": "x", "helpfulness": 150}))
         assert data["helpfulness"] == 0
 
     def test_parse_clamps_negative_score(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm, FakeEmbedder())
+        search = GlobalSearchRetriever(store, llm)
         data = search._parse_map_response(json.dumps({"answer": "x", "helpfulness": -5}))
         assert data["helpfulness"] == 0
 
     def test_parse_keeps_only_valid_references(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm, FakeEmbedder())
+        search = GlobalSearchRetriever(store, llm)
         data = search._parse_map_response(
             json.dumps(
                 {

@@ -271,19 +271,3 @@ async def test_local_search_can_include_citation_metadata_in_prompt():
     assert '"record_id": "row-42"' in llm.prompts[0]
 
 
-@pytest.mark.asyncio
-async def test_local_search_accepts_legacy_include_citation_metadata_alias():
-    store = FakeGraphStore()
-    embedder = FakeEmbedder()
-    llm = FakeLLM()
-    retriever = LocalSearchRetriever(store, llm, embedder)
-
-    result = await retriever.search(
-        "Who directed Inception?",
-        top_k=2,
-        include_citation_metadata=True,
-        citation_metadata_keys=["record_id"],
-    )
-
-    assert "Citation metadata:" in result.context
-    assert '"record_id": "row-42"' in llm.prompts[0]

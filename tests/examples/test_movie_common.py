@@ -16,6 +16,7 @@ from examples.common import (
     run_movie_search_suite,
 )
 from examples.ingest import ingest_artifact
+from examples.prompts import GLOBAL_MAP_PROMPT, GLOBAL_REDUCE_PROMPT
 from examples.query_suite import MOVIE_QUERY_SUITE
 from recon_graphrag.extraction.types import (
     DocumentRecord,
@@ -80,6 +81,15 @@ def test_configure_movie_rag_sets_prompts():
     assert graph_rag.drift.answer_prompt
     assert graph_rag.global_.map_prompt
     assert graph_rag.global_.reduce_prompt
+
+
+def test_movie_global_prompts_match_retriever_contract():
+    map_prompt = GLOBAL_MAP_PROMPT.format(query="q", batch_text="reports")
+    reduce_prompt = GLOBAL_REDUCE_PROMPT.format(query="q", partial_text="partials")
+
+    assert '"helpfulness"' in map_prompt
+    assert '"answer"' in map_prompt
+    assert "partials" in reduce_prompt
 
 
 @pytest.mark.asyncio

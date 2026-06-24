@@ -230,15 +230,6 @@ class GraphStore(Protocol):
         """Get entities without embeddings."""
         ...
 
-    def get_community_entity_context(
-        self,
-        graph_name: str,
-        community_id: str,
-        level: int = 0,
-    ) -> list[dict]:
-        """Fetch entity and relationship rows for a community."""
-        ...
-
     def get_community_ranked_context(
         self,
         graph_name: str,

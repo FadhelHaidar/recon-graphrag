@@ -7,7 +7,6 @@ import json
 import pytest
 
 from evaluation.runner import (
-    FakeEmbedder,
     FakeGraphStore,
     FakeLLM,
     _hash_file,
@@ -109,15 +108,6 @@ async def test_fake_llm_is_deterministic():
     assert r1.content == r2.content
     assert r1.usage is not None
     assert r1.usage.total_tokens == 0
-
-
-@pytest.mark.asyncio
-async def test_fake_embedder_is_deterministic():
-    embedder = FakeEmbedder()
-    v1 = await embedder.async_embed_query("hello")
-    v2 = await embedder.async_embed_query("hello")
-    assert v1 == v2
-    assert len(v1) == 8
 
 
 def test_fake_graph_store_search_communities_respects_top_k():

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from recon_graphrag.config.settings import BudgetConfig, PipelineConfig
+from recon_graphrag.config.settings import PipelineConfig
 from recon_graphrag.utils.tokens import (
     ApproximateTokenCounter,
     PackItem,
@@ -133,41 +133,12 @@ class TestPackItems:
             pack_items([], max_tokens=-1)
 
 
-class TestBudgetConfig:
-    def test_default_budgets_are_none(self):
-        cfg = BudgetConfig()
-        assert cfg.extraction_chunk_tokens is None
-        assert cfg.global_reduce_input_tokens is None
-
-    def test_positive_budgets_allowed(self):
-        cfg = BudgetConfig(extraction_chunk_tokens=100)
-        assert cfg.extraction_chunk_tokens == 100
-
-    def test_zero_budget_raises(self):
-        with pytest.raises(ValueError):
-            BudgetConfig(community_input_tokens=0)
-
-    def test_negative_budget_raises(self):
-        with pytest.raises(ValueError):
-            BudgetConfig(global_map_input_tokens=-10)
-
-    def test_non_integer_budget_raises(self):
-        with pytest.raises(ValueError):
-            BudgetConfig(global_reduce_output_tokens="large")
-
-
 class TestPipelineConfig:
     def test_default_config(self):
         cfg = PipelineConfig()
         assert cfg.chunk_size == 1000
         assert cfg.chunk_overlap == 200
-        assert cfg.budget is None
         assert cfg.token_counter is None
-
-    def test_config_with_budget(self):
-        budget = BudgetConfig(extraction_chunk_tokens=512)
-        cfg = PipelineConfig(budget=budget)
-        assert cfg.budget is budget
 
     def test_invalid_chunk_size_raises(self):
         with pytest.raises(ValueError):

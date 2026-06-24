@@ -101,8 +101,6 @@ class DriftSearchRetriever(BaseRetriever):
         alpha: float | None = None,
         synthesize_citation_metadata: bool = False,
         synthesis_metadata_keys: list[str] | None = None,
-        include_citation_metadata: bool | None = None,
-        citation_metadata_keys: list[str] | None = None,
     ) -> SearchResult:
         """Run DRIFT search.
 
@@ -122,21 +120,11 @@ class DriftSearchRetriever(BaseRetriever):
             alpha=alpha,
         )
 
-        synthesize_metadata = (
-            synthesize_citation_metadata
-            if include_citation_metadata is None
-            else include_citation_metadata
-        )
-        metadata_keys = (
-            synthesis_metadata_keys
-            if synthesis_metadata_keys is not None
-            else citation_metadata_keys
-        )
-        citations = self._resolve_citations(retriever_result) if synthesize_metadata else []
+        citations = self._resolve_citations(retriever_result) if synthesize_citation_metadata else []
         entity_context = self._format_entity_context(
             retriever_result,
-            citations=citations if synthesize_metadata else None,
-            citation_metadata_keys=metadata_keys,
+            citations=citations if synthesize_citation_metadata else None,
+            citation_metadata_keys=synthesis_metadata_keys,
         )
         target_selector = self.community_level if community_level is None else community_level
         target_level = resolve_community_level(
@@ -160,7 +148,7 @@ class DriftSearchRetriever(BaseRetriever):
         )
 
         full_context = f"{entity_context}\n\n{community_context}\n\n{bridging_context}"
-        if not synthesize_metadata:
+        if not synthesize_citation_metadata:
             citations = self._resolve_citations(retriever_result)
         return SearchResult(
             query=query,

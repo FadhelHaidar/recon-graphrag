@@ -356,19 +356,3 @@ Your previous report had validation errors. Fix them and return valid JSON.
 
 Return ONLY valid JSON. Do not include markdown fences.
 """
-
-
-# ---------------------------------------------------------------------------
-# Canonical text rendering (backward compatibility)
-# ---------------------------------------------------------------------------
-
-
-def render_report_text(report: CommunityReport) -> str:
-    """Render a structured report as plain text for embeddings.
-
-    This is the same as ``report_to_text`` but lives in the reports module
-    for import convenience.
-    """
-    from recon_graphrag.models.artifacts import report_to_text
-
-    return report_to_text(report)
