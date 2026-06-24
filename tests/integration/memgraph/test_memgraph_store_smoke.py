@@ -9,6 +9,7 @@ import pytest
 
 from examples.config import get_memgraph_store
 from tests.integration.database_scenarios import (
+    assert_cross_document_rerun_idempotent,
     assert_graph_document_write,
     cleanup_graph,
 )
@@ -46,3 +47,8 @@ def memgraph_store():
 @pytest.mark.integration
 def test_memgraph_writes_graph_document_and_reports_counts(memgraph_store):
     assert_graph_document_write(memgraph_store, GRAPH_NAME)
+
+
+@pytest.mark.integration
+def test_memgraph_cross_document_rerun_is_idempotent(memgraph_store):
+    assert_cross_document_rerun_idempotent(memgraph_store, GRAPH_NAME)

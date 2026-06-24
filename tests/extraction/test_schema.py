@@ -54,7 +54,8 @@ def test_build_schema_with_string_properties():
     assert schema.node_labels() == {"Company", "Product"}
     company = schema.get_node_type("Company")
     assert company.identity_property == "name"
-    assert company.property_names == {"name"}
+    # name already defined, description auto-injected
+    assert company.property_names == {"name", "description"}
 
 
 def test_build_schema_with_dict_properties():
@@ -140,3 +141,73 @@ def test_unknown_pattern_relationship_rejected():
             relationship_types=[RelationshipType(label="ACTED_IN")],
             patterns=[("Person", "DIRECTED", "Movie")],
         )
+
+
+# ---------------------------------------------------------------------------
+# Default property auto-injection tests
+# ---------------------------------------------------------------------------
+
+
+def test_auto_injects_name_and_description_when_missing():
+    schema = GraphSchema(
+        node_types=[NodeType(label="Person", properties=[PropertyType(name="age", type="INTEGER")])],
+        relationship_types=[],
+    )
+    person = schema.get_node_type("Person")
+    assert "name" in person.property_names
+    assert "description" in person.property_names
+    assert "age" in person.property_names
+
+
+def test_does_not_duplicate_existing_name():
+    schema = GraphSchema(
+        node_types=[
+            NodeType(label="Person", properties=[PropertyType(name="name", type="STRING")])
+        ],
+        relationship_types=[],
+    )
+    person = schema.get_node_type("Person")
+    name_props = [p for p in person.properties if p.name == "name"]
+    assert len(name_props) == 1
+
+
+def test_does_not_duplicate_existing_description():
+    schema = GraphSchema(
+        node_types=[
+            NodeType(
+                label="Person",
+                properties=[PropertyType(name="description", type="STRING")],
+            )
+        ],
+        relationship_types=[],
+    )
+    person = schema.get_node_type("Person")
+    desc_props = [p for p in person.properties if p.name == "description"]
+    assert len(desc_props) == 1
+
+
+def test_no_injection_when_both_present():
+    schema = GraphSchema(
+        node_types=[
+            NodeType(
+                label="Person",
+                properties=[
+                    PropertyType(name="name", type="STRING"),
+                    PropertyType(name="description", type="STRING"),
+                    PropertyType(name="age", type="INTEGER"),
+                ],
+            )
+        ],
+        relationship_types=[],
+    )
+    person = schema.get_node_type("Person")
+    assert len(person.properties) == 3
+
+
+def test_empty_node_type_gets_both_defaults():
+    schema = GraphSchema(
+        node_types=[NodeType(label="Thing")],
+        relationship_types=[],
+    )
+    thing = schema.get_node_type("Thing")
+    assert thing.property_names == {"name", "description"}

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from recon_graphrag.llm import LLMResponse
+from recon_graphrag.models.artifacts import Citation
 from recon_graphrag.retrieval.community_levels import resolve_community_level
 from recon_graphrag.retrieval.drift import DriftSearchRetriever
 from recon_graphrag.retrieval.global_search import GlobalSearchRetriever
@@ -52,6 +53,22 @@ class FakeGraphStore:
         )
         return []
 
+    def resolve_chunk_citations(self, graph_name, chunk_ids):
+        self.calls.append(
+            (
+                "resolve_chunk_citations",
+                {"graph_name": graph_name, "chunk_ids": chunk_ids},
+            )
+        )
+        return [
+            {
+                "document_id": "doc:1",
+                "chunk_id": "chunk:1",
+                "document_metadata": {"collection": "movies"},
+                "chunk_metadata": {"record_id": "row-42", "source": "row-source"},
+            }
+        ]
+
 
 class FakeEmbedder:
     async def async_embed_query(self, text):
@@ -59,7 +76,11 @@ class FakeEmbedder:
 
 
 class FakeLLM:
+    def __init__(self):
+        self.prompts = []
+
     async def ainvoke(self, prompt):
+        self.prompts.append(prompt)
         return LLMResponse(content="answer")
 
 
@@ -72,6 +93,7 @@ class FakeHybridRetriever:
                         "title": "Inception (Movie)",
                         "relationships": [],
                         "source_text": ["source"],
+                        "source_chunk_ids": ["chunk:1"],
                         "communities": [
                             {
                                 "id": "c0",
@@ -98,6 +120,7 @@ def test_resolve_community_level_aliases():
     assert resolve_community_level(store, "entity-graph", None) is None
     assert resolve_community_level(store, "entity-graph", "all") is None
     assert resolve_community_level(store, "entity-graph", "finest") == 0
+    assert resolve_community_level(store, "entity-graph", 0) == 0
     assert resolve_community_level(store, "entity-graph", 1) == 1
     assert resolve_community_level(store, "entity-graph", "coarsest") == 2
 
@@ -122,9 +145,10 @@ async def test_global_search_accepts_coarsest_alias():
 @pytest.mark.asyncio
 async def test_drift_search_accepts_coarsest_alias():
     store = FakeGraphStore()
+    llm = FakeLLM()
     retriever = object.__new__(DriftSearchRetriever)
     retriever.graph_store = store
-    retriever.llm = FakeLLM()
+    retriever.llm = llm
     retriever.graph_name = "entity-graph"
     retriever.community_level = "coarsest"
     retriever.answer_prompt = "{query}\n{entity_context}\n{community_context}\n{bridging_context}"
@@ -133,7 +157,51 @@ async def test_drift_search_accepts_coarsest_alias():
     result = await retriever.search("themes", top_k=1)
 
     assert result.answer == "answer"
+    assert result.citations == [
+        Citation(
+            document_id="doc:1",
+            chunk_id="chunk:1",
+            metadata={
+                "collection": "movies",
+                "record_id": "row-42",
+                "source": "row-source",
+                "document_id": "doc:1",
+                "chunk_id": "chunk:1",
+            },
+        )
+    ]
     summary_call = [
         c for c in store.calls if c[0] == "get_community_summaries_by_keys"
     ][0]
     assert summary_call[1]["keys"] == [{"id": "c2", "level": 2}]
+    citation_call = [c for c in store.calls if c[0] == "resolve_chunk_citations"][0]
+    assert citation_call[1] == {
+        "graph_name": "entity-graph",
+        "chunk_ids": ["chunk:1"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_drift_search_can_include_citation_metadata_in_prompt():
+    store = FakeGraphStore()
+    llm = FakeLLM()
+    retriever = object.__new__(DriftSearchRetriever)
+    retriever.graph_store = store
+    retriever.llm = llm
+    retriever.graph_name = "entity-graph"
+    retriever.community_level = "coarsest"
+    retriever.answer_prompt = "{query}\n{entity_context}\n{community_context}\n{bridging_context}"
+    retriever._retriever = FakeHybridRetriever()
+
+    result = await retriever.search(
+        "themes",
+        top_k=1,
+        synthesize_citation_metadata=True,
+        synthesis_metadata_keys=["record_id", "collection"],
+    )
+
+    assert "Citation metadata:" in result.context
+    assert '"record_id": "row-42"' in result.context
+    assert '"collection": "movies"' in result.context
+    assert "row-source" not in result.context
+    assert "Citation metadata:" in llm.prompts[0]

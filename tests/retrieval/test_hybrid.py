@@ -3,6 +3,7 @@
 import pytest
 
 from recon_graphrag.llm import LLMResponse
+from recon_graphrag.models.artifacts import Citation
 from recon_graphrag.retrieval.hybrid import HybridEntityRetriever, merge_hybrid_scores
 from recon_graphrag.retrieval.local import LocalSearchRetriever
 
@@ -54,8 +55,34 @@ class FakeGraphStore:
                 "title": "Alice (Person)",
                 "relationships": ["Person: Alice -[DIRECTED]-> Movie: Inception"],
                 "source_text": ["Alice directed Inception."],
+                "source_chunk_ids": ["chunk:1"],
                 "score": matches[0]["score"],
                 "custom": params.get("custom"),
+            }
+        ]
+
+    def resolve_chunk_citations(self, graph_name, chunk_ids):
+        self.calls.append(
+            (
+                "resolve_chunk_citations",
+                {"graph_name": graph_name, "chunk_ids": chunk_ids},
+            )
+        )
+        return [
+            {
+                "document_id": "doc:1",
+                "chunk_id": "chunk:1",
+                "document_name": "Doc 1",
+                "page_start": None,
+                "page_end": None,
+                "document_metadata": {"collection": "movies", "source": "dataset-a"},
+                "chunk_metadata": {
+                    "record_id": "row-42",
+                    "source": "row-source",
+                    "embedding": [0.0],
+                    "graph_name": graph_name,
+                },
+                "excerpt": "Alice directed Inception.",
             }
         ]
 
@@ -199,3 +226,64 @@ async def test_local_search_uses_internal_retriever_and_llm():
     assert result.answer == "Alice directed Inception."
     assert "Finding: Alice (Person)" in result.context
     assert "Alice directed Inception." in llm.prompts[0]
+    assert result.citations == [
+        Citation(
+            document_id="doc:1",
+            chunk_id="chunk:1",
+            document_name="Doc 1",
+            excerpt="Alice directed Inception.",
+            metadata={
+                "collection": "movies",
+                "source": "row-source",
+                "record_id": "row-42",
+                "document_id": "doc:1",
+                "chunk_id": "chunk:1",
+                "document_name": "Doc 1",
+            },
+        )
+    ]
+    citation_call = [c for c in store.calls if c[0] == "resolve_chunk_citations"][0]
+    assert citation_call[1] == {
+        "graph_name": "entity-graph",
+        "chunk_ids": ["chunk:1"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_local_search_can_include_citation_metadata_in_prompt():
+    store = FakeGraphStore()
+    embedder = FakeEmbedder()
+    llm = FakeLLM()
+    retriever = LocalSearchRetriever(store, llm, embedder)
+
+    result = await retriever.search(
+        "Who directed Inception?",
+        top_k=2,
+        synthesize_citation_metadata=True,
+        synthesis_metadata_keys=["record_id", "collection"],
+    )
+
+    assert "Citation metadata:" in result.context
+    assert '"record_id": "row-42"' in result.context
+    assert '"collection": "movies"' in result.context
+    assert "row-source" not in result.context
+    assert "Citation metadata:" in llm.prompts[0]
+    assert '"record_id": "row-42"' in llm.prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_local_search_accepts_legacy_include_citation_metadata_alias():
+    store = FakeGraphStore()
+    embedder = FakeEmbedder()
+    llm = FakeLLM()
+    retriever = LocalSearchRetriever(store, llm, embedder)
+
+    result = await retriever.search(
+        "Who directed Inception?",
+        top_k=2,
+        include_citation_metadata=True,
+        citation_metadata_keys=["record_id"],
+    )
+
+    assert "Citation metadata:" in result.context
+    assert '"record_id": "row-42"' in llm.prompts[0]

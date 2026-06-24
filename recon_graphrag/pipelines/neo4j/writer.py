@@ -35,6 +35,7 @@ class Neo4jGraphWriter:
         self._write_entities(graph_document.entities)
         self._write_evidence_links(graph_document.evidence_links)
         self._write_relationships(graph_document.relationships)
+        self._write_claims(graph_document.claims)
 
         return {
             "documents": 1,
@@ -42,6 +43,7 @@ class Neo4jGraphWriter:
             "entities": len(graph_document.entities),
             "relationships": len(graph_document.relationships),
             "evidence_links": len(graph_document.evidence_links),
+            "claims": len(graph_document.claims),
         }
 
     def _write_documents(self, documents: list) -> None:
@@ -61,10 +63,9 @@ class Neo4jGraphWriter:
         self.graph_store.execute_query(
             """
             UNWIND $documents AS row
-            MERGE (d:Document {id: row.id})
+            MERGE (d:Document {id: row.id, graph_name: row.graph_name})
             SET d += row.metadata,
                 d.text_hash = row.text_hash,
-                d.graph_name = row.graph_name,
                 d.updated = timestamp(),
                 d.created = coalesce(d.created, timestamp())
             """,
@@ -90,11 +91,10 @@ class Neo4jGraphWriter:
         self.graph_store.execute_query(
             """
             UNWIND $chunks AS row
-            MATCH (d:Document {id: row.document_id})
-            MERGE (c:Chunk {id: row.id})
+            MATCH (d:Document {id: row.document_id, graph_name: row.graph_name})
+            MERGE (c:Chunk {id: row.id, graph_name: row.graph_name})
             SET c.text = row.text,
                 c.index = row.index,
-                c.graph_name = row.graph_name,
                 c += row.metadata,
                 c.updated = timestamp(),
                 c.created = coalesce(c.created, timestamp())
@@ -118,6 +118,8 @@ class Neo4jGraphWriter:
                     "id": entity.id,
                     "type": entity.type,
                     "graph_name": entity.graph_name,
+                    "canonical_key": entity.canonical_key,
+                    "human_readable_id": entity.human_readable_id,
                     "properties": entity.properties,
                 }
                 for entity in group
@@ -126,11 +128,13 @@ class Neo4jGraphWriter:
             self.graph_store.execute_query(
                 f"""
                 UNWIND $entities AS row
-                MERGE (e:__Entity__:{label} {{id: row.id}})
+                MERGE (e:__Entity__:{label} {{id: row.id, graph_name: row.graph_name}})
                 SET e += row.properties,
                     e.type = row.type,
-                    e.graph_name = row.graph_name,
-                    e.name = coalesce(row.properties.name, row.id),
+                    e.canonical_key = coalesce(row.canonical_key, row.properties.canonical_key),
+                    e.human_readable_id = coalesce(row.human_readable_id, row.properties.human_readable_id),
+                    e.name = coalesce(row.properties.name, row.properties.title, row.human_readable_id, row.id),
+                    e.title = coalesce(row.properties.title, row.properties.name, row.human_readable_id, row.id),
                     e.description = coalesce(row.properties.description, ''),
                     e.updated = timestamp(),
                     e.created = coalesce(e.created, timestamp())
@@ -154,8 +158,8 @@ class Neo4jGraphWriter:
         self.graph_store.execute_query(
             """
             UNWIND $links AS row
-            MATCH (c:Chunk {id: row.chunk_id})
-            MATCH (e:__Entity__ {id: row.entity_id})
+            MATCH (c:Chunk {id: row.chunk_id, graph_name: row.graph_name})
+            MATCH (e:__Entity__ {id: row.entity_id, graph_name: row.graph_name})
             MERGE (c)-[r:FROM_CHUNK]->(e)
             SET r.graph_name = row.graph_name
             """,
@@ -174,6 +178,7 @@ class Neo4jGraphWriter:
             rel_label = escape_cypher_identifier(rel_type)
             rows = [
                 {
+                    "id": rel.id,
                     "source_id": rel.source_id,
                     "target_id": rel.target_id,
                     "graph_name": rel.graph_name,
@@ -185,13 +190,51 @@ class Neo4jGraphWriter:
             self.graph_store.execute_query(
                 f"""
                 UNWIND $relationships AS row
-                MATCH (source:__Entity__ {{id: row.source_id}})
-                MATCH (target:__Entity__ {{id: row.target_id}})
+                MATCH (source:__Entity__ {{id: row.source_id, graph_name: row.graph_name}})
+                MATCH (target:__Entity__ {{id: row.target_id, graph_name: row.graph_name}})
                 MERGE (source)-[r:{rel_label}]->(target)
-                SET r += row.properties,
+                SET r.id = row.id,
+                    r += row.properties,
                     r.graph_name = row.graph_name,
                     r.updated = timestamp(),
                     r.created = coalesce(r.created, timestamp())
                 """,
                 {"relationships": rows},
             )
+
+    def _write_claims(self, claims: list) -> None:
+        """Write Claim nodes with SUBJECT_OF and SOURCED_FROM edges."""
+        if not claims:
+            return
+
+        rows = [
+            {
+                "id": claim.id,
+                "entity_id": claim.entity_id,
+                "chunk_id": claim.source.chunk_id,
+                "claim_type": claim.claim_type,
+                "description": claim.description,
+                "status": claim.status,
+                "graph_name": claim.graph_name,
+            }
+            for claim in claims
+        ]
+
+        self.graph_store.execute_query(
+            """
+            UNWIND $claims AS row
+            MERGE (c:Claim {id: row.id, graph_name: row.graph_name})
+            SET c.claim_type = row.claim_type,
+                c.description = row.description,
+                c.status = row.status,
+                c.updated = timestamp(),
+                c.created = coalesce(c.created, timestamp())
+            WITH c, row
+            MATCH (e:__Entity__ {id: row.entity_id, graph_name: row.graph_name})
+            MERGE (c)-[:SUBJECT_OF]->(e)
+            WITH c, row
+            MATCH (ch:Chunk {id: row.chunk_id, graph_name: row.graph_name})
+            MERGE (c)-[:SOURCED_FROM]->(ch)
+            """,
+            {"claims": rows},
+        )

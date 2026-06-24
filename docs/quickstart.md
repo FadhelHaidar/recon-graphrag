@@ -194,6 +194,24 @@ drift_result = await graph_rag.search(
 )
 ```
 
+Search results include `answer`, `context`, and structured source data. When a
+mode can resolve evidence, citations are available both as a flat list and
+grouped by document:
+
+```python
+print(local_result.answer)
+
+for source in local_result.sources:
+    print(source.document_name or source.document_id)
+    for citation in source.chunk_list:
+        print(citation.chunk_id, citation.page_start, citation.page_end)
+        print(citation.metadata)
+```
+
+`citation.metadata` contains the arbitrary metadata you supplied during
+ingestion, so it can carry page numbers, database row IDs, API object IDs,
+ticket IDs, list-item IDs, or other source-specific keys.
+
 > **Note on community levels:** In Recon-GraphRAG, `level=0` means the **finest / most local** communities. This is the opposite of some Microsoft GraphRAG descriptions. See [Search](search.md) for details.
 
 ## Complete Neo4j example
@@ -270,4 +288,4 @@ To run the complete example on Memgraph, replace the connection and manager setu
 - Learn more about the two-stage pipeline in [Pipelines](pipelines.md).
 - Explore schema options in [Schema](schema.md).
 - Compare search modes in [Search](search.md).
-- Run a complete domain example in [Movie Industry Example](movie-industry-example.md).
+- Run a complete domain example in [Example](example.md).

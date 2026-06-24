@@ -126,6 +126,28 @@ patterns=[
 
 During extraction, relationships that do not match a pattern are dropped. This prevents the graph from accumulating low-quality or off-schema edges.
 
+## Entity Identity
+
+Recon-GraphRAG stores entity nodes with Microsoft GraphRAG-style separated
+identity fields:
+
+| Property | Purpose |
+| -------- | ------- |
+| `id` | UUID string used as the persisted entity identity. |
+| `canonical_key` | Stable readable extraction key such as `person:alice`. |
+| `human_readable_id` | Readable reference used in reports, citations, and prompts. |
+| `name` / `title` | Display text for search results and graph inspection. |
+| `description` | Consolidated entity description from source observations. |
+
+During extraction, the LLM still emits readable IDs so relationships and claims
+can refer to entities in the same chunk. During assembly those readable IDs are
+mapped to deterministic UUIDs and preserved as `canonical_key` and
+`human_readable_id`. This keeps storage identity stable while keeping report
+references debuggable.
+
+In Neo4j Browser, `<id>` is Neo4j's internal element identity. It is separate
+from Recon's `id` property.
+
 ## Best practices
 
 1. **Keep labels concise.** Short, clear labels are easier for the LLM to produce consistently.
@@ -139,4 +161,4 @@ During extraction, relationships that do not match a pattern are dropped. This p
 
 - Run the schema through a pipeline in [Quick Start](quickstart.md).
 - Learn about indexing in [Indexing](indexing.md).
-- See a large real-world schema in [Movie Industry Example](movie-industry-example.md).
+- See a large real-world schema in [Example](example.md).

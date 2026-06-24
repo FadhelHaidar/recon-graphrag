@@ -14,6 +14,11 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Optional
 
+from recon_graphrag.graphdb.entity_resolution_context import (
+    blocked_review_group,
+    build_entity_profiles,
+    conflict_for_group,
+)
 from recon_graphrag.graphdb.neo4j.cypher import escape_cypher_identifier
 
 # ------------------------------------------------------------------
@@ -57,6 +62,12 @@ def _normalize_name(value: str) -> str:
     # Remove spaces so "Open AI" and "OpenAI" both become "openai"
     value = value.replace(" ", "")
     return value.strip()
+
+
+def _first_property_value(value):
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
 
 
 # ------------------------------------------------------------------
@@ -144,6 +155,9 @@ class _Neo4jEntityResolver:
         llm=None,
         llm_guidance: Optional[str] = None,
         allow_ai_auto_merge: bool = False,
+        context_properties: Optional[dict[str, list[str]] | list[str]] = None,
+        conflict_properties: Optional[dict[str, list[str]] | list[str]] = None,
+        context_mode: str = "safe_defaults",
     ) -> dict:
         if strategy not in ("exact", "normalized", "fuzzy", "hybrid"):
             raise ValueError(f"Unknown strategy: {strategy}")
@@ -195,6 +209,9 @@ class _Neo4jEntityResolver:
                 llm=llm,
                 llm_guidance=llm_guidance,
                 allow_ai_auto_merge=allow_ai_auto_merge,
+                context_properties=context_properties,
+                conflict_properties=conflict_properties,
+                context_mode=context_mode,
             )
             signals = {
                 "normalized": "used",
@@ -396,6 +413,9 @@ class _Neo4jEntityResolver:
         llm,
         llm_guidance: Optional[str],
         allow_ai_auto_merge: bool,
+        context_properties: Optional[dict[str, list[str]] | list[str]],
+        conflict_properties: Optional[dict[str, list[str]] | list[str]],
+        context_mode: str,
     ) -> tuple[list[list[_EntityRecord]], list[dict], list[dict]]:
         groups, review_groups = self._build_fuzzy_groups(
             entities,
@@ -414,20 +434,37 @@ class _Neo4jEntityResolver:
             for e in g:
                 merged_ids.add(e.node_id)
 
-        if embedder and review_groups:
-            review_groups = await self._score_with_embeddings(
-                review_groups, embedder, allow_ai_auto_merge, merge_threshold
+        groups, review_groups = self._apply_conflict_rules(
+            groups,
+            review_groups,
+            entities,
+            conflict_properties,
+        )
+        active_review_groups = [
+            rg for rg in review_groups if rg.get("decision") != "blocked"
+        ]
+
+        if embedder and active_review_groups:
+            active_review_groups = await self._score_with_embeddings(
+                active_review_groups, embedder, allow_ai_auto_merge, merge_threshold
             )
 
-        if llm and review_groups:
-            review_groups = await self._llm_review(
-                review_groups,
+        if llm and active_review_groups:
+            active_review_groups = await self._llm_review(
+                active_review_groups,
                 llm,
                 llm_guidance,
                 aliases,
                 allow_ai_auto_merge,
                 merge_threshold,
+                entities,
+                context_properties,
+                context_mode,
             )
+        review_groups = [
+            *active_review_groups,
+            *[rg for rg in review_groups if rg.get("decision") == "blocked"],
+        ]
 
         ai_merged_review_groups = []
         if allow_ai_auto_merge and review_groups:
@@ -440,6 +477,48 @@ class _Neo4jEntityResolver:
             groups.extend(ai_groups)
 
         return groups, review_groups, ai_merged_review_groups
+
+    def _apply_conflict_rules(
+        self,
+        groups: list[list[_EntityRecord]],
+        review_groups: list[dict],
+        entities: list[_EntityRecord],
+        conflict_properties: Optional[dict[str, list[str]] | list[str]],
+    ) -> tuple[list[list[_EntityRecord]], list[dict]]:
+        if not conflict_properties:
+            return groups, review_groups
+
+        clean_groups = []
+        blocked_groups = []
+        for group in groups:
+            conflicts = conflict_for_group(group, conflict_properties)
+            if conflicts:
+                blocked_groups.append(blocked_review_group(group, conflicts))
+            else:
+                clean_groups.append(group)
+
+        entity_by_node_id = {e.node_id: e for e in entities}
+        clean_reviews = []
+        for review_group in review_groups:
+            group = [
+                entity_by_node_id[node_id]
+                for node_id in review_group.get("node_ids", [])
+                if node_id in entity_by_node_id
+            ]
+            conflicts = conflict_for_group(group, conflict_properties)
+            if conflicts:
+                review_group["decision"] = "blocked"
+                review_group["reason"] = "property_conflict"
+                review_group["conflicts"] = conflicts
+                review_group["llm_review"] = {
+                    "same_entity": False,
+                    "confidence": 1.0,
+                    "reason": "Configured conflict properties differ.",
+                    "merge_allowed": False,
+                }
+            clean_reviews.append(review_group)
+
+        return clean_groups, clean_reviews + blocked_groups
 
     def _promote_ai_reviews(
         self,
@@ -608,8 +687,18 @@ class _Neo4jEntityResolver:
         aliases: Optional[dict],
         allow_ai_auto_merge: bool,
         merge_threshold: float,
+        entities: list[_EntityRecord],
+        context_properties: Optional[dict[str, list[str]] | list[str]],
+        context_mode: str,
     ) -> list[dict]:
+        entity_by_node_id = {e.node_id: e for e in entities}
         for rg in review_groups:
+            rg["entities"] = build_entity_profiles(
+                entity_by_node_id,
+                rg.get("node_ids", []),
+                context_properties=context_properties,
+                context_mode=context_mode,
+            )
             prompt = self._build_llm_review_prompt(rg, aliases, llm_guidance)
             try:
                 response = await llm.ainvoke(prompt)
@@ -638,8 +727,10 @@ class _Neo4jEntityResolver:
         payload = {
             "task": "entity_deduplication_review",
             "instruction": (
-                "Decide whether the candidate names refer to the same real-world "
-                "entity in this graph context. Be conservative. Return only a "
+                "Decide whether the candidate entity profiles refer to the same "
+                "real-world entity in this graph context. Compare names, labels, "
+                "descriptions, aliases, and supplied properties. Be conservative. "
+                "Return only a "
                 "JSON object and do not include markdown."
             ),
             "candidate": review_group,
@@ -684,6 +775,17 @@ class _Neo4jEntityResolver:
                 reverse=True,
             )
             node_ids = [e.node_id for e in sorted_group]
+            canonical_entity_id = sorted_group[0].entity_id if sorted_group else ""
+            canonical_key = _first_property_value(
+                sorted_group[0].properties.get("canonical_key")
+                if sorted_group
+                else None
+            )
+            canonical_readable_id = _first_property_value(
+                sorted_group[0].properties.get("human_readable_id")
+                if sorted_group
+                else None
+            )
             canonical_name = sorted_group[0].resolve_value if sorted_group else ""
             aliases = list(
                 {
@@ -702,11 +804,17 @@ class _Neo4jEntityResolver:
                     nodes,
                     {{properties: 'combine', mergeRels: true}}
                 ) YIELD node
-                SET node.{escape_cypher_identifier(resolve_property)} = $canonical_name
+                SET node.{escape_cypher_identifier(resolve_property)} = $canonical_name,
+                    node.id = $canonical_entity_id,
+                    node.canonical_key = coalesce($canonical_key, node.canonical_key),
+                    node.human_readable_id = coalesce($canonical_readable_id, node.human_readable_id)
                 RETURN elementId(node) AS merged_id
                 """,
                 {
                     "node_ids": node_ids,
+                    "canonical_entity_id": canonical_entity_id,
+                    "canonical_key": canonical_key,
+                    "canonical_readable_id": canonical_readable_id,
                     "canonical_name": canonical_name,
                 },
             )

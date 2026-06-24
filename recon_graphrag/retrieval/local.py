@@ -10,13 +10,16 @@ answers anchored to particular entities and their local graph neighborhood.
 
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM
+from recon_graphrag.models.artifacts import Citation
 from recon_graphrag.models.types import SearchResult
 from recon_graphrag.retrieval.base import BaseRetriever
+from recon_graphrag.retrieval.citations import resolve_chunk_citations
 from recon_graphrag.retrieval.hybrid import HybridEntityRetriever, HybridRanker
 
 
@@ -46,6 +49,7 @@ class LocalSearchRetriever(BaseRetriever):
         answer_prompt: Optional[str] = None,
         vector_index_name: str = "entity-embeddings",
         fulltext_index_name: str = "entity-names",
+        graph_name: str = "entity-graph",
     ):
         self.graph_store = graph_store
         self.llm = llm
@@ -54,6 +58,7 @@ class LocalSearchRetriever(BaseRetriever):
         self.answer_prompt = answer_prompt or DEFAULT_ANSWER_PROMPT
         self.vector_index_name = vector_index_name
         self.fulltext_index_name = fulltext_index_name
+        self.graph_name = graph_name
         self._retriever = self._build_retriever()
 
     def _build_retriever(self) -> HybridEntityRetriever:
@@ -75,6 +80,10 @@ class LocalSearchRetriever(BaseRetriever):
         query_params: dict | None = None,
         ranker: HybridRanker | str = "naive",
         alpha: float | None = None,
+        synthesize_citation_metadata: bool = False,
+        synthesis_metadata_keys: list[str] | None = None,
+        include_citation_metadata: bool | None = None,
+        citation_metadata_keys: list[str] | None = None,
     ) -> SearchResult:
         """Run local search: vector search on entities → subgraph traversal → LLM answer."""
         retriever_result = await self._retriever.search(
@@ -86,12 +95,43 @@ class LocalSearchRetriever(BaseRetriever):
             ranker=ranker,
             alpha=alpha,
         )
-        context = self._format_context(retriever_result)
+        synthesize_metadata = (
+            synthesize_citation_metadata
+            if include_citation_metadata is None
+            else include_citation_metadata
+        )
+        metadata_keys = (
+            synthesis_metadata_keys
+            if synthesis_metadata_keys is not None
+            else citation_metadata_keys
+        )
+        citations = self._resolve_citations(retriever_result)
+        context = self._format_context(
+            retriever_result,
+            citations=citations if synthesize_metadata else None,
+            citation_metadata_keys=metadata_keys,
+        )
         answer = await self._generate_answer(query, context)
-        return SearchResult(query=query, mode="local", answer=answer, context=context)
+        return SearchResult(
+            query=query,
+            mode="local",
+            answer=answer,
+            context=context,
+            citations=citations,
+        )
 
-    def _format_context(self, retriever_result) -> str:
+    def _format_context(
+        self,
+        retriever_result,
+        *,
+        citations: list[Citation] | None = None,
+        citation_metadata_keys: list[str] | None = None,
+    ) -> str:
         """Format retriever results into a context string for the LLM."""
+        citation_lines = _format_citation_metadata(
+            citations or [],
+            citation_metadata_keys,
+        )
         parts = []
         for item in retriever_result.items:
             content = item.content
@@ -106,11 +146,66 @@ class LocalSearchRetriever(BaseRetriever):
                     section += "\nConnections:\n  " + "\n  ".join(rels)
                 if sources:
                     section += "\nEvidence:\n  " + "\n  ".join(sources[:3])
+                if citation_lines:
+                    section += "\nCitation metadata:\n  " + "\n  ".join(citation_lines)
                 parts.append(section)
         return "\n\n---\n\n".join(parts)
+
+    def _resolve_citations(self, retriever_result):
+        chunk_ids = _source_chunk_ids_from_result(retriever_result)
+        try:
+            return resolve_chunk_citations(
+                self.graph_store,
+                self.graph_name,
+                chunk_ids,
+            )
+        except Exception:
+            return []
 
     async def _generate_answer(self, query: str, context: str) -> str:
         """Generate answer from context using LLM."""
         prompt = self.answer_prompt.format(query=query, context=context)
         response = await self.llm.ainvoke(prompt)
         return response.content
+
+
+def _source_chunk_ids_from_result(retriever_result) -> list[str]:
+    seen: set[str] = set()
+    chunk_ids: list[str] = []
+    for item in retriever_result.items:
+        content = item.content
+        if not isinstance(content, dict):
+            continue
+        for chunk_id in content.get("source_chunk_ids", []):
+            chunk_id = str(chunk_id).strip()
+            if not chunk_id or chunk_id in seen:
+                continue
+            seen.add(chunk_id)
+            chunk_ids.append(chunk_id)
+    return chunk_ids
+
+
+def _format_citation_metadata(
+    citations: list[Citation],
+    metadata_keys: list[str] | None = None,
+) -> list[str]:
+    lines = []
+    key_filter = set(metadata_keys or [])
+    for citation in citations:
+        metadata = dict(citation.metadata or {})
+        if key_filter:
+            metadata = {
+                key: value
+                for key, value in metadata.items()
+                if key in key_filter
+            }
+        if not metadata:
+            continue
+        metadata_text = json.dumps(
+            metadata,
+            ensure_ascii=True,
+            sort_keys=True,
+            default=str,
+        )
+        lines.append(f"{citation.chunk_id}: {metadata_text}")
+    return lines

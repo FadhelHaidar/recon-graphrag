@@ -111,6 +111,9 @@ class IndexManager:
         llm=None,
         llm_guidance: Optional[str] = None,
         allow_ai_auto_merge: bool = False,
+        context_properties: Optional[dict[str, list[str]] | list[str]] = None,
+        conflict_properties: Optional[dict[str, list[str]] | list[str]] = None,
+        context_mode: str = "safe_defaults",
     ) -> dict:
         """Run entity resolution to merge duplicate __Entity__ nodes.
 
@@ -131,6 +134,9 @@ class IndexManager:
             llm=llm,
             llm_guidance=llm_guidance,
             allow_ai_auto_merge=allow_ai_auto_merge,
+            context_properties=context_properties,
+            conflict_properties=conflict_properties,
+            context_mode=context_mode,
         )
 
     def verify(self):

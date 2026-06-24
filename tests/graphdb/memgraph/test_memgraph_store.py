@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import pytest
 
+import recon_graphrag.graphdb.memgraph.entity_resolution as entity_resolution
 from recon_graphrag.graphdb.memgraph.store import (
     MemgraphGraphStore,
     _format_tantivy_query,
 )
+from recon_graphrag.models.artifacts import CommunityReport
 from recon_graphrag.models.types import IndexConfig
 
 
@@ -80,6 +82,66 @@ def test_execute_query_translates_result(store, fake_driver):
 
     result = store.execute_query("MATCH (n) RETURN count(n) AS cnt")
     assert result == [{"cnt": 42}]
+
+
+@pytest.mark.asyncio
+async def test_resolve_entities_forwards_full_advanced_parameter_set(
+    store, monkeypatch
+):
+    captured = {}
+
+    class CapturingResolver:
+        def __init__(self, graph_store):
+            captured["graph_store"] = graph_store
+
+        async def resolve(self, **kwargs):
+            captured["kwargs"] = kwargs
+            return {"strategy": kwargs["strategy"]}
+
+    monkeypatch.setattr(entity_resolution, "_MemgraphEntityResolver", CapturingResolver)
+    embedder = object()
+    llm = object()
+    aliases = {"Person": {"Bob Iger": ["Robert Iger"]}}
+    context_properties = {"Person": ["description", "birth_date"]}
+    conflict_properties = {"Movie": ["year"]}
+
+    result = await store.resolve_entities(
+        graph_name="movie-graph",
+        strategy="hybrid",
+        resolve_property="title",
+        dry_run=True,
+        merge_threshold=91.0,
+        review_threshold=72.0,
+        max_candidates_per_entity=7,
+        aliases=aliases,
+        embedder=embedder,
+        llm=llm,
+        llm_guidance="Use all supplied profile context.",
+        allow_ai_auto_merge=True,
+        context_properties=context_properties,
+        conflict_properties=conflict_properties,
+        context_mode="config_only",
+    )
+
+    assert result == {"strategy": "hybrid"}
+    assert captured["graph_store"] is store
+    assert captured["kwargs"] == {
+        "graph_name": "movie-graph",
+        "strategy": "hybrid",
+        "resolve_property": "title",
+        "dry_run": True,
+        "merge_threshold": 91.0,
+        "review_threshold": 72.0,
+        "max_candidates_per_entity": 7,
+        "aliases": aliases,
+        "embedder": embedder,
+        "llm": llm,
+        "llm_guidance": "Use all supplied profile context.",
+        "allow_ai_auto_merge": True,
+        "context_properties": context_properties,
+        "conflict_properties": conflict_properties,
+        "context_mode": "config_only",
+    }
 
 
 def test_write_graph_document_delegates_to_writer(store, fake_driver):
@@ -283,6 +345,56 @@ def test_search_communities_overfetches_before_filtering(store, fake_driver):
 
     assert fake_driver.session_obj.params[-1]["k"] == 15
     assert fake_driver.session_obj.params[-1]["top_k"] == 3
+
+
+def test_store_community_report_sets_structured_fields(store, fake_driver):
+    report = CommunityReport(
+        id="report:community:1:0",
+        community_id="community:1",
+        level=0,
+        title="Title",
+        summary="Summary",
+    )
+
+    store.store_community_report(report, "graph-a")
+
+    query = fake_driver.session_obj.queries[-1]
+    params = fake_driver.session_obj.params[-1]
+    assert "c.report_json" in query
+    assert "c.report_status = 'success'" in query
+    assert params["graph_name"] == "graph-a"
+    assert params["cid"] == "community:1"
+    assert params["title"] == "Title"
+
+
+def test_mark_community_report_failed_sets_status(store, fake_driver):
+    store.mark_community_report_failed("graph-a", "community:1", 0, "bad json")
+
+    query = fake_driver.session_obj.queries[-1]
+    params = fake_driver.session_obj.params[-1]
+    assert "c.report_status = 'failed'" in query
+    assert params == {
+        "graph_name": "graph-a",
+        "cid": "community:1",
+        "level": 0,
+        "error": "bad json",
+    }
+
+
+def test_claim_and_citation_reads_are_graph_scoped(store, fake_driver):
+    store.get_claims_for_entities("graph-a", ["person:alice"])
+    query = fake_driver.session_obj.queries[-1]
+    params = fake_driver.session_obj.params[-1]
+    assert "graph_name: $graph_name" in query
+    assert params["graph_name"] == "graph-a"
+
+    store.resolve_chunk_citations("graph-a", ["chunk:1"])
+    query = fake_driver.session_obj.queries[-1]
+    params = fake_driver.session_obj.params[-1]
+    assert "Chunk {id: cid, graph_name: $graph_name}" in query
+    assert "properties(c) AS chunk_metadata" in query
+    assert "properties(d) AS document_metadata" in query
+    assert params == {"graph_name": "graph-a", "chunk_ids": ["chunk:1"]}
 
 
 def test_fetch_entity_context_uses_integer_id(store, fake_driver):

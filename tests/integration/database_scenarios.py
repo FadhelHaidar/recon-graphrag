@@ -258,3 +258,55 @@ def assert_weighted_community_detection(store, graph_name: str) -> None:
         """,
         graph_name,
     ) >= 4
+
+
+def _make_simple_graph_document(
+    graph_name: str,
+    document_id: str,
+    entity_name: str = "Alice",
+) -> GraphDocument:
+    chunk_id = f"{document_id}:chunk-1"
+    entity_id = f"{document_id}:entity-1"
+    return GraphDocument(
+        document=DocumentRecord(
+            id=document_id,
+            text_hash="hash",
+            graph_name=graph_name,
+            metadata={},
+        ),
+        chunks=[
+            ChunkRecord(
+                id=chunk_id,
+                document_id=document_id,
+                text=f"{entity_name} works at Acme.",
+                index=0,
+                graph_name=graph_name,
+                metadata={},
+            )
+        ],
+        entities=[
+            EntityRecord(
+                id=entity_id,
+                type="Person",
+                graph_name=graph_name,
+                properties={"name": entity_name},
+            )
+        ],
+        relationships=[],
+        evidence_links=[
+            EvidenceLink(
+                chunk_id=chunk_id,
+                entity_id=entity_id,
+                graph_name=graph_name,
+            )
+        ],
+    )
+
+
+def assert_cross_document_rerun_idempotent(store, graph_name: str) -> None:
+    """Rerunning the same document should not inflate entity counts."""
+    doc = _make_simple_graph_document(graph_name, f"{graph_name}:doc-rerun")
+    store.write_graph_document(doc)
+    store.write_graph_document(doc)
+
+    assert entity_count(store, graph_name) == 1

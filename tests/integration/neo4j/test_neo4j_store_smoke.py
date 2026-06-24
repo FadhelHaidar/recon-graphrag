@@ -6,6 +6,7 @@ import pytest
 
 from examples.config import get_neo4j_store
 from tests.integration.database_scenarios import (
+    assert_cross_document_rerun_idempotent,
     assert_graph_document_write,
     cleanup_graph,
 )
@@ -39,3 +40,8 @@ def neo4j_store():
 @pytest.mark.integration
 def test_neo4j_writes_graph_document_and_reports_counts(neo4j_store):
     assert_graph_document_write(neo4j_store, GRAPH_NAME)
+
+
+@pytest.mark.integration
+def test_neo4j_cross_document_rerun_is_idempotent(neo4j_store):
+    assert_cross_document_rerun_idempotent(neo4j_store, GRAPH_NAME)

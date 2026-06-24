@@ -204,6 +204,40 @@ async def test_build_from_pages_with_windows(
 
 
 @pytest.mark.asyncio
+async def test_build_from_pages_preserves_page_metadata(
+    movie_schema, fake_llm, fake_embedder, fake_writer
+):
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=fake_llm,
+        embedder=fake_embedder,
+        schema=movie_schema,
+        graph_writer=fake_writer,
+        perform_entity_resolution=False,
+        embed_entities=False,
+    )
+
+    pages = [
+        {"text": "Page one", "metadata": {"record_id": "page-1"}},
+        {"text": "Page two", "metadata": {"record_id": "page-2"}},
+        {"text": "Page three", "metadata": {"record_id": "page-3"}},
+    ]
+    await pipeline.build_from_pages(
+        pages=pages,
+        metadata={"source": "document-source", "collection": "movies"},
+        window_size=2,
+        window_overlap=1,
+    )
+
+    graph_document = fake_writer.write_graph_document.call_args.args[0]
+    assert graph_document.document.metadata["source"] == "document-source"
+    assert graph_document.chunks[0].text == "Page one\n\nPage two"
+    assert graph_document.chunks[0].metadata["record_ids"] == ["page-1", "page-2"]
+    assert graph_document.chunks[1].metadata["record_ids"] == ["page-2", "page-3"]
+
+
+@pytest.mark.asyncio
 async def test_build_from_documents(
     movie_schema, fake_llm, fake_embedder, fake_writer
 ):
@@ -380,6 +414,8 @@ async def test_hybrid_entity_resolution_forwards_llm_and_embedder(movie_schema):
     embedder = MagicMock()
     aliases = {"Person": {"John Smith": ["Jon Smith"]}}
     guidance = "Only merge people with clear evidence."
+    context_properties = {"Person": ["description", "department"]}
+    conflict_properties = {"Movie": ["year"]}
     pipeline = GraphBuilderPipeline(
         graph_store=store,
         llm=llm,
@@ -388,6 +424,8 @@ async def test_hybrid_entity_resolution_forwards_llm_and_embedder(movie_schema):
         entity_resolution_strategy="hybrid",
         entity_resolution_aliases=aliases,
         entity_resolution_llm_guidance=guidance,
+        entity_resolution_context_properties=context_properties,
+        entity_resolution_conflict_properties=conflict_properties,
         allow_ai_auto_merge=True,
     )
 
@@ -401,6 +439,9 @@ async def test_hybrid_entity_resolution_forwards_llm_and_embedder(movie_schema):
         "aliases": aliases,
         "llm_guidance": guidance,
         "allow_ai_auto_merge": True,
+        "context_properties": context_properties,
+        "conflict_properties": conflict_properties,
+        "context_mode": "safe_defaults",
     }
 
 
@@ -520,3 +561,122 @@ async def test_partial_extraction_failure_continues(
     assert result["extraction"]["chunks"] == expected_chunks
     assert llm.ainvoke.await_count == expected_chunks
     assert fake_writer.write_graph_document.call_count == 1
+
+
+def test_build_from_text_stamps_graph_name_on_all_records():
+    """Characterization: every assembled record carries the pipeline graph_name."""
+    from recon_graphrag.extraction.chunking import TextChunk
+    from recon_graphrag.extraction.types import (
+        ExtractedNode,
+        ExtractedRelationship,
+        GraphExtraction,
+    )
+
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=MagicMock(),
+        embedder=MagicMock(),
+        schema=_make_test_schema(),
+        graph_name="custom-graph",
+    )
+
+    chunks = [
+        TextChunk(id="c1", text="Alice knows Bob", index=0, metadata={}),
+        TextChunk(id="c2", text="Alice knows Bob", index=1, metadata={}),
+    ]
+    extractions = {
+        "c1": GraphExtraction(
+            nodes=[
+                ExtractedNode(id="p1", label="Person", properties={"name": "Alice"}),
+                ExtractedNode(id="p2", label="Person", properties={"name": "Bob"}),
+            ],
+            relationships=[
+                ExtractedRelationship(
+                    source_id="p1", target_id="p2", type="KNOWS", properties={"weight": 1.0}
+                )
+            ],
+        ),
+        "c2": GraphExtraction(
+            nodes=[
+                ExtractedNode(id="p1", label="Person", properties={"name": "Alice"}),
+                ExtractedNode(id="p2", label="Person", properties={"name": "Bob"}),
+            ],
+            relationships=[
+                ExtractedRelationship(
+                    source_id="p1", target_id="p2", type="KNOWS", properties={"weight": 1.0}
+                )
+            ],
+        ),
+    }
+
+    doc = pipeline.assembler.assemble(
+        document_id="doc:test",
+        text_hash="hash",
+        chunks=chunks,
+        chunk_extractions=extractions,
+        metadata={},
+        graph_name=pipeline.graph_name,
+    )
+
+    assert doc.document.graph_name == "custom-graph"
+    assert all(c.graph_name == "custom-graph" for c in doc.chunks)
+    assert all(e.graph_name == "custom-graph" for e in doc.entities)
+    assert all(r.graph_name == "custom-graph" for r in doc.relationships)
+    assert all(link.graph_name == "custom-graph" for link in doc.evidence_links)
+
+
+def test_pipeline_rerun_does_not_inflate_assembled_records():
+    """Characterization: assembler-level rerun produces the same record counts."""
+    from recon_graphrag.extraction.chunking import TextChunk
+    from recon_graphrag.extraction.types import (
+        ExtractedNode,
+        ExtractedRelationship,
+        GraphExtraction,
+    )
+
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=MagicMock(),
+        embedder=MagicMock(),
+        schema=_make_test_schema(),
+    )
+
+    chunks = [
+        TextChunk(id="c1", text="Alice knows Bob", index=0, metadata={}),
+    ]
+    extractions = {
+        "c1": GraphExtraction(
+            nodes=[
+                ExtractedNode(id="p1", label="Person", properties={"name": "Alice"}),
+                ExtractedNode(id="p2", label="Person", properties={"name": "Bob"}),
+            ],
+            relationships=[
+                ExtractedRelationship(
+                    source_id="p1", target_id="p2", type="KNOWS", properties={"weight": 1.0}
+                )
+            ],
+        ),
+    }
+
+    first = pipeline.assembler.assemble(
+        document_id="doc:test",
+        text_hash="hash",
+        chunks=chunks,
+        chunk_extractions=extractions,
+        metadata={},
+        graph_name=pipeline.graph_name,
+    )
+    second = pipeline.assembler.assemble(
+        document_id="doc:test",
+        text_hash="hash",
+        chunks=chunks,
+        chunk_extractions=extractions,
+        metadata={},
+        graph_name=pipeline.graph_name,
+    )
+
+    assert len(first.entities) == len(second.entities) == 2
+    assert len(first.relationships) == len(second.relationships) == 1
+    assert len(first.evidence_links) == len(second.evidence_links) == 2

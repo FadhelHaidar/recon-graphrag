@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -243,6 +244,104 @@ async def test_memgraph_resolver_hybrid_keeps_llm_review_when_auto_merge_disable
     assert len(result["review_groups"]) == 1
     assert result["review_groups"][0]["llm_review"]["merge_allowed"] is True
     assert result["ai_merged_review_groups"] == []
+
+
+@pytest.mark.asyncio
+async def test_memgraph_resolver_hybrid_sends_property_context_to_llm():
+    rows = [
+        {
+            "node_id": 1,
+            "entity_id": "e1",
+            "graph_name": "g1",
+            "resolve_value": "John Smith",
+            "labels": ["__Entity__", "Person"],
+            "properties": {
+                "name": "John Smith",
+                "description": "Senior engineer on the Apollo API team.",
+                "canonical_key": "person:john-smith",
+                "department": "Platform",
+                "embedding": [0.1, 0.2],
+            },
+        },
+        {
+            "node_id": 2,
+            "entity_id": "e2",
+            "graph_name": "g1",
+            "resolve_value": "Jon Smith",
+            "labels": ["__Entity__", "Person"],
+            "properties": {
+                "name": "Jon Smith",
+                "description": "Apollo API platform engineer.",
+                "department": "Platform",
+            },
+        },
+    ]
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(
+        return_value=MagicMock(
+            content='{"same_entity": true, "confidence": 0.91, "merge_allowed": false}'
+        )
+    )
+    resolver = _MemgraphEntityResolver(FakeGraphStore(rows=rows))
+
+    result = await resolver.resolve(
+        strategy="hybrid",
+        dry_run=True,
+        merge_threshold=95.0,
+        review_threshold=85.0,
+        llm=llm,
+        context_properties={"Person": ["department"]},
+    )
+
+    payload = json.loads(llm.ainvoke.await_args.args[0])
+    profiles = payload["candidate"]["entities"]
+    assert profiles[0]["description"] == "Senior engineer on the Apollo API team."
+    assert profiles[0]["properties"] == {"department": "Platform"}
+    assert "embedding" not in json.dumps(profiles)
+    assert result["review_groups"][0]["entities"] == profiles
+
+
+@pytest.mark.asyncio
+async def test_memgraph_resolver_hybrid_conflict_properties_block_auto_merge():
+    rows = [
+        {
+            "node_id": 1,
+            "entity_id": "e1",
+            "graph_name": "g1",
+            "resolve_value": "Titanic",
+            "labels": ["__Entity__", "Movie"],
+            "properties": {"name": "Titanic", "year": "1953"},
+        },
+        {
+            "node_id": 2,
+            "entity_id": "e2",
+            "graph_name": "g1",
+            "resolve_value": "Titanic",
+            "labels": ["__Entity__", "Movie"],
+            "properties": {"name": "Titanic", "year": "1997"},
+        },
+    ]
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(
+        return_value=MagicMock(
+            content='{"same_entity": true, "confidence": 1.0, "merge_allowed": true}'
+        )
+    )
+    resolver = _MemgraphEntityResolver(FakeGraphStore(rows=rows))
+
+    result = await resolver.resolve(
+        strategy="hybrid",
+        merge_threshold=95.0,
+        review_threshold=85.0,
+        llm=llm,
+        allow_ai_auto_merge=True,
+        conflict_properties={"Movie": ["year"]},
+    )
+
+    llm.ainvoke.assert_not_awaited()
+    assert result["merged_groups"] == 0
+    assert result["review_groups"][0]["decision"] == "blocked"
+    assert result["review_groups"][0]["conflicts"][0]["property"] == "year"
 
 
 @pytest.mark.asyncio

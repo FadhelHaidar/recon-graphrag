@@ -41,6 +41,14 @@ class NodeType:
         return {prop.name for prop in self.properties}
 
 
+# Properties automatically added to every NodeType when not explicitly defined.
+# Developers can override by defining these in their schema.
+_DEFAULT_NODE_PROPERTIES = [
+    PropertyType(name="name", type="STRING"),
+    PropertyType(name="description", type="STRING"),
+]
+
+
 @dataclass(frozen=True)
 class RelationshipType:
     label: str
@@ -59,8 +67,20 @@ class GraphSchema:
     patterns: list[tuple[str, str, str]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        self._inject_default_properties()
         object.__setattr__(self, "_validated", True)
         self.validate()
+
+    def _inject_default_properties(self) -> None:
+        """Auto-inject name and description on node types that lack them."""
+        for node in self.node_types:
+            existing = node.property_names
+            missing = [p for p in _DEFAULT_NODE_PROPERTIES if p.name not in existing]
+            if missing:
+                # Frozen dataclass — use object.__setattr__ to update
+                object.__setattr__(
+                    node, "properties", list(node.properties) + missing
+                )
 
     def node_labels(self) -> set[str]:
         return {node.label for node in self.node_types}

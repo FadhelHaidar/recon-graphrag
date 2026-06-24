@@ -1,6 +1,6 @@
 """Recon-GraphRAG: a GraphRAG SDK for Neo4j and Memgraph."""
 
-__version__ = "0.3.0"
+from recon_graphrag._version import __version__, get_git_sha
 
 # Pipelines
 from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
@@ -48,6 +48,9 @@ from recon_graphrag.communities import (
 from recon_graphrag.config.settings import PipelineConfig
 
 __all__ = [
+    # Version
+    "__version__",
+    "get_git_sha",
     # Pipelines
     "GraphBuilderPipeline",
     # Retrieval

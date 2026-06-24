@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from recon_graphrag.models.artifacts import ClaimRecord, DescriptionObservation
+
 
 @dataclass
 class ExtractedNode:
@@ -23,6 +25,18 @@ class ExtractedRelationship:
     target_id: str
     type: str
     properties: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ExtractedClaim:
+    """A claim extracted by the LLM before validation and persistence."""
+
+    subject_entity_id: str
+    claim_type: str
+    description: str
+    status: str = "active"
+    start_date: str | None = None
+    end_date: str | None = None
 
 
 @dataclass
@@ -55,6 +69,9 @@ class EntityRecord:
     type: str
     properties: dict[str, Any] = field(default_factory=dict)
     graph_name: str = "entity-graph"
+    canonical_key: str | None = None
+    human_readable_id: str | None = None
+    description_observations: list[DescriptionObservation] = field(default_factory=list)
 
 
 @dataclass
@@ -65,6 +82,8 @@ class RelationshipRecord:
     type: str
     properties: dict[str, Any] = field(default_factory=dict)
     graph_name: str = "entity-graph"
+    observation_count: int = 1
+    strength: float | None = None
 
 
 @dataclass
@@ -81,3 +100,4 @@ class GraphDocument:
     entities: list[EntityRecord]
     relationships: list[RelationshipRecord]
     evidence_links: list[EvidenceLink]
+    claims: list[ClaimRecord] = field(default_factory=list)

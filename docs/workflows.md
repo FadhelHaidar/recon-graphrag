@@ -76,7 +76,9 @@ GraphExtraction(
 )
 ```
 
-After validation and assembly, the corresponding `GraphDocument` contains normalized records:
+After validation and assembly, the corresponding `GraphDocument` contains
+normalized records. Entity `id` values are UUIDs; the extraction IDs are
+preserved as readable `canonical_key` / `human_readable_id` values.
 
 ```python
 GraphDocument(
@@ -97,31 +99,57 @@ GraphDocument(
     ],
     entities=[
         EntityRecord(
-            id="ent-1",
+            id="<uuid-for-ent-1>",
             type="Person",
-            properties={"name": "Christopher Nolan", "description": "Film director"},
+            canonical_key="ent-1",
+            human_readable_id="ent-1",
+            properties={
+                "name": "Christopher Nolan",
+                "title": "Christopher Nolan",
+                "description": "Film director",
+                "canonical_key": "ent-1",
+                "human_readable_id": "ent-1",
+            },
             graph_name="entity-graph",
         ),
         EntityRecord(
-            id="ent-2",
+            id="<uuid-for-ent-2>",
             type="Movie",
-            properties={"name": "Inception", "description": "Science fiction film"},
+            canonical_key="ent-2",
+            human_readable_id="ent-2",
+            properties={
+                "name": "Inception",
+                "title": "Inception",
+                "description": "Science fiction film",
+                "canonical_key": "ent-2",
+                "human_readable_id": "ent-2",
+            },
             graph_name="entity-graph",
         ),
         EntityRecord(
-            id="ent-3",
+            id="<uuid-for-ent-3>",
             type="Person",
-            properties={"name": "Hans Zimmer", "description": "Composer"},
+            canonical_key="ent-3",
+            human_readable_id="ent-3",
+            properties={
+                "name": "Hans Zimmer",
+                "title": "Hans Zimmer",
+                "description": "Composer",
+                "canonical_key": "ent-3",
+                "human_readable_id": "ent-3",
+            },
             graph_name="entity-graph",
         ),
     ],
     relationships=[
         RelationshipRecord(
-            id="ent-1:DIRECTED:ent-2",
-            source_id="ent-1",
-            target_id="ent-2",
+            id="<uuid-for-ent-1-directed-ent-2>",
+            source_id="<uuid-for-ent-1>",
+            target_id="<uuid-for-ent-2>",
             type="DIRECTED",
             properties={
+                "canonical_key": "ent-1:DIRECTED:ent-2",
+                "human_readable_id": "ent-1:DIRECTED:ent-2",
                 "description": "Christopher Nolan directed Inception",
                 "weight": 1.0,
                 "source_chunk_ids": ["doc:inception-example:chunk:0"],
@@ -129,11 +157,13 @@ GraphDocument(
             graph_name="entity-graph",
         ),
         RelationshipRecord(
-            id="ent-3:COMPOSED_MUSIC:ent-2",
-            source_id="ent-3",
-            target_id="ent-2",
+            id="<uuid-for-ent-3-composed-music-ent-2>",
+            source_id="<uuid-for-ent-3>",
+            target_id="<uuid-for-ent-2>",
             type="COMPOSED_MUSIC",
             properties={
+                "canonical_key": "ent-3:COMPOSED_MUSIC:ent-2",
+                "human_readable_id": "ent-3:COMPOSED_MUSIC:ent-2",
                 "description": "Hans Zimmer composed music for Inception",
                 "weight": 1.0,
                 "source_chunk_ids": ["doc:inception-example:chunk:0"],
@@ -142,9 +172,9 @@ GraphDocument(
         ),
     ],
     evidence_links=[
-        EvidenceLink(chunk_id="doc:inception-example:chunk:0", entity_id="ent-1", graph_name="entity-graph"),
-        EvidenceLink(chunk_id="doc:inception-example:chunk:0", entity_id="ent-2", graph_name="entity-graph"),
-        EvidenceLink(chunk_id="doc:inception-example:chunk:0", entity_id="ent-3", graph_name="entity-graph"),
+        EvidenceLink(chunk_id="doc:inception-example:chunk:0", entity_id="<uuid-for-ent-1>", graph_name="entity-graph"),
+        EvidenceLink(chunk_id="doc:inception-example:chunk:0", entity_id="<uuid-for-ent-2>", graph_name="entity-graph"),
+        EvidenceLink(chunk_id="doc:inception-example:chunk:0", entity_id="<uuid-for-ent-3>", graph_name="entity-graph"),
     ],
 )
 ```
@@ -266,28 +296,68 @@ The file produced by `save_graph_document_json()` contains the complete
     }
   ],
   "entities": [
-    {"id": "ent-1", "type": "Person", "properties": {"name": "Christopher Nolan", "description": "Film director"}},
-    {"id": "ent-2", "type": "Movie", "properties": {"name": "Inception", "description": "Science fiction film"}},
-    {"id": "ent-3", "type": "Person", "properties": {"name": "Hans Zimmer", "description": "Composer"}}
+    {
+      "id": "<uuid-for-ent-1>",
+      "type": "Person",
+      "canonical_key": "ent-1",
+      "human_readable_id": "ent-1",
+      "properties": {
+        "name": "Christopher Nolan",
+        "title": "Christopher Nolan",
+        "description": "Film director",
+        "canonical_key": "ent-1",
+        "human_readable_id": "ent-1"
+      }
+    },
+    {
+      "id": "<uuid-for-ent-2>",
+      "type": "Movie",
+      "canonical_key": "ent-2",
+      "human_readable_id": "ent-2",
+      "properties": {
+        "name": "Inception",
+        "title": "Inception",
+        "description": "Science fiction film",
+        "canonical_key": "ent-2",
+        "human_readable_id": "ent-2"
+      }
+    },
+    {
+      "id": "<uuid-for-ent-3>",
+      "type": "Person",
+      "canonical_key": "ent-3",
+      "human_readable_id": "ent-3",
+      "properties": {
+        "name": "Hans Zimmer",
+        "title": "Hans Zimmer",
+        "description": "Composer",
+        "canonical_key": "ent-3",
+        "human_readable_id": "ent-3"
+      }
+    }
   ],
   "relationships": [
     {
-      "id": "ent-1:DIRECTED:ent-2",
-      "source_id": "ent-1",
-      "target_id": "ent-2",
+      "id": "<uuid-for-ent-1-directed-ent-2>",
+      "source_id": "<uuid-for-ent-1>",
+      "target_id": "<uuid-for-ent-2>",
       "type": "DIRECTED",
       "properties": {
+        "canonical_key": "ent-1:DIRECTED:ent-2",
+        "human_readable_id": "ent-1:DIRECTED:ent-2",
         "description": "Christopher Nolan directed Inception",
         "weight": 1.0,
         "source_chunk_ids": ["doc:inception-example:chunk:0"]
       }
     },
     {
-      "id": "ent-3:COMPOSED_MUSIC:ent-2",
-      "source_id": "ent-3",
-      "target_id": "ent-2",
+      "id": "<uuid-for-ent-3-composed-music-ent-2>",
+      "source_id": "<uuid-for-ent-3>",
+      "target_id": "<uuid-for-ent-2>",
       "type": "COMPOSED_MUSIC",
       "properties": {
+        "canonical_key": "ent-3:COMPOSED_MUSIC:ent-2",
+        "human_readable_id": "ent-3:COMPOSED_MUSIC:ent-2",
         "description": "Hans Zimmer composed music for Inception",
         "weight": 1.0,
         "source_chunk_ids": ["doc:inception-example:chunk:0"]
@@ -295,9 +365,9 @@ The file produced by `save_graph_document_json()` contains the complete
     }
   ],
   "evidence_links": [
-    {"chunk_id": "doc:inception-example:chunk:0", "entity_id": "ent-1"},
-    {"chunk_id": "doc:inception-example:chunk:0", "entity_id": "ent-2"},
-    {"chunk_id": "doc:inception-example:chunk:0", "entity_id": "ent-3"}
+    {"chunk_id": "doc:inception-example:chunk:0", "entity_id": "<uuid-for-ent-1>"},
+    {"chunk_id": "doc:inception-example:chunk:0", "entity_id": "<uuid-for-ent-2>"},
+    {"chunk_id": "doc:inception-example:chunk:0", "entity_id": "<uuid-for-ent-3>"}
   ]
 }
 ```
@@ -434,6 +504,48 @@ result = await store.resolve_entities(
 )
 ```
 
+Hybrid LLM review uses compact entity profiles rather than only candidate
+names. Profiles include safe defaults such as display names, descriptions,
+readable keys, aliases, labels, and non-internal properties. You can narrow the
+extra properties sent to the LLM:
+
+```python
+result = await store.resolve_entities(
+    graph_name="entity-graph",
+    strategy="hybrid",
+    dry_run=True,
+    embedder=embedder,
+    llm=llm,
+    context_properties={
+        "Movie": ["year", "description"],
+        "Person": ["description", "birth_date"],
+    },
+)
+```
+
+Use conflict properties when same-name entities should stay separate if a
+domain key differs:
+
+```python
+result = await store.resolve_entities(
+    graph_name="entity-graph",
+    strategy="hybrid",
+    dry_run=True,
+    embedder=embedder,
+    llm=llm,
+    conflict_properties={
+        "Movie": ["year"],
+        "Person": ["birth_date"],
+    },
+    llm_guidance="Do not merge entities when configured properties conflict.",
+)
+```
+
+For example, `Movie` entities named `Titanic` with `year=1953` and `year=1997`
+are returned as blocked review candidates when `conflict_properties={"Movie":
+["year"]}` is configured. Missing values do not block; explicit unequal values
+do.
+
 By default, the LLM review is returned for audit but does not merge the review
 candidates. To let hybrid resolution apply LLM-approved merges, opt in
 explicitly:
@@ -489,7 +601,8 @@ Backend notes:
 
 Instead of `GraphRAG.search()`, you can instantiate retrievers directly. This is useful when you need fine-grained control over index names, prompts, or result formatting.
 
-All retrievers return a [`SearchResult`](../recon_graphrag/models/types.py) with `query`, `mode`, `answer`, and `context`.
+All retrievers return a [`SearchResult`](../recon_graphrag/models/types.py)
+with `query`, `mode`, `answer`, `context`, and optional `citations`.
 
 ```python
 SearchResult(
@@ -497,8 +610,20 @@ SearchResult(
     mode="local",
     answer="Christopher Nolan directed Inception.",
     context="Finding: Christopher Nolan (Person)\nConnections:\n  Person: Christopher Nolan -[DIRECTED]-> Movie: Inception\nEvidence:\n  Christopher Nolan directed Inception.",
+    citations=[
+        Citation(
+            document_id="doc:custom",
+            chunk_id="doc:custom:chunk:0",
+            metadata={"record_id": "row-42", "collection": "movies"},
+        )
+    ],
 )
 ```
+
+Citation metadata is intentionally flexible. It is copied from document and
+chunk metadata, so callers can use row IDs, item IDs, file IDs, API object IDs,
+ticket IDs, page ranges, or any other source keys without changing the graph
+schema.
 
 ### `LocalSearchRetriever`
 
@@ -649,7 +774,11 @@ from recon_graphrag.extraction.validator import SchemaValidator
 
 async def extract_to_json(text: str, schema: GraphSchema, llm, out_path: Path):
     chunker = TextChunker(chunk_size=1000, chunk_overlap=200)
-    chunks = chunker.chunk_text(text, document_id="doc:custom")
+    chunks = chunker.chunk_text(
+        text,
+        document_id="doc:custom",
+        metadata={"record_id": "row-42", "collection": "movies"},
+    )
 
     extractor = LLMGraphExtractor(llm)
     validator = SchemaValidator()
@@ -665,7 +794,7 @@ async def extract_to_json(text: str, schema: GraphSchema, llm, out_path: Path):
         text_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
         chunks=chunks,
         chunk_extractions=chunk_extractions,
-        metadata={"source": "advanced"},
+        metadata={"source": "advanced", "record_id": "row-42"},
         graph_name="entity-graph",
     )
 

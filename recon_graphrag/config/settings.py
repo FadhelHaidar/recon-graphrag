@@ -7,6 +7,36 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from recon_graphrag.utils.tokens import TokenCounter
+
+
+@dataclass
+class BudgetConfig:
+    """Per-stage token budgets.
+
+    All values are optional. ``None`` means no budget is enforced for that stage.
+    These budgets are consumed by later phases; PR 2 only introduces the
+    configuration shape and validation.
+    """
+
+    extraction_chunk_tokens: int | None = None
+    community_input_tokens: int | None = None
+    community_output_tokens: int | None = None
+    global_map_input_tokens: int | None = None
+    global_map_output_tokens: int | None = None
+    global_reduce_input_tokens: int | None = None
+    global_reduce_output_tokens: int | None = None
+
+    def __post_init__(self):
+        for field_name, value in self.__dict__.items():
+            if value is None:
+                continue
+            if not isinstance(value, int) or value <= 0:
+                raise ValueError(
+                    f"BudgetConfig.{field_name} must be a positive integer or None, "
+                    f"got {value!r}"
+                )
+
 
 @dataclass
 class PipelineConfig:
@@ -19,9 +49,26 @@ class PipelineConfig:
             sentence-transformers; defaults to 1536 (OpenAI) if not specified.
         extraction_concurrency: Maximum number of chunks to extract concurrently.
             Set to 1 to process chunks sequentially.
+        budget: Optional per-stage token budgets.
+        token_counter: Optional token counter for budget-aware operations.
+            When absent, callers fall back to ``ApproximateTokenCounter``.
     """
 
     chunk_size: int = 1000
     chunk_overlap: int = 200
     embedding_dim: int | None = None
     extraction_concurrency: int = 5
+    max_gleanings: int = 0
+    extract_claims: bool = False
+    budget: BudgetConfig | None = None
+    token_counter: TokenCounter | None = None
+
+    def __post_init__(self):
+        if self.chunk_size <= 0:
+            raise ValueError("chunk_size must be > 0")
+        if self.chunk_overlap < 0:
+            raise ValueError("chunk_overlap must be >= 0")
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError("chunk_overlap must be < chunk_size")
+        if self.max_gleanings < 0:
+            raise ValueError("max_gleanings must be >= 0")

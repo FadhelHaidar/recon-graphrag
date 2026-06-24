@@ -29,7 +29,9 @@ class GraphRAG:
         embedder: BaseEmbedder,
         graph_name: str = "entity-graph",
     ):
-        self.local = LocalSearchRetriever(graph_store, llm, embedder)
+        self.local = LocalSearchRetriever(
+            graph_store, llm, embedder, graph_name=graph_name
+        )
         self.global_ = GlobalSearchRetriever(
             graph_store, llm, embedder, graph_name=graph_name
         )
