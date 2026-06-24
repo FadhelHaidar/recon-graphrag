@@ -7,8 +7,10 @@ import pytest
 from recon_graphrag.config.settings import BudgetConfig, PipelineConfig
 from recon_graphrag.utils.tokens import (
     ApproximateTokenCounter,
+    PackItem,
     count_tokens,
     create_token_counter,
+    pack_items,
     truncate_text,
 )
 
@@ -91,6 +93,44 @@ class TestConvenienceFunctions:
 
     def test_truncate_text_default_counter(self):
         assert truncate_text("abcdefghij", 2) == "abcdefgh"
+
+
+class TestPackItems:
+    def test_pack_items_uses_existing_order(self):
+        items = [
+            PackItem(id="low", text="aaaa", priority=0.0),
+            PackItem(id="high", text="bbbb", priority=10.0),
+            PackItem(id="third", text="cccc", priority=5.0),
+        ]
+
+        result = pack_items(
+            items,
+            max_tokens=2,
+            counter=ApproximateTokenCounter(ratio=4.0),
+        )
+
+        assert [item.id for item in result.included] == ["low", "high"]
+        assert [item.id for item in result.excluded] == ["third"]
+        assert result.used_tokens == 2
+
+    def test_pack_items_can_truncate_oversized_item(self):
+        items = [PackItem(id="large", text="abcdefghij")]
+
+        result = pack_items(
+            items,
+            max_tokens=2,
+            counter=ApproximateTokenCounter(ratio=4.0),
+            truncate_oversized=True,
+        )
+
+        assert len(result.included) == 1
+        assert result.included[0].text == "abcdefgh"
+        assert result.excluded == []
+        assert result.truncated_item_ids == ["large"]
+
+    def test_pack_items_rejects_negative_budget(self):
+        with pytest.raises(ValueError):
+            pack_items([], max_tokens=-1)
 
 
 class TestBudgetConfig:

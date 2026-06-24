@@ -58,6 +58,79 @@ class ApproximateTokenCounter:
         return text[:max_chars]
 
 
+@dataclass(frozen=True)
+class PackItem:
+    """An already ordered item to include in a token budget."""
+
+    id: str
+    text: str
+    priority: float = 0.0
+
+
+@dataclass(frozen=True)
+class PackResult:
+    """Result of greedy token packing."""
+
+    included: list[PackItem]
+    excluded: list[PackItem]
+    used_tokens: int
+    max_tokens: int
+    truncated_item_ids: list[str]
+
+
+def pack_items(
+    items: list[PackItem],
+    max_tokens: int,
+    counter: TokenCounter | None = None,
+    *,
+    truncate_oversized: bool = False,
+) -> PackResult:
+    """Greedily pack already ordered items into ``max_tokens``.
+
+    The caller owns ordering policy. This helper only applies stable greedy
+    inclusion and optionally truncates a single oversized item to fit remaining
+    budget.
+    """
+    if max_tokens < 0:
+        raise ValueError("max_tokens must be >= 0")
+    counter = counter or ApproximateTokenCounter()
+    included: list[PackItem] = []
+    excluded: list[PackItem] = []
+    truncated_item_ids: list[str] = []
+    used_tokens = 0
+
+    for item in items:
+        item_tokens = counter.count(item.text)
+        if used_tokens + item_tokens <= max_tokens:
+            included.append(item)
+            used_tokens += item_tokens
+            continue
+
+        remaining = max_tokens - used_tokens
+        if truncate_oversized and remaining > 0:
+            truncated_text = counter.truncate(item.text, remaining)
+            if truncated_text:
+                truncated = PackItem(
+                    id=item.id,
+                    text=truncated_text,
+                    priority=item.priority,
+                )
+                included.append(truncated)
+                used_tokens += counter.count(truncated_text)
+                truncated_item_ids.append(item.id)
+                continue
+
+        excluded.append(item)
+
+    return PackResult(
+        included=included,
+        excluded=excluded,
+        used_tokens=used_tokens,
+        max_tokens=max_tokens,
+        truncated_item_ids=truncated_item_ids,
+    )
+
+
 class TiktokenTokenCounter:
     """Exact token counter backed by ``tiktoken``, when available.
 
@@ -72,7 +145,14 @@ class TiktokenTokenCounter:
                 "TiktokenTokenCounter requires the 'tiktoken' package. "
                 "Install it or use ApproximateTokenCounter."
             ) from exc
-        self._encoding = tiktoken.get_encoding(model)
+        try:
+            self._encoding = tiktoken.get_encoding(model)
+        except Exception as exc:  # pragma: no cover - environment dependent
+            raise ImportError(
+                "TiktokenTokenCounter could not load the requested tiktoken "
+                "encoding. Install/cache the encoding or use "
+                "ApproximateTokenCounter."
+            ) from exc
 
     def count(self, text: str) -> int:
         if not text:
@@ -119,8 +199,11 @@ def truncate_text(text: str, max_tokens: int, counter: TokenCounter | None = Non
 __all__ = [
     "TokenCounter",
     "ApproximateTokenCounter",
+    "PackItem",
+    "PackResult",
     "TiktokenTokenCounter",
     "create_token_counter",
     "count_tokens",
+    "pack_items",
     "truncate_text",
 ]

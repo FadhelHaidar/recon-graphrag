@@ -22,7 +22,7 @@ from typing import Optional
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.models.types import SearchResult
-from recon_graphrag.retrieval.citations import resolve_entity_citations
+from recon_graphrag.retrieval.citations import resolve_reference_citations
 from recon_graphrag.retrieval.community_levels import (
     CommunityLevelSelector,
     resolve_community_level,
@@ -52,13 +52,18 @@ You are answering a question using community reports from a knowledge graph.
    - 0 = reports contain no relevant information
    - 100 = reports directly and completely answer the question
 3. Cite report IDs in your answer using [Report:id] format.
-4. Return valid JSON only.
+4. If the report text includes stable evidence IDs you used, include them in
+   references. Use target_type "entity", "relationship", or "claim".
+5. Return valid JSON only.
 
 JSON format:
 {{
   "answer": "Your answer based on the reports...",
   "helpfulness": 75,
-  "report_ids": ["report:1:0", "report:2:0"]
+  "report_ids": ["report:1:0", "report:2:0"],
+  "references": [
+    {{"target_id": "entity-or-claim-id", "target_type": "entity"}}
+  ]
 }}
 
 If the reports contain no relevant information, set helpfulness to 0 and
@@ -106,6 +111,7 @@ class PartialAnswer:
     answer: str
     helpfulness: int
     report_ids: list[str]
+    references: list[dict] = field(default_factory=list)
     error: str | None = None
 
 
@@ -269,17 +275,22 @@ class PaperGlobalSearch:
             context_parts.append(f"[Batch {p.batch_id}] (score: {p.helpfulness})\n{p.answer}")
         context = "\n\n---\n\n".join(context_parts)
 
-        # Resolve citations from used communities
+        # Resolve citations only from validated references returned by map.
+        references = []
+        seen_refs: set[tuple[str, str]] = set()
+        for partial in scored:
+            for ref in partial.references:
+                key = (str(ref.get("target_type", "")), str(ref.get("target_id", "")))
+                if key in seen_refs:
+                    continue
+                seen_refs.add(key)
+                references.append(ref)
+
         citations = []
         try:
-            used_report_ids = set()
-            for p in scored:
-                used_report_ids.update(p.report_ids)
-            entity_ids = self._get_community_entity_ids(list(used_report_ids))
-            if entity_ids:
-                citations = resolve_entity_citations(
-                    self.graph_store, entity_ids, self.graph_name
-                )
+            citations = resolve_reference_citations(
+                self.graph_store, self.graph_name, references
+            )
         except Exception:
             pass  # Citations are non-fatal
 
@@ -296,8 +307,11 @@ class PaperGlobalSearch:
         """Read all community reports at a given level."""
         query = """
         MATCH (c:Community {graph_name: $graph_name, level: $level})
-        WHERE c.summary IS NOT NULL AND c.summary <> ''
-        RETURN c.id AS id, c.level AS level, c.summary AS summary
+        WHERE coalesce(c.report_status, 'success') <> 'failed'
+          AND coalesce(c.report_text, c.summary, '') <> ''
+        RETURN c.id AS id,
+               c.level AS level,
+               coalesce(c.report_text, c.summary) AS summary
         ORDER BY c.id
         """
         return self.graph_store.execute_query(
@@ -310,11 +324,12 @@ class PaperGlobalSearch:
             return []
         query = """
         UNWIND $report_ids AS rid
-        MATCH (c:Community {id: rid})<-[:IN_COMMUNITY]-(e:__Entity__)
-        RETURN DISTINCT e.id AS entity_id
+        MATCH (c:Community {id: rid, graph_name: $graph_name})
+              <-[:IN_COMMUNITY]-(e:__Entity__ {graph_name: $graph_name})
+        RETURN DISTINCT coalesce(e.human_readable_id, e.canonical_key, e.id) AS entity_id
         """
         rows = self.graph_store.execute_query(
-            query, {"report_ids": report_ids}
+            query, {"graph_name": self.graph_name, "report_ids": report_ids}
         )
         return [r["entity_id"] for r in rows if r.get("entity_id")]
 
@@ -399,6 +414,7 @@ class PaperGlobalSearch:
                         answer=data.get("answer", ""),
                         helpfulness=int(data.get("helpfulness", 0)),
                         report_ids=data.get("report_ids", batch.report_ids),
+                        references=data.get("references", []),
                     )
                 except Exception as e:
                     return PartialAnswer(
@@ -425,6 +441,17 @@ class PaperGlobalSearch:
         if not isinstance(score, (int, float)) or score < 0 or score > 100:
             data["helpfulness"] = 0
 
+        allowed_types = {"entity", "relationship", "claim"}
+        references = []
+        for ref in data.get("references", []):
+            if not isinstance(ref, dict):
+                continue
+            target_id = str(ref.get("target_id", "")).strip()
+            target_type = str(ref.get("target_type", "")).strip()
+            if target_id and target_type in allowed_types:
+                references.append({"target_id": target_id, "target_type": target_type})
+        data["references"] = references
+
         return data
 
     async def _reduce_phase(
@@ -442,7 +469,12 @@ class PaperGlobalSearch:
         available = self.reduce_budget_tokens - prompt_overhead
 
         for p in partials:
+            refs = ", ".join(
+                f"{r['target_type']}:{r['target_id']}" for r in p.references
+            )
             text = f"[Score {p.helpfulness}] {p.answer}"
+            if refs:
+                text += f"\nReferences: {refs}"
             tokens = counter.count(text)
             if used_tokens + tokens > available and parts:
                 break

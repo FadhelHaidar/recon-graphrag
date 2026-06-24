@@ -48,7 +48,9 @@ class SourceReference:
 class Citation:
     """User-facing citation returned in search results.
 
-    ``excerpt`` is an optional bounded snippet from the cited chunk.
+    ``metadata`` contains source metadata copied from the cited document and
+    chunk. It supports row/list-item use cases where arbitrary keys identify the
+    source record.
     """
 
     document_id: str
@@ -57,6 +59,7 @@ class Citation:
     page_start: int | None = None
     page_end: int | None = None
     excerpt: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -247,7 +250,11 @@ def report_to_text(report: CommunityReport) -> str:
     if sorted_findings:
         lines.append("")
         for f in sorted_findings:
-            lines.append(f"- {f.description}")
+            ref_text = ", ".join(
+                f"{r.target_type}:{r.target_id}" for r in f.references
+            )
+            suffix = f" [refs: {ref_text}]" if ref_text else ""
+            lines.append(f"- {f.description}{suffix}")
     if report.summary:
         lines.append("")
         lines.append(report.summary)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from recon_graphrag.extraction.assembler import GraphDocumentAssembler
 from recon_graphrag.extraction.chunking import TextChunk
 from recon_graphrag.extraction.types import (
@@ -77,7 +79,8 @@ def make_cross_chunk_graph_document(graph_name: str = "entity-graph"):
 
 def test_entity_descriptions_accumulated_and_consolidated():
     doc = make_cross_chunk_graph_document()
-    e1 = next(e for e in doc.entities if e.id == "e1")
+    e1 = next(e for e in doc.entities if e.canonical_key == "e1")
+    assert UUID(e1.id)
     # All three unique descriptions are consolidated
     assert "desc from c1" in e1.properties["description"]
     assert "desc from c2" in e1.properties["description"]
@@ -106,7 +109,7 @@ def test_entity_empty_descriptions_excluded_from_consolidation():
         metadata={},
         graph_name="entity-graph",
     )
-    e1 = next(e for e in doc.entities if e.id == "e1")
+    e1 = next(e for e in doc.entities if e.canonical_key == "e1")
     # Empty description excluded from consolidation
     assert e1.properties["description"] == ""
     assert len(e1.description_observations) == 1
@@ -191,7 +194,8 @@ def test_rerun_does_not_inflate_entities():
         graph_name=first.document.graph_name,
     )
     assert len(second.entities) == 2
-    assert {e.id for e in second.entities} == {"e1", "e2"}
+    assert {e.id for e in second.entities} == {e.id for e in first.entities}
+    assert {e.canonical_key for e in second.entities} == {"e1", "e2"}
 
 
 def test_graph_name_stamped_on_all_records():
@@ -209,4 +213,7 @@ def test_graph_name_isolation_at_assembler_level():
     doc_b = make_cross_chunk_graph_document(graph_name="graph-b")
     assert doc_a.document.graph_name == "graph-a"
     assert doc_b.document.graph_name == "graph-b"
-    assert {e.id for e in doc_a.entities} == {e.id for e in doc_b.entities}
+    assert {e.canonical_key for e in doc_a.entities} == {
+        e.canonical_key for e in doc_b.entities
+    }
+    assert {e.id for e in doc_a.entities} != {e.id for e in doc_b.entities}

@@ -3,6 +3,7 @@
 import pytest
 
 from recon_graphrag.llm import LLMResponse
+from recon_graphrag.models.artifacts import Citation
 from recon_graphrag.retrieval.hybrid import HybridEntityRetriever, merge_hybrid_scores
 from recon_graphrag.retrieval.local import LocalSearchRetriever
 
@@ -54,8 +55,34 @@ class FakeGraphStore:
                 "title": "Alice (Person)",
                 "relationships": ["Person: Alice -[DIRECTED]-> Movie: Inception"],
                 "source_text": ["Alice directed Inception."],
+                "source_chunk_ids": ["chunk:1"],
                 "score": matches[0]["score"],
                 "custom": params.get("custom"),
+            }
+        ]
+
+    def resolve_chunk_citations(self, graph_name, chunk_ids):
+        self.calls.append(
+            (
+                "resolve_chunk_citations",
+                {"graph_name": graph_name, "chunk_ids": chunk_ids},
+            )
+        )
+        return [
+            {
+                "document_id": "doc:1",
+                "chunk_id": "chunk:1",
+                "document_name": "Doc 1",
+                "page_start": None,
+                "page_end": None,
+                "document_metadata": {"collection": "movies", "source": "dataset-a"},
+                "chunk_metadata": {
+                    "record_id": "row-42",
+                    "source": "row-source",
+                    "embedding": [0.0],
+                    "graph_name": graph_name,
+                },
+                "excerpt": "Alice directed Inception.",
             }
         ]
 
@@ -199,3 +226,24 @@ async def test_local_search_uses_internal_retriever_and_llm():
     assert result.answer == "Alice directed Inception."
     assert "Finding: Alice (Person)" in result.context
     assert "Alice directed Inception." in llm.prompts[0]
+    assert result.citations == [
+        Citation(
+            document_id="doc:1",
+            chunk_id="chunk:1",
+            document_name="Doc 1",
+            excerpt="Alice directed Inception.",
+            metadata={
+                "collection": "movies",
+                "source": "row-source",
+                "record_id": "row-42",
+                "document_id": "doc:1",
+                "chunk_id": "chunk:1",
+                "document_name": "Doc 1",
+            },
+        )
+    ]
+    citation_call = [c for c in store.calls if c[0] == "resolve_chunk_citations"][0]
+    assert citation_call[1] == {
+        "graph_name": "entity-graph",
+        "chunk_ids": ["chunk:1"],
+    }

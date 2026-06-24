@@ -17,6 +17,7 @@ from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.models.types import SearchResult
 from recon_graphrag.retrieval.base import BaseRetriever
+from recon_graphrag.retrieval.citations import resolve_chunk_citations
 from recon_graphrag.retrieval.hybrid import HybridEntityRetriever, HybridRanker
 
 
@@ -46,6 +47,7 @@ class LocalSearchRetriever(BaseRetriever):
         answer_prompt: Optional[str] = None,
         vector_index_name: str = "entity-embeddings",
         fulltext_index_name: str = "entity-names",
+        graph_name: str = "entity-graph",
     ):
         self.graph_store = graph_store
         self.llm = llm
@@ -54,6 +56,7 @@ class LocalSearchRetriever(BaseRetriever):
         self.answer_prompt = answer_prompt or DEFAULT_ANSWER_PROMPT
         self.vector_index_name = vector_index_name
         self.fulltext_index_name = fulltext_index_name
+        self.graph_name = graph_name
         self._retriever = self._build_retriever()
 
     def _build_retriever(self) -> HybridEntityRetriever:
@@ -88,7 +91,14 @@ class LocalSearchRetriever(BaseRetriever):
         )
         context = self._format_context(retriever_result)
         answer = await self._generate_answer(query, context)
-        return SearchResult(query=query, mode="local", answer=answer, context=context)
+        citations = self._resolve_citations(retriever_result)
+        return SearchResult(
+            query=query,
+            mode="local",
+            answer=answer,
+            context=context,
+            citations=citations,
+        )
 
     def _format_context(self, retriever_result) -> str:
         """Format retriever results into a context string for the LLM."""
@@ -109,8 +119,35 @@ class LocalSearchRetriever(BaseRetriever):
                 parts.append(section)
         return "\n\n---\n\n".join(parts)
 
+    def _resolve_citations(self, retriever_result):
+        chunk_ids = _source_chunk_ids_from_result(retriever_result)
+        try:
+            return resolve_chunk_citations(
+                self.graph_store,
+                self.graph_name,
+                chunk_ids,
+            )
+        except Exception:
+            return []
+
     async def _generate_answer(self, query: str, context: str) -> str:
         """Generate answer from context using LLM."""
         prompt = self.answer_prompt.format(query=query, context=context)
         response = await self.llm.ainvoke(prompt)
         return response.content
+
+
+def _source_chunk_ids_from_result(retriever_result) -> list[str]:
+    seen: set[str] = set()
+    chunk_ids: list[str] = []
+    for item in retriever_result.items:
+        content = item.content
+        if not isinstance(content, dict):
+            continue
+        for chunk_id in content.get("source_chunk_ids", []):
+            chunk_id = str(chunk_id).strip()
+            if not chunk_id or chunk_id in seen:
+                continue
+            seen.add(chunk_id)
+            chunk_ids.append(chunk_id)
+    return chunk_ids

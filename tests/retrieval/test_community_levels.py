@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from recon_graphrag.llm import LLMResponse
+from recon_graphrag.models.artifacts import Citation
 from recon_graphrag.retrieval.community_levels import resolve_community_level
 from recon_graphrag.retrieval.drift import DriftSearchRetriever
 from recon_graphrag.retrieval.global_search import GlobalSearchRetriever
@@ -52,6 +53,15 @@ class FakeGraphStore:
         )
         return []
 
+    def resolve_chunk_citations(self, graph_name, chunk_ids):
+        self.calls.append(
+            (
+                "resolve_chunk_citations",
+                {"graph_name": graph_name, "chunk_ids": chunk_ids},
+            )
+        )
+        return [{"document_id": "doc:1", "chunk_id": "chunk:1"}]
+
 
 class FakeEmbedder:
     async def async_embed_query(self, text):
@@ -72,6 +82,7 @@ class FakeHybridRetriever:
                         "title": "Inception (Movie)",
                         "relationships": [],
                         "source_text": ["source"],
+                        "source_chunk_ids": ["chunk:1"],
                         "communities": [
                             {
                                 "id": "c0",
@@ -134,7 +145,19 @@ async def test_drift_search_accepts_coarsest_alias():
     result = await retriever.search("themes", top_k=1)
 
     assert result.answer == "answer"
+    assert result.citations == [
+        Citation(
+            document_id="doc:1",
+            chunk_id="chunk:1",
+            metadata={"document_id": "doc:1", "chunk_id": "chunk:1"},
+        )
+    ]
     summary_call = [
         c for c in store.calls if c[0] == "get_community_summaries_by_keys"
     ][0]
     assert summary_call[1]["keys"] == [{"id": "c2", "level": 2}]
+    citation_call = [c for c in store.calls if c[0] == "resolve_chunk_citations"][0]
+    assert citation_call[1] == {
+        "graph_name": "entity-graph",
+        "chunk_ids": ["chunk:1"],
+    }

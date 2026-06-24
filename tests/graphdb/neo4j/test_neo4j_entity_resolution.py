@@ -1,5 +1,6 @@
 """Tests for Neo4j entity resolution strategies."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -486,6 +487,252 @@ async def test_neo4j_resolver_hybrid_uses_llm_with_aliases_and_guidance():
     assert result["signals"]["llm"] == "used"
     assert result["review_groups"][0]["scores"]["llm"] == 0.91
     assert result["review_groups"][0]["llm_review"]["same_entity"] is True
+
+
+@pytest.mark.asyncio
+async def test_neo4j_resolver_hybrid_sends_property_context_to_llm():
+    rows = [
+        {
+            "node_id": "4:a",
+            "entity_id": "e1",
+            "graph_name": "g1",
+            "resolve_value": "John Smith",
+            "labels": ["__Entity__", "Person"],
+            "properties": {
+                "name": "John Smith",
+                "title": "John Smith",
+                "description": "Senior engineer on the Apollo API team.",
+                "canonical_key": "person:john-smith",
+                "human_readable_id": "person:john-smith",
+                "department": "Platform",
+                "embedding": [0.1, 0.2],
+                "graph_name": "g1",
+            },
+        },
+        {
+            "node_id": "4:b",
+            "entity_id": "e2",
+            "graph_name": "g1",
+            "resolve_value": "Jon Smith",
+            "labels": ["__Entity__", "Person"],
+            "properties": {
+                "name": "Jon Smith",
+                "description": "Apollo API platform engineer.",
+                "canonical_key": "person:jon-smith",
+                "department": "Platform",
+            },
+        },
+    ]
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(
+        return_value=MagicMock(
+            content=(
+                '{"same_entity": true, "confidence": 0.91, '
+                '"reason": "Descriptions and department match.", '
+                '"merge_allowed": false}'
+            )
+        )
+    )
+    resolver = _Neo4jEntityResolver(FakeGraphStore(apoc_available=True, rows=rows))
+
+    result = await resolver.resolve(
+        strategy="hybrid",
+        dry_run=True,
+        merge_threshold=95.0,
+        review_threshold=85.0,
+        llm=llm,
+        context_properties={"Person": ["department"]},
+    )
+
+    payload = json.loads(llm.ainvoke.await_args.args[0])
+    profiles = payload["candidate"]["entities"]
+    assert profiles[0]["description"] == "Senior engineer on the Apollo API team."
+    assert profiles[0]["canonical_key"] == "person:john-smith"
+    assert profiles[0]["properties"] == {"department": "Platform"}
+    assert "embedding" not in json.dumps(profiles)
+    assert "graph_name" not in profiles[0]
+    assert result["review_groups"][0]["entities"] == profiles
+
+
+@pytest.mark.asyncio
+async def test_neo4j_resolver_hybrid_config_only_context_mode_limits_properties():
+    rows = [
+        {
+            "node_id": "4:a",
+            "entity_id": "e1",
+            "graph_name": "g1",
+            "resolve_value": "John Smith",
+            "labels": ["__Entity__", "Person"],
+            "properties": {
+                "name": "John Smith",
+                "description": "Senior engineer on the Apollo API team.",
+                "department": "Platform",
+                "role": "Engineer",
+            },
+        },
+        {
+            "node_id": "4:b",
+            "entity_id": "e2",
+            "graph_name": "g1",
+            "resolve_value": "Jon Smith",
+            "labels": ["__Entity__", "Person"],
+            "properties": {
+                "name": "Jon Smith",
+                "description": "Apollo API platform engineer.",
+                "department": "Platform",
+                "role": "Engineer",
+            },
+        },
+    ]
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(
+        return_value=MagicMock(
+            content='{"same_entity": true, "confidence": 0.91, "merge_allowed": false}'
+        )
+    )
+    resolver = _Neo4jEntityResolver(FakeGraphStore(apoc_available=True, rows=rows))
+
+    await resolver.resolve(
+        strategy="hybrid",
+        dry_run=True,
+        merge_threshold=95.0,
+        review_threshold=85.0,
+        llm=llm,
+        context_properties=["department"],
+        context_mode="config_only",
+    )
+
+    payload = json.loads(llm.ainvoke.await_args.args[0])
+    profiles = payload["candidate"]["entities"]
+    assert profiles[0]["description"] == "Senior engineer on the Apollo API team."
+    assert profiles[0]["properties"] == {"department": "Platform"}
+    assert "role" not in profiles[0]["properties"]
+
+
+@pytest.mark.asyncio
+async def test_neo4j_resolver_hybrid_truncates_long_property_context():
+    long_description = "x" * 700
+    rows = [
+        {
+            "node_id": "4:a",
+            "entity_id": "e1",
+            "graph_name": "g1",
+            "resolve_value": "John Smith",
+            "labels": ["__Entity__", "Person"],
+            "properties": {"name": "John Smith", "description": long_description},
+        },
+        {
+            "node_id": "4:b",
+            "entity_id": "e2",
+            "graph_name": "g1",
+            "resolve_value": "Jon Smith",
+            "labels": ["__Entity__", "Person"],
+            "properties": {"name": "Jon Smith", "description": long_description},
+        },
+    ]
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(
+        return_value=MagicMock(
+            content='{"same_entity": false, "confidence": 0.5, "merge_allowed": false}'
+        )
+    )
+    resolver = _Neo4jEntityResolver(FakeGraphStore(apoc_available=True, rows=rows))
+
+    await resolver.resolve(
+        strategy="hybrid",
+        dry_run=True,
+        merge_threshold=95.0,
+        review_threshold=85.0,
+        llm=llm,
+    )
+
+    payload = json.loads(llm.ainvoke.await_args.args[0])
+    assert len(payload["candidate"]["entities"][0]["description"]) == 500
+
+
+@pytest.mark.asyncio
+async def test_neo4j_resolver_hybrid_conflict_properties_block_auto_merge():
+    rows = [
+        {
+            "node_id": "4:a",
+            "entity_id": "e1",
+            "graph_name": "g1",
+            "resolve_value": "Titanic",
+            "labels": ["__Entity__", "Movie"],
+            "properties": {"name": "Titanic", "year": "1953"},
+        },
+        {
+            "node_id": "4:b",
+            "entity_id": "e2",
+            "graph_name": "g1",
+            "resolve_value": "Titanic",
+            "labels": ["__Entity__", "Movie"],
+            "properties": {"name": "Titanic", "year": "1997"},
+        },
+    ]
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(
+        return_value=MagicMock(
+            content='{"same_entity": true, "confidence": 1.0, "merge_allowed": true}'
+        )
+    )
+    resolver = _Neo4jEntityResolver(FakeGraphStore(apoc_available=True, rows=rows))
+
+    result = await resolver.resolve(
+        strategy="hybrid",
+        merge_threshold=95.0,
+        review_threshold=85.0,
+        llm=llm,
+        allow_ai_auto_merge=True,
+        conflict_properties={"Movie": ["year"]},
+    )
+
+    llm.ainvoke.assert_not_awaited()
+    assert result["merged_groups"] == 0
+    assert result["review_groups"][0]["decision"] == "blocked"
+    assert result["review_groups"][0]["conflicts"][0]["property"] == "year"
+    assert result["review_groups"][0]["llm_review"]["merge_allowed"] is False
+
+
+@pytest.mark.asyncio
+async def test_neo4j_resolver_hybrid_matching_conflict_property_allows_llm_review():
+    rows = [
+        {
+            "node_id": "4:a",
+            "entity_id": "e1",
+            "graph_name": "g1",
+            "resolve_value": "John Smith",
+            "labels": ["__Entity__", "Person"],
+            "properties": {"name": "John Smith", "country": "US"},
+        },
+        {
+            "node_id": "4:b",
+            "entity_id": "e2",
+            "graph_name": "g1",
+            "resolve_value": "Jon Smith",
+            "labels": ["__Entity__", "Person"],
+            "properties": {"name": "Jon Smith", "country": "us"},
+        },
+    ]
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(
+        return_value=MagicMock(
+            content='{"same_entity": true, "confidence": 0.91, "merge_allowed": false}'
+        )
+    )
+    resolver = _Neo4jEntityResolver(FakeGraphStore(apoc_available=True, rows=rows))
+
+    result = await resolver.resolve(
+        strategy="hybrid",
+        dry_run=True,
+        merge_threshold=95.0,
+        review_threshold=85.0,
+        llm=llm,
+        conflict_properties={"Person": ["country"]},
+    )
+
+    llm.ainvoke.assert_awaited_once()
+    assert result["review_groups"][0]["decision"] == "review"
 
 
 @pytest.mark.asyncio

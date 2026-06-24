@@ -130,8 +130,8 @@ class CommunitySummarizer:
                     if self.use_reports:
                         report = await self.generate_report(cid, level)
                         summary_text = report_to_text(report)
-                        self.graph_store.store_community_summary(
-                            cid, level, summary_text, self.graph_name
+                        self.graph_store.store_community_report(
+                            report, self.graph_name
                         )
                         stats.succeeded += 1
                         return {
@@ -152,6 +152,16 @@ class CommunitySummarizer:
                         return {"id": cid, "level": level, "summary": summary}
                 except Exception as e:
                     stats.failed += 1
+                    if self.use_reports:
+                        try:
+                            self.graph_store.mark_community_report_failed(
+                                self.graph_name,
+                                cid,
+                                level,
+                                str(e),
+                            )
+                        except Exception:
+                            pass
                     print(f"  Error summarizing community {cid}: {e}")
                     return None
 
@@ -255,14 +265,7 @@ class CommunitySummarizer:
                 )
             except ReportValidationError as e2:
                 print(f"  Repair failed for {community_id}: {e2}")
-                # Return a minimal report with error info
-                return CommunityReport(
-                    id=f"report:{community_id}:{level}",
-                    community_id=community_id,
-                    level=level,
-                    title="Generation failed",
-                    summary=response.content[:500] if response.content else "",
-                )
+                raise e2
 
     def _fetch_community_context(self, community_id: str, level: int = 0) -> str:
         """Fetch context for a community as rendered text.

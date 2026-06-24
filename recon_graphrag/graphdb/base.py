@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any, Optional, Protocol, runtime_checkable
 
 from recon_graphrag.extraction.types import GraphDocument
+from recon_graphrag.models.artifacts import CommunityReport
 from recon_graphrag.models.types import IndexConfig
 
 
@@ -68,6 +69,9 @@ class GraphStore(Protocol):
         llm: Optional[Any] = None,
         llm_guidance: Optional[str] = None,
         allow_ai_auto_merge: bool = False,
+        context_properties: Optional[dict[str, list[str]] | list[str]] = None,
+        conflict_properties: Optional[dict[str, list[str]] | list[str]] = None,
+        context_mode: str = "safe_defaults",
     ) -> dict:
         """Merge duplicate entity nodes when possible."""
         ...
@@ -198,6 +202,24 @@ class GraphStore(Protocol):
         """Store a generated summary on a community node."""
         ...
 
+    def store_community_report(
+        self,
+        report: CommunityReport,
+        graph_name: str,
+    ) -> None:
+        """Store a structured community report and compatibility summary."""
+        ...
+
+    def mark_community_report_failed(
+        self,
+        graph_name: str,
+        community_id: str,
+        level: int,
+        error: str,
+    ) -> None:
+        """Record a failed community report generation attempt."""
+        ...
+
     def get_unembedded_communities(
         self, graph_name: str, level: int
     ) -> list[dict]:
@@ -255,12 +277,13 @@ class GraphStore(Protocol):
 
     def resolve_chunk_citations(
         self,
+        graph_name: str,
         chunk_ids: list[str],
     ) -> list[dict]:
         """Resolve chunk IDs to citation metadata.
 
         Returns rows with keys: chunk_id, document_id, document_name,
-        page_start, page_end, text (excerpt).
+        page_start, page_end, excerpt, chunk_metadata, document_metadata.
         """
         ...
 

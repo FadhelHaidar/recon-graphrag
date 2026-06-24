@@ -37,12 +37,29 @@ def _make_map_response(helpfulness: int = 75, answer: str = "Test answer.") -> s
 class FakeGraphStore:
     def __init__(self, reports: list[dict] | None = None):
         self._reports = _make_reports() if reports is None else reports
+        self.resolve_calls: list[tuple[str, list[str]]] = []
 
     def execute_query(self, query, params=None):
+        if "FROM_CHUNK" in query:
+            assert params["graph_name"] == "entity-graph"
+            return [{"chunk_id": "chunk:1"}]
         level = params.get("level") if params else None
         if level is not None:
             return [r for r in self._reports if r.get("level") == level]
         return self._reports
+
+    def resolve_chunk_citations(self, graph_name, chunk_ids):
+        self.resolve_calls.append((graph_name, chunk_ids))
+        return [
+            {
+                "chunk_id": "chunk:1",
+                "document_id": "doc:1",
+                "document_name": "Doc 1",
+                "page_start": 1,
+                "page_end": 1,
+                "excerpt": "Evidence text.",
+            }
+        ]
 
 
 class FakeLLM:
@@ -100,7 +117,7 @@ class TestCreateBatches:
     def test_multiple_batches_when_budget_small(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = PaperGlobalSearch(store, llm, map_budget_tokens=200)
+        search = PaperGlobalSearch(store, llm, map_budget_tokens=300)
         reports = _make_reports(5)
         batches = search._create_batches("test query", reports)
         assert len(batches) > 1
@@ -170,6 +187,34 @@ class TestFullSearch:
 
         assert result.mode == "global"
         assert "Final synthesized" in result.answer
+        assert result.citations == []
+
+    @pytest.mark.asyncio
+    async def test_search_resolves_only_explicit_map_references(self):
+        reports = _make_reports(1)
+        store = FakeGraphStore(reports)
+        llm = FakeLLM(
+            map_responses=[
+                json.dumps(
+                    {
+                        "answer": "Alice is relevant.",
+                        "helpfulness": 80,
+                        "report_ids": ["report:0:0"],
+                        "references": [
+                            {"target_id": "person:alice", "target_type": "entity"}
+                        ],
+                    }
+                )
+            ],
+            reduce_response="Final synthesized answer.",
+        )
+        search = PaperGlobalSearch(store, llm)
+
+        result = await search.search("test query", level=0, random_seed=42)
+
+        assert len(result.citations) == 1
+        assert result.citations[0].chunk_id == "chunk:1"
+        assert store.resolve_calls == [("entity-graph", ["chunk:1"])]
 
     @pytest.mark.asyncio
     async def test_search_requires_level(self):
@@ -231,3 +276,24 @@ class TestParseMapResponse:
         search = PaperGlobalSearch(store, llm)
         data = search._parse_map_response(json.dumps({"answer": "x", "helpfulness": -5}))
         assert data["helpfulness"] == 0
+
+    def test_parse_keeps_only_valid_references(self):
+        store = FakeGraphStore()
+        llm = FakeLLM()
+        search = PaperGlobalSearch(store, llm)
+        data = search._parse_map_response(
+            json.dumps(
+                {
+                    "answer": "x",
+                    "helpfulness": 50,
+                    "references": [
+                        {"target_id": "person:alice", "target_type": "entity"},
+                        {"target_id": "bad", "target_type": "unsupported"},
+                        {"target_type": "entity"},
+                    ],
+                }
+            )
+        )
+        assert data["references"] == [
+            {"target_id": "person:alice", "target_type": "entity"}
+        ]

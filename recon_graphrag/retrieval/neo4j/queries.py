@@ -20,11 +20,14 @@ WITH node, score, collect(DISTINCT {
     neighbor: labels(neighbor)[-1] + ': ' + coalesce(neighbor.name, neighbor.description, '')
 }) AS connections
 OPTIONAL MATCH (node)<-[:FROM_CHUNK]-(chunk:Chunk)
-WITH node, score, connections, collect(DISTINCT chunk.text) AS source_texts
+WITH node, score, connections,
+     collect(DISTINCT chunk.text) AS source_texts,
+     collect(DISTINCT chunk.id) AS source_chunk_ids
 RETURN node.name + ' (' + labels(node)[-1] + ')' AS title,
        [c IN connections WHERE c.rel IS NOT NULL |
            c.entity + ' -[' + c.rel + ']-> ' + c.neighbor] AS relationships,
        source_texts AS source_text,
+       source_chunk_ids AS source_chunk_ids,
        score
 """
 
@@ -40,9 +43,11 @@ WITH node, score, collect(DISTINCT {
     neighbor: labels(neighbor)[-1] + ': ' + coalesce(neighbor.name, neighbor.description, '')
 }) AS connections
 OPTIONAL MATCH (node)<-[:FROM_CHUNK]-(chunk:Chunk)
-WITH node, score, connections, collect(DISTINCT chunk.text) AS source_texts
+WITH node, score, connections,
+     collect(DISTINCT chunk.text) AS source_texts,
+     collect(DISTINCT chunk.id) AS source_chunk_ids
 OPTIONAL MATCH (node)-[:IN_COMMUNITY]->(c:Community)
-WITH node, score, connections, source_texts,
+WITH node, score, connections, source_texts, source_chunk_ids,
      collect(DISTINCT {
         id: c.id,
         level: c.level,
@@ -53,6 +58,7 @@ RETURN node.name + ' (' + labels(node)[-1] + ')' AS title,
        [c IN connections WHERE c.rel IS NOT NULL |
            c.entity + ' -[' + c.rel + ']-> ' + c.neighbor] AS relationships,
        source_texts AS source_text,
+       source_chunk_ids AS source_chunk_ids,
        communities,
        score
 """
@@ -140,7 +146,7 @@ WITH e, r, other,
      SIZE([(other)-[r2]-()
        WHERE NOT type(r2) IN ['IN_COMMUNITY', 'FROM_CHUNK', 'SOURCED_FROM']
      | r2]) AS other_degree
-RETURN e.id AS e_id,
+RETURN coalesce(e.human_readable_id, e.canonical_key, e.id) AS e_id,
        coalesce(e.name, e.id) AS e_name,
        coalesce(e.description, '') AS e_description,
        labels(e) AS e_labels,
@@ -149,7 +155,7 @@ RETURN e.id AS e_id,
        coalesce(r.description, '') AS rel_description,
        coalesce(r.observation_count, 1) AS observation_count,
        e_degree + other_degree AS combined_degree,
-       other.id AS other_id,
+       coalesce(other.human_readable_id, other.canonical_key, other.id) AS other_id,
        coalesce(other.name, other.id) AS other_name,
        coalesce(other.description, '') AS other_description,
        labels(other) AS other_labels,

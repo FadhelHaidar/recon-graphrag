@@ -12,6 +12,7 @@ from recon_graphrag.models.artifacts import (
     ClaimRecord,
     CommunityFinding,
     CommunityReport,
+    FindingReference,
     DescriptionObservation,
     DocumentSource,
     PartialAnswer,
@@ -71,6 +72,15 @@ class TestCitation:
         assert c.page_start is None
         assert c.page_end is None
         assert c.excerpt is None
+        assert c.metadata == {}
+
+    def test_metadata_passthrough(self):
+        c = Citation(
+            document_id="doc:1",
+            chunk_id="chunk:1",
+            metadata={"record_id": "row-42", "kind": "support-ticket"},
+        )
+        assert c.metadata["record_id"] == "row-42"
 
 
 class TestDocumentSource:
@@ -228,6 +238,34 @@ class TestCanonicalRendering:
         second_idx = next(i for i, l in enumerate(lines) if "second" in l)
         assert first_idx < second_idx
         assert "Overall summary." in text
+
+    def test_report_to_text_includes_finding_references(self):
+        report = CommunityReport(
+            id="r1",
+            community_id="c1",
+            level=0,
+            findings=[
+                CommunityFinding(
+                    id="f1",
+                    description="Alice leads Acme.",
+                    references=[
+                        FindingReference(
+                            target_id="person:alice",
+                            target_type="entity",
+                        ),
+                        FindingReference(
+                            target_id="claim:1",
+                            target_type="claim",
+                        ),
+                    ],
+                )
+            ],
+        )
+
+        text = report_to_text(report)
+
+        assert "entity:person:alice" in text
+        assert "claim:claim:1" in text
 
     def test_report_to_text_empty_findings(self):
         report = CommunityReport(id="r1", community_id="c1", level=0, summary="just summary")

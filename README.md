@@ -29,7 +29,7 @@ The `GraphStore` protocol is designed to be backend-agnostic. A backend must sup
 - Fulltext indexes
 - Multi-level community detection (e.g., Leiden or Louvain)
 - Cypher-compatible query language
-- Node ID-based embedding upsert
+- Internal node identity-based embedding upsert
 - Entity merge / deduplication
 
 Neo4j and Memgraph implement the same `GraphStore` contract. Their index and community-detection implementations use each database's native capabilities.
@@ -122,6 +122,8 @@ await community.build()
 graph_rag = GraphRAG(store, llm, embedder)
 result = await graph_rag.search("What are the key findings?", mode="local")
 print(result.answer)
+for citation in result.citations:
+    print(citation.metadata)  # arbitrary source metadata, e.g. record_id/table/page
 ```
 
 For a step-by-step walkthrough, see [docs/quickstart.md](docs/quickstart.md).
@@ -133,13 +135,12 @@ For a step-by-step walkthrough, see [docs/quickstart.md](docs/quickstart.md).
 | [docs/installation.md](docs/installation.md) | Full installation guide, Docker setup, extras, and troubleshooting |
 | [docs/quickstart.md](docs/quickstart.md) | Step-by-step quick start |
 | [docs/pipelines.md](docs/pipelines.md) | `GraphBuilderPipeline` and `CommunityPipeline` architecture |
-| [docs/advanced-workflows.md](docs/advanced-workflows.md) | Composable building blocks below the high-level pipelines |
+| [docs/workflows.md](docs/workflows.md) | Composable building blocks below the high-level pipelines |
 | [docs/schema.md](docs/schema.md) | Defining schemas with `GraphSchema` and `build_schema()` |
 | [docs/indexing.md](docs/indexing.md) | Creating and managing Neo4j and Memgraph indexes |
 | [docs/providers.md](docs/providers.md) | LLM and embedder providers |
-| [docs/search.md](docs/search.md) | Local, global, and DRIFT search modes |
-| [docs/search-under-the-hood.md](docs/search-under-the-hood.md) | How search works internally |
-| [docs/movie-industry-example.md](docs/movie-industry-example.md) | Movie industry example walkthrough |
+| [docs/search.md](docs/search.md) | Local, global, and DRIFT search modes, citations, and source metadata |
+| [docs/example.md](docs/example.md) | Movie industry example walkthrough |
 | [docs/testing.md](docs/testing.md) | Running tests and integration test flags |
 
 ## Example
@@ -155,7 +156,7 @@ python search.py --backend neo4j
 python search.py --backend memgraph
 ```
 
-See [docs/movie-industry-example.md](docs/movie-industry-example.md) for a full walkthrough.
+See [docs/example.md](docs/example.md) for a full walkthrough.
 
 ## Contributing
 

@@ -45,6 +45,13 @@ class GraphBuilderPipeline:
         entity_resolution_strategy: str = "normalized",
         entity_resolution_aliases: Optional[dict] = None,
         entity_resolution_llm_guidance: Optional[str] = None,
+        entity_resolution_context_properties: Optional[
+            dict[str, list[str]] | list[str]
+        ] = None,
+        entity_resolution_conflict_properties: Optional[
+            dict[str, list[str]] | list[str]
+        ] = None,
+        entity_resolution_context_mode: str = "safe_defaults",
         allow_ai_auto_merge: bool = False,
         embed_entities: bool = True,
         fail_on_resolution_error: bool = False,
@@ -64,6 +71,13 @@ class GraphBuilderPipeline:
         self.entity_resolution_strategy = entity_resolution_strategy
         self.entity_resolution_aliases = entity_resolution_aliases
         self.entity_resolution_llm_guidance = entity_resolution_llm_guidance
+        self.entity_resolution_context_properties = (
+            entity_resolution_context_properties
+        )
+        self.entity_resolution_conflict_properties = (
+            entity_resolution_conflict_properties
+        )
+        self.entity_resolution_context_mode = entity_resolution_context_mode
         self.allow_ai_auto_merge = allow_ai_auto_merge
         self.embed_entity_nodes = embed_entities
         self.fail_on_resolution_error = fail_on_resolution_error
@@ -360,6 +374,13 @@ class GraphBuilderPipeline:
                         "aliases": self.entity_resolution_aliases,
                         "llm_guidance": self.entity_resolution_llm_guidance,
                         "allow_ai_auto_merge": self.allow_ai_auto_merge,
+                        "context_properties": (
+                            self.entity_resolution_context_properties
+                        ),
+                        "conflict_properties": (
+                            self.entity_resolution_conflict_properties
+                        ),
+                        "context_mode": self.entity_resolution_context_mode,
                     }
                 )
             result = await self.graph_store.resolve_entities(

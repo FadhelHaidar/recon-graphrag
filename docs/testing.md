@@ -66,6 +66,7 @@ These tests may be slower, flaky if external services are unhealthy, and may inc
 | `tests/integration/neo4j/test_neo4j_movie_smoke.py` | Yes | Yes | Yes | Neo4j end-to-end movie example with APOC/GDS. |
 | `tests/integration/memgraph/test_memgraph_store_smoke.py` | No | No | Yes | Scoped graph-document write/read checks against Memgraph. |
 | `tests/integration/memgraph/test_memgraph_movie_smoke.py` | Yes | Yes | Yes | Memgraph end-to-end movie example with MAGE. |
+| `tests/integration/test_smoke_full.py` | Yes | Yes | Yes | Backend-neutral full movie workflow against Neo4j and Memgraph when both run flags are enabled. |
 
 Meaning:
 
@@ -87,6 +88,7 @@ Meaning:
 | Entity resolution without AI flag | No | No | Yes | Database only |
 | Entity resolution with AI flag | Yes | Yes | Yes | Provider calls and database writes |
 | Movie workflow smoke | Yes | Yes | Yes | Highest cost; extraction, embeddings, summaries, and searches |
+| Backend-neutral full smoke | Yes | Yes | Yes | Runs the same graph build, community build, local/global/DRIFT/paper search path on Neo4j and Memgraph |
 
 Provider endpoint tests are fixed to the provider named by the test file. Database-plus-AI tests use `LLM_PROVIDER` and `EMBEDDER_PROVIDER` after their run flags are enabled; they do not probe providers automatically.
 
@@ -192,6 +194,33 @@ pytest tests/integration/memgraph/test_memgraph_movie_smoke.py
 ```
 
 In PowerShell, set the same values with `$env:NAME="value"` on separate lines before invoking `pytest`.
+
+Backend-neutral full smoke against both graph stores:
+
+```bash
+LLM_PROVIDER=azure_openai EMBEDDER_PROVIDER=azure_openai \
+RUN_NEO4J_MOVIE_EXAMPLE_SMOKE_TESTS=1 \
+RUN_MEMGRAPH_MOVIE_EXAMPLE_SMOKE_TESTS=1 \
+pytest tests/integration/test_smoke_full.py
+```
+
+The full smoke validates that extraction, optional claim extraction,
+aggregation, community detection, summarization, embeddings, local search,
+semantic global search, DRIFT, and paper global search run end to end on both
+backends. Because it uses live LLM output, it does not require nondeterministic
+behaviors such as `claims_written > 0` or non-empty answer citations. Those
+behavioral contracts are covered by focused tests.
+
+Focused coverage for the gaps-with-paper alignment:
+
+| Behavior | Focused tests |
+| --- | --- |
+| Structured report persistence: `report_json`, `report_text`, `report_status` | `tests/graphdb/neo4j/test_neo4j_store.py`, `tests/graphdb/memgraph/test_memgraph_store.py`, `tests/communities/test_summarization.py` |
+| Graph-scoped claim and citation reads | `tests/graphdb/neo4j/test_neo4j_store.py`, `tests/graphdb/memgraph/test_memgraph_store.py`, `tests/retrieval/test_global_paper.py` |
+| Paper global explicit references and citations | `tests/retrieval/test_global_paper.py` |
+| Local and DRIFT citations from source chunks | `tests/retrieval/test_hybrid.py`, `tests/retrieval/test_community_levels.py` |
+| Arbitrary source metadata on citations | `tests/models/test_artifacts.py`, `tests/retrieval/test_hybrid.py`, `tests/graphdb/neo4j/test_neo4j_store.py`, `tests/graphdb/memgraph/test_memgraph_store.py` |
+| Shared token packing API: `PackItem`, `PackResult`, `pack_items` | `tests/utils/test_tokens.py` |
 
 ## What to run by change type
 

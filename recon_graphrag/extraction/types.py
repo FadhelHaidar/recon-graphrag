@@ -69,6 +69,8 @@ class EntityRecord:
     type: str
     properties: dict[str, Any] = field(default_factory=dict)
     graph_name: str = "entity-graph"
+    canonical_key: str | None = None
+    human_readable_id: str | None = None
     description_observations: list[DescriptionObservation] = field(default_factory=list)
 
 

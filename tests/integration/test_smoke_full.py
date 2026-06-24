@@ -112,6 +112,19 @@ async def _run_smoke_pipeline(store, graph_name: str):
             schema=MOVIE_SCHEMA,
             graph_name=graph_name,
             extract_claims=True,
+            entity_resolution_strategy="hybrid",
+            entity_resolution_context_properties={
+                "Movie": ["year", "description"],
+                "Person": ["description"],
+            },
+            entity_resolution_conflict_properties={
+                "Movie": ["year"],
+            },
+            entity_resolution_llm_guidance=(
+                "Use descriptions and movie years when reviewing ambiguous "
+                "duplicates. Do not merge movies with different years."
+            ),
+            allow_ai_auto_merge=False,
         )
         build_result = await builder.build_from_pages(
             SMOKE_PAGES,

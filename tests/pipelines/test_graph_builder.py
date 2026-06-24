@@ -380,6 +380,8 @@ async def test_hybrid_entity_resolution_forwards_llm_and_embedder(movie_schema):
     embedder = MagicMock()
     aliases = {"Person": {"John Smith": ["Jon Smith"]}}
     guidance = "Only merge people with clear evidence."
+    context_properties = {"Person": ["description", "department"]}
+    conflict_properties = {"Movie": ["year"]}
     pipeline = GraphBuilderPipeline(
         graph_store=store,
         llm=llm,
@@ -388,6 +390,8 @@ async def test_hybrid_entity_resolution_forwards_llm_and_embedder(movie_schema):
         entity_resolution_strategy="hybrid",
         entity_resolution_aliases=aliases,
         entity_resolution_llm_guidance=guidance,
+        entity_resolution_context_properties=context_properties,
+        entity_resolution_conflict_properties=conflict_properties,
         allow_ai_auto_merge=True,
     )
 
@@ -401,6 +405,9 @@ async def test_hybrid_entity_resolution_forwards_llm_and_embedder(movie_schema):
         "aliases": aliases,
         "llm_guidance": guidance,
         "allow_ai_auto_merge": True,
+        "context_properties": context_properties,
+        "conflict_properties": conflict_properties,
+        "context_mode": "safe_defaults",
     }
 
 

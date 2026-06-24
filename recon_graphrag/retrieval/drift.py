@@ -24,7 +24,9 @@ from recon_graphrag.retrieval.community_levels import (
     CommunityLevelSelector,
     resolve_community_level,
 )
+from recon_graphrag.retrieval.citations import resolve_chunk_citations
 from recon_graphrag.retrieval.hybrid import HybridEntityRetriever, HybridRanker
+from recon_graphrag.retrieval.local import _source_chunk_ids_from_result
 
 
 DEFAULT_ANSWER_PROMPT = """You have access to detailed findings and broader context.
@@ -136,7 +138,14 @@ class DriftSearchRetriever(BaseRetriever):
         )
 
         full_context = f"{entity_context}\n\n{community_context}\n\n{bridging_context}"
-        return SearchResult(query=query, mode="drift", answer=answer, context=full_context)
+        citations = self._resolve_citations(retriever_result)
+        return SearchResult(
+            query=query,
+            mode="drift",
+            answer=answer,
+            context=full_context,
+            citations=citations,
+        )
 
     def _format_entity_context(self, retriever_result) -> str:
         parts = []
@@ -220,6 +229,17 @@ class DriftSearchRetriever(BaseRetriever):
                 line += "\n    Connected to: " + "\n    Connected to: ".join(rels[:5])
             parts.append(line)
         return "\n".join(parts)
+
+    def _resolve_citations(self, retriever_result):
+        chunk_ids = _source_chunk_ids_from_result(retriever_result)
+        try:
+            return resolve_chunk_citations(
+                self.graph_store,
+                self.graph_name,
+                chunk_ids,
+            )
+        except Exception:
+            return []
 
     async def _generate_answer(
         self,

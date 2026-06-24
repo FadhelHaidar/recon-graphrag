@@ -1,18 +1,18 @@
 # Search
 
-Recon-GraphRAG provides three search modes, matching the Microsoft GraphRAG philosophy: **Local**, **Global**, and **DRIFT**.
+Recon-GraphRAG provides three search modes through `GraphRAG.search()`:
+**Local**, **Global**, and **DRIFT**. Use this page for both the public API and
+the mechanics behind each mode.
 
-For a deep dive into the internals, see [Search Under the Hood](search-under-the-hood.md).
-
-## Search modes overview
+## Search Modes
 
 | Mode | Strategy | Best for |
-| --------- | --------- | --------- |
+| --- | --- | --- |
 | **Local** | Entity subgraph traversal | Specific questions about named entities |
-| **Global** | Community summary map-reduce | Broad overviews and thematic landscapes |
+| **Global** | Community report map-reduce | Broad overviews and thematic landscapes |
 | **DRIFT** | Entity + community hybrid | Questions needing detail plus surrounding context |
 
-All modes are accessed through `GraphRAG.search()`:
+All modes use the same entry point:
 
 ```python
 from recon_graphrag import GraphRAG
@@ -21,9 +21,10 @@ graph_rag = GraphRAG(store, llm, embedder)
 result = await graph_rag.search("Your question", mode="local")
 ```
 
-## Local search
+## Local Search
 
-Local search answers specific questions by retrieving relevant entities, their neighbors, and related text chunks.
+Local search answers specific questions by retrieving relevant entities, their
+neighbors, and related text chunks.
 
 ```python
 result = await graph_rag.search(
@@ -34,30 +35,70 @@ result = await graph_rag.search(
 ```
 
 | Parameter | Description |
-| --------- | --------- |
+| --- | --- |
 | `top_k` | Number of top entities to retrieve. |
+| `effective_search_ratio` | Over-fetch multiplier before post-filtering. |
+| `ranker` | Hybrid ranker: `"naive"` or `"linear"`. |
+| `alpha` | Required for the `"linear"` ranker. |
 
-## Global search
+Local search returns citations when retrieved entities have source chunks.
 
-Global search answers broad questions by mapping community summaries and reducing them into a single answer.
+## Global Search
+
+Global search answers broad questions from community reports. It supports two
+strategies.
+
+### Semantic Strategy
+
+`strategy="semantic"` is the default. It embeds the query, retrieves the top-k
+community summaries from the `community-embeddings` vector index, then maps and
+reduces those summaries into one answer.
 
 ```python
 result = await graph_rag.search(
     "What are the main themes in this dataset?",
     mode="global",
+    strategy="semantic",
     top_k=5,
-    level=0,
+    community_level="coarsest",
 )
 ```
 
 | Parameter | Description |
-| --------- | --------- |
+| --- | --- |
 | `top_k` | Number of communities to include. |
 | `level` / `community_level` | Which community level to search. |
 
-## DRIFT search
+Semantic global preserves the lower-cost legacy behavior and may return an
+empty citation list.
 
-DRIFT search combines local entity retrieval with community context for questions that need both detail and big-picture framing.
+### Paper Strategy
+
+`strategy="paper"` reads all eligible successful reports at one resolved
+community level, shuffles them with a reproducible seed, packs them into token
+batches, scores map outputs for helpfulness, filters/sorts partial answers, and
+reduces the highest-scoring partials.
+
+```python
+result = await graph_rag.search(
+    "What are the main themes in this dataset?",
+    mode="global",
+    strategy="paper",
+    community_level="coarsest",
+    random_seed=42,
+)
+```
+
+Paper strategy ignores vector community top-k retrieval. It requires a selected
+level and skips failed or empty community reports.
+
+Paper global citations resolve only explicit map-phase references to entities,
+relationships, or claims. It does not cite every source in every used community.
+
+## DRIFT Search
+
+DRIFT search combines local entity retrieval with community context for
+questions that need both detail and big-picture framing.
 
 ```python
 result = await graph_rag.search(
@@ -65,20 +106,89 @@ result = await graph_rag.search(
     mode="drift",
     top_k=10,
     community_top_k=3,
+    community_level="coarsest",
 )
 ```
 
 | Parameter | Description |
-| --------- | --------- |
+| --- | --- |
 | `top_k` | Number of entities to retrieve. |
 | `community_top_k` | Number of communities to expand into. |
 | `community_level` | Which community level to use. |
 
-## Community levels
+DRIFT returns citations for the retrieved local source chunks. Community-summary
+citations are a separate extension point.
 
-Recon-GraphRAG stores communities with `level=0` as the **finest / most local** level. Higher numbers are broader parent communities. The highest available level is the **coarsest / most global** community level.
+## Citations And Sources
 
-This is the opposite of some Microsoft GraphRAG descriptions, where level 0 is often interpreted as the coarsest root level.
+`SearchResult` includes structured citation fields in addition to answer text:
+
+```python
+result = await graph_rag.search("Who directed Inception?", mode="local")
+
+for citation in result.citations:
+    print(citation.document_id, citation.chunk_id, citation.page_start)
+    print(citation.metadata)
+
+for source in result.sources:
+    print(source.document_name or source.document_id)
+    print([c.chunk_id for c in source.chunk_list])
+```
+
+`result.citations` is a flat list of cited chunks. `result.sources` groups the
+same citations by document for response envelopes and UI display.
+
+Citation fields:
+
+| Field | Meaning |
+| --- | --- |
+| `document_id` | Required source document ID. |
+| `chunk_id` | Required source chunk ID. |
+| `document_name` | Optional display name resolved from metadata such as `title`, `source`, or `filename`. |
+| `page_start` / `page_end` | Optional page range when ingestion supplied page provenance. |
+| `excerpt` | Optional bounded snippet copied from stored chunk text. |
+| `metadata` | Arbitrary source metadata copied from the cited document and chunk. Chunk metadata overrides document metadata on key conflicts. |
+
+`metadata` supports vector-store-style source envelopes. If you ingest list
+items, rows, tickets, or other independent records, put the record key in the
+input metadata:
+
+```python
+await pipeline.build_from_text(
+    item["text"],
+    metadata={
+        "record_id": item["id"],
+        "collection": "support-tickets",
+        "source": item["id"],
+    },
+)
+```
+
+The same keys are returned on `citation.metadata`, so callers can use
+`citation.metadata["record_id"]` as the source identifier even when no document
+page metadata exists.
+
+Current citation behavior:
+
+- **Local** resolves retrieved entity evidence from `source_chunk_ids` to
+  document/chunk citations.
+- **DRIFT** includes the same local evidence citations alongside community
+  context.
+- **Paper global** resolves validated map references with `target_type` of
+  `entity`, `relationship`, or `claim`.
+- **Semantic global** may return an empty citation list.
+
+Citation resolution is graph-scoped. A query on one `graph_name` will not resolve
+chunks, claims, or entities from another graph.
+
+## Community Levels
+
+Recon-GraphRAG stores communities with `level=0` as the **finest / most local**
+level. Higher numbers are broader parent communities. The highest available
+level is the **coarsest / most global** level.
+
+This is the opposite of some Microsoft GraphRAG descriptions, where level 0 is
+often interpreted as the coarsest root level.
 
 Use this mapping when comparing terminology:
 
@@ -93,24 +203,32 @@ The search API supports semantic selectors:
 community_level="all"       # No level filter
 community_level="finest"    # level 0
 community_level="coarsest"  # Highest available level
-community_level=0             # Exact stored level
-community_level=1             # Exact stored level
+community_level=0           # Exact stored level
+community_level=1           # Exact stored level
 ```
 
-Global search also accepts the existing `level=` argument for backward compatibility:
+Global search also accepts the existing `level=` argument for backward
+compatibility:
 
 ```python
 await graph_rag.search("What are the major themes?", mode="global", level=0)
-await graph_rag.search("What are the major themes?", mode="global", community_level="coarsest")
+await graph_rag.search(
+    "What are the major themes?",
+    mode="global",
+    community_level="coarsest",
+)
 ```
 
-Passing `level=0` does **not** mean "most global" in this codebase. It means "finest / most local community summaries." For Microsoft-style global summaries, prefer `community_level="coarsest"`.
+Passing `level=0` does not mean "most global" in this codebase. It means
+"finest / most local community summaries." For Microsoft-style global summaries,
+prefer `community_level="coarsest"`.
 
-## Customizing prompts
+## Customization
 
-Each retriever exposes prompt attributes that you can override for domain-specific behavior.
+Each retriever exposes prompt attributes that you can override for
+domain-specific behavior.
 
-### Local search prompt
+### Local Prompt
 
 ```python
 graph_rag.local.answer_prompt = (
@@ -118,54 +236,254 @@ graph_rag.local.answer_prompt = (
 )
 ```
 
-### Global search prompt
+### Semantic Global Prompts
 
 ```python
 graph_rag.global_.map_prompt = (
-    "Based on this report segment about films, answer: {query}\n\nSegment: {context}"
+    "Based on this report segment about films, answer: {query}\n\nSegment: {summary}"
 )
 graph_rag.global_.reduce_prompt = (
     "Synthesize these film perspectives:\n{partial_answers}\n\nQuestion: {query}"
 )
 ```
 
-### DRIFT search prompt
+Paper global uses paper-specific map/reduce prompts in
+`recon_graphrag.retrieval.global_paper`.
+
+### DRIFT Prompt
 
 ```python
 graph_rag.drift.answer_prompt = (
-    "Given specific findings and broader film context, answer: {query}\n\n{context}"
+    "Given specific findings and broader film context, answer: {query}\n\n"
+    "{entity_context}\n{community_context}\n{bridging_context}"
 )
 ```
 
-### Custom Cypher retrieval query
+### Custom Retrieval Query
 
-Advanced users can override the Cypher query used to fetch context:
+Advanced users can override the Cypher query used to fetch local or DRIFT
+entity context:
 
 ```python
 graph_rag.local.retrieval_query = (
-    "OPTIONAL MATCH (node)-[r]-(neighbor) RETURN node, r, neighbor"
+    "OPTIONAL MATCH (node)-[r]-(neighbor) RETURN node.name AS title, score"
 )
 ```
 
-## Customizing community summaries
+If you provide a custom query and want citations, return `source_chunk_ids` in
+each row.
 
-You can also pass a custom `summary_prompt` to `CommunityPipeline` to control how community summaries are generated during indexing:
+## How Search Works
 
-```python
-community = CommunityPipeline(
-    store, llm, embedder,
-    relationship_types=["DIRECTED"],
-    summary_prompt="Summarize these film industry connections:\n{context}",
-)
+Before search can work, the graph should contain:
+
+| Node | What it represents | Key properties |
+| --- | --- | --- |
+| `__Entity__` | Extracted people, places, concepts, etc. | UUID `id`, `canonical_key`, `human_readable_id`, `name`, `title`, `description`, `embedding`, `graph_name` |
+| `Chunk` | A text chunk from the original source unit | `id`, `text`, `embedding`, arbitrary source metadata such as `record_id`, `page`, `table`, `ticket_id` |
+| `Document` | The source unit or container | metadata such as `title`, `source`, `filename`, `collection`, `external_id` |
+| `Community` | A cluster of related entities | `summary`, `report_text`, `report_json`, `report_status`, `embedding`, `level` |
+| `Claim` | A claim/covariate extracted from text | `description`, `claim_type`, `status`, `graph_name` |
+
+Important relationships:
+
+- `(Chunk)-[:FROM_CHUNK]->(__Entity__)` links an entity to evidence text.
+- `(Claim)-[:SUBJECT_OF]->(__Entity__)` links a claim to its subject.
+- `(Claim)-[:SOURCED_FROM]->(Chunk)` links a claim to evidence text.
+- `(__Entity__)-[:IN_COMMUNITY]->(Community)` places an entity in a community.
+- `(Community)-[:PARENT_COMMUNITY]->(Community)` builds the hierarchy.
+
+Search is read-only on top of the graph produced by `GraphBuilderPipeline` and
+`CommunityPipeline`.
+
+Entity search uses the UUID `id` internally, while report references and
+citations use readable keys such as `person:alice`. Citation resolution accepts
+either form and resolves it within the active `graph_name`.
+
+### Query Signals
+
+Local and DRIFT use one query string to produce two retrieval signals:
+
+1. **Vector signal**: embed the full query and search `entity-embeddings`.
+2. **Keyword signal**: search `entity-names` with the full query text.
+
+The two lists are normalized and fused by `HybridEntityRetriever`.
+
+| Ranker | Score formula |
+| --- | --- |
+| `naive` | `score = max(vector_score, keyword_score)` |
+| `linear` | `score = alpha * vector_score + (1 - alpha) * keyword_score` |
+
+Neo4j passes the raw keyword query to Lucene full-text search. Memgraph rewrites
+the text into a Tantivy query, preserving phrases and joining escaped tokens
+with `OR`.
+
+### Local Flow
+
+```text
+query
+  -> vector + keyword entity search
+  -> hybrid fusion
+  -> top-k entities
+  -> one-hop neighbors + source chunks
+  -> answer prompt
+  -> source_chunk_ids resolved to citations
 ```
 
-## When to use each mode
+The LLM sees the matched entities, one-hop relationships, and source snippets.
+It does not see community summaries.
 
-- **Local** when the question names a specific entity or asks for a fact about something.
-- **Global** when the question is broad, thematic, or asks for an overview.
-- **DRIFT** when the question needs specific evidence but also broader context to interpret it.
+### Semantic Global Flow
 
-## Next steps
+```text
+query
+  -> query embedding
+  -> top-k community summary vector search
+  -> map prompt per selected community
+  -> reduce prompt
+```
+
+This is the lower-cost default strategy. It searches summaries semantically and
+does not attempt to process every report at the selected level.
+
+### Paper Global Flow
+
+```text
+successful reports at one level
+  -> deterministic shuffle
+  -> token-batched map prompts
+  -> helpfulness-scored partial answers
+  -> sorted reduce prompt
+  -> validated references resolved to citations
+```
+
+Structured report generation stores `report_json`, `report_text`, title,
+compatibility `summary`, rating fields, version fields, `report_status`, and
+`report_error`. Failed report generations are marked with
+`report_status="failed"` and are not embedded or read by paper global search.
+
+Paper map outputs may include stable references:
+
+```json
+{"target_id": "person:alice", "target_type": "entity"}
+```
+
+Supported target types are `entity`, `relationship`, and `claim`. Entity and
+relationship references are normally readable `human_readable_id` /
+`canonical_key` values, while the persisted entity `id` remains a UUID.
+
+### DRIFT Flow
+
+```text
+query
+  -> local-style entity retrieval
+  -> extract community keys from matched entities
+  -> fetch community summaries
+  -> fetch bridging entities in those communities
+  -> answer prompt with specific + broader + related context
+  -> source_chunk_ids resolved to citations
+```
+
+DRIFT is useful when the question needs both evidence around a specific entity
+and community-level framing.
+
+## Context Format
+
+The retrievers format graph records into readable text before prompting the LLM.
+
+Local context:
+
+```text
+Finding: Nolan (Person)
+Connections:
+  Person: Nolan -[DIRECTED]-> Movie: Inception
+  Person: Nolan -[DIRECTED]-> Movie: Interstellar
+Evidence:
+  Christopher Nolan directed Inception...
+  Nolan's next film was Interstellar...
+```
+
+DRIFT adds broader and related context:
+
+```text
+=== Broader Context ===
+Segment 12 (level 0):
+This cluster centers on Christopher Nolan and his science-fiction films...
+
+=== Related Entities ===
+Related: [Movie] Inception
+    Connected to: DIRECTED -> Nolan
+    Connected to: ACTED_IN -> DiCaprio
+```
+
+Semantic global context:
+
+```text
+Report Segment 12 (level 0):
+This cluster centers on Christopher Nolan and his science-fiction films...
+
+Report Segment 15 (level 0):
+This cluster covers Hans Zimmer's collaborations with major directors...
+```
+
+## Token Utilities
+
+Token budgeting uses shared utilities from `recon_graphrag.utils.tokens`:
+
+- `ApproximateTokenCounter` is the deterministic fallback.
+- `TiktokenTokenCounter` is optional and raises `ImportError` when the package
+  or requested encoding is unavailable.
+- `PackItem`, `PackResult`, and `pack_items` provide stable greedy packing for
+  already ordered items. The caller owns ordering policy.
+
+## Required Indexes
+
+Search depends on indexes created by `IndexManager`:
+
+| Index | Type | Indexed property | Used by |
+| --- | --- | --- | --- |
+| `entity-embeddings` | Vector | `__Entity__.embedding` | Local, DRIFT |
+| `community-embeddings` | Vector | `Community.embedding` | Global, DRIFT |
+| `chunk-embeddings` | Vector | `Chunk.embedding` | Not used directly by search modes |
+| `entity-names` | Full-text / text | `__Entity__.name` | Local, DRIFT |
+
+Neo4j uses `db.index.vector.queryNodes` and `db.index.fulltext.queryNodes`.
+Memgraph uses `vector_search.search` and `text_search.search`.
+
+## Community Pipeline Prerequisite
+
+Global and DRIFT search need communities. The community pipeline:
+
+1. Detects communities with Leiden.
+2. Writes `Community` nodes and hierarchy edges.
+3. Summarizes or generates structured reports.
+4. Embeds canonical report text for semantic retrieval.
+
+Only after embeddings exist can semantic global search retrieve communities by
+vector similarity.
+
+## Current Limits
+
+- The query is not decomposed into sub-questions.
+- Local and DRIFT do not perform entity linking before retrieval.
+- Ranking is hybrid vector/keyword fusion, not a re-ranking model.
+- Local and DRIFT collect immediate neighbors and source chunks, not arbitrary
+  multi-hop paths.
+- Global search uses one community level at a time.
+- Semantic global map calls are sequential. Paper global uses bounded parallel
+  map calls.
+
+## When To Use Each Mode
+
+- **Local** when the question names a specific entity or asks for a concrete
+  fact.
+- **Global semantic** when the question is broad and you want lower-cost top-k
+  community search.
+- **Global paper** when you want paper-style all-report processing at a selected
+  level and can afford the extra LLM calls.
+- **DRIFT** when the question needs specific evidence plus broader context.
+
+## Next Steps
 
 - Try the search examples in [Quick Start](quickstart.md).
-- See a full domain example in [Movie Industry Example](movie-industry-example.md).
+- See a full domain example in [Example](example.md).

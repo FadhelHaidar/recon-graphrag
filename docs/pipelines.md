@@ -42,9 +42,17 @@ Ingest a single string:
 ```python
 result = await pipeline.build_from_text(
     "Christopher Nolan directed Inception...",
-    metadata={"source": "my-doc"},
+    metadata={
+        "source": "movie-list",
+        "record_id": "movie-row-001",
+        "collection": "movies",
+    },
 )
 ```
+
+`metadata` can contain any JSON-like keys you need for source tracking. The
+same keys are stored on chunks and returned later through
+`citation.metadata`.
 
 #### `build_from_pages`
 
@@ -52,8 +60,8 @@ Ingest a list of pages, for example from a paginated document:
 
 ```python
 pages = [
-    {"text": "Page one text...", "metadata": {"page": 1}},
-    {"text": "Page two text...", "metadata": {"page": 2}},
+    {"text": "Page one text...", "metadata": {"page": 1, "file_id": "pdf-7"}},
+    {"text": "Page two text...", "metadata": {"page": 2, "file_id": "pdf-7"}},
 ]
 result = await pipeline.build_from_pages(pages)
 ```
@@ -64,8 +72,8 @@ Ingest pre-chunked documents:
 
 ```python
 documents = [
-    {"text": "Chunk one...", "metadata": {"doc_id": "doc-1"}},
-    {"text": "Chunk two...", "metadata": {"doc_id": "doc-1"}},
+    {"text": "Chunk one...", "metadata": {"record_id": "row-1", "table": "tickets"}},
+    {"text": "Chunk two...", "metadata": {"record_id": "row-2", "table": "tickets"}},
 ]
 result = await pipeline.build_from_documents(documents)
 ```
@@ -84,6 +92,9 @@ result = await pipeline.build_from_documents(documents)
 | `entity_resolution_strategy` | Duplicate entity resolution strategy: `exact`, `normalized`, `fuzzy`, or `hybrid`. |
 | `entity_resolution_aliases` | Optional alias hints used by the `hybrid` entity resolution strategy. |
 | `entity_resolution_llm_guidance` | Optional guidance included in `hybrid` LLM review prompts. |
+| `entity_resolution_context_properties` | Optional list or label-to-list mapping of extra properties to include in LLM review context. Defaults to safe non-internal properties. |
+| `entity_resolution_conflict_properties` | Optional list or label-to-list mapping of properties that must not conflict before merge. |
+| `entity_resolution_context_mode` | LLM review context mode. Defaults to `"safe_defaults"`; `"config_only"` uses only configured context properties. |
 | `allow_ai_auto_merge` | Optional. When `True` with `hybrid`, LLM-approved review candidates can be promoted into actual merge groups. Defaults to `False`. |
 
 When `entity_resolution_strategy="hybrid"`, the pipeline forwards its `embedder`
@@ -93,11 +104,47 @@ metadata only. Set `allow_ai_auto_merge=True` to merge candidates where the LLM
 returns `same_entity=true`, `merge_allowed=true`, and confidence meets the merge
 threshold.
 
+Hybrid LLM review sees compact entity profiles, not just names. The default
+profile includes safe fields such as `name`, `title`, `description`,
+`canonical_key`, `human_readable_id`, aliases, labels, and non-internal
+properties. Internal fields such as embeddings, graph names, raw text, and
+timestamps are excluded.
+
+Use conflict properties for domain keys that should prevent unsafe merges:
+
+```python
+pipeline = GraphBuilderPipeline(
+    graph_store=store,
+    llm=llm,
+    embedder=embedder,
+    schema=schema,
+    entity_resolution_strategy="hybrid",
+    entity_resolution_context_properties={
+        "Movie": ["year", "description"],
+        "Person": ["description", "birth_date"],
+    },
+    entity_resolution_conflict_properties={
+        "Movie": ["year"],
+        "Person": ["birth_date"],
+    },
+    entity_resolution_llm_guidance=(
+        "Do not merge movies with different release years."
+    ),
+    allow_ai_auto_merge=True,
+)
+```
+
+Conflict properties are conservative: missing values do not block a merge, but
+two non-empty unequal values do. Blocked candidates are returned in
+`review_groups` with `decision="blocked"` and are not sent to the LLM or
+auto-merged.
+
 ### Tips
 
 - Run `IndexManager.create_indexes()` before the first build.
 - The pipeline can be run multiple times on new text; it appends to the existing graph.
-- Pass `metadata` to link extracted chunks and entities back to source documents.
+- Pass `metadata` to link extracted chunks and entities back to any source
+  shape: documents, pages, database rows, tickets, API objects, or list items.
 
 ## CommunityPipeline
 
@@ -174,7 +221,7 @@ This is the opposite of some Microsoft GraphRAG descriptions, where level 0 is o
 
 ## Next steps
 
-- Explore the composable building blocks in [Advanced Workflows](advanced-workflows.md).
+- Explore the composable building blocks in [Workflows](workflows.md).
 - Define your domain model in [Schema](schema.md).
 - Create required indexes in [Indexing](indexing.md).
 - Search the graph in [Search](search.md).
