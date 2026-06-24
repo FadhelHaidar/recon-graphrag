@@ -21,6 +21,7 @@ from recon_graphrag.retrieval.community_levels import (
     CommunityLevelSelector,
     resolve_community_level,
 )
+from recon_graphrag.utils.tokens import TokenCounter
 
 
 DEFAULT_MAP_PROMPT = """Based on this report segment, answer the question.
@@ -60,6 +61,9 @@ class GlobalSearchRetriever(BaseRetriever):
         reduce_prompt: Optional[str] = None,
         vector_index_name: str = "community-embeddings",
         graph_name: str = "entity-graph",
+        token_counter: TokenCounter | None = None,
+        map_budget_tokens: int = 12000,
+        reduce_budget_tokens: int = 12000,
     ):
         self.graph_store = graph_store
         self.llm = llm
@@ -68,6 +72,9 @@ class GlobalSearchRetriever(BaseRetriever):
         self.reduce_prompt = reduce_prompt or DEFAULT_REDUCE_PROMPT
         self.vector_index_name = vector_index_name
         self.graph_name = graph_name
+        self.token_counter = token_counter
+        self.map_budget_tokens = map_budget_tokens
+        self.reduce_budget_tokens = reduce_budget_tokens
 
     async def search(
         self,
@@ -138,17 +145,20 @@ class GlobalSearchRetriever(BaseRetriever):
 
         Uses paper-specific prompts (not semantic map/reduce prompts).
         """
-        from recon_graphrag.retrieval.global_paper import PaperGlobalSearch
+        from recon_graphrag.retrieval.global_paper import PaperSearch
 
         resolved_level = resolve_community_level(
             self.graph_store,
             self.graph_name,
             selected_level,
         )
-        paper = PaperGlobalSearch(
+        paper = PaperSearch(
             graph_store=self.graph_store,
             llm=self.llm,
             graph_name=self.graph_name,
+            token_counter=self.token_counter,
+            map_budget_tokens=self.map_budget_tokens,
+            reduce_budget_tokens=self.reduce_budget_tokens,
         )
         return await paper.search(
             query=query,

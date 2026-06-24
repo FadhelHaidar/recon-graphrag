@@ -9,6 +9,7 @@ from recon_graphrag.models.types import SearchResult
 from recon_graphrag.retrieval.drift import DriftSearchRetriever
 from recon_graphrag.retrieval.global_search import GlobalSearchRetriever
 from recon_graphrag.retrieval.local import LocalSearchRetriever
+from recon_graphrag.utils.tokens import TokenCounter
 
 
 class GraphRAG:
@@ -28,12 +29,21 @@ class GraphRAG:
         llm: BaseLLM,
         embedder: BaseEmbedder,
         graph_name: str = "entity-graph",
+        token_counter: TokenCounter | None = None,
+        map_budget_tokens: int = 12000,
+        reduce_budget_tokens: int = 12000,
     ):
         self.local = LocalSearchRetriever(
             graph_store, llm, embedder, graph_name=graph_name
         )
         self.global_ = GlobalSearchRetriever(
-            graph_store, llm, embedder, graph_name=graph_name
+            graph_store,
+            llm,
+            embedder,
+            graph_name=graph_name,
+            token_counter=token_counter,
+            map_budget_tokens=map_budget_tokens,
+            reduce_budget_tokens=reduce_budget_tokens,
         )
         self.drift = DriftSearchRetriever(
             graph_store, llm, embedder, graph_name=graph_name

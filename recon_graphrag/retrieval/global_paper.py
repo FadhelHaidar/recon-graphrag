@@ -154,8 +154,8 @@ def _diag_to_dict(diag: PaperSearchDiagnostics) -> dict:
     }
 
 
-class PaperGlobalSearch:
-    """Paper-style global search with scored map-reduce."""
+class PaperSearch:
+    """Paper-style global search: scored map-reduce over all reports at a level."""
 
     def __init__(
         self,
