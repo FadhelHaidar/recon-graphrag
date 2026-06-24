@@ -30,6 +30,8 @@ pipeline = GraphBuilderPipeline(
     chunk_size=1000,            # text chunking size (default: 1000)
     chunk_overlap=200,          # overlap between chunks (default: 200)
     extraction_concurrency=5,   # max chunks extracted in parallel (default: 5)
+    max_gleanings=1,            # follow-up extraction loops (default: 0)
+    extract_claims=True,        # extract claims about entities (default: False)
 )
 ```
 
@@ -78,6 +80,44 @@ documents = [
 result = await pipeline.build_from_documents(documents)
 ```
 
+### Token-based chunking
+
+By default, `chunk_size` and `chunk_overlap` are measured in characters. For
+more accurate budgeting, use token-based chunking:
+
+```python
+from recon_graphrag import GraphBuilderPipeline
+from recon_graphrag.utils.tokens import ApproximateTokenCounter
+
+pipeline = GraphBuilderPipeline(
+    graph_store=store,
+    llm=llm,
+    embedder=embedder,
+    schema=schema,
+    chunk_size=500,             # 500 tokens per chunk
+    chunk_overlap=50,           # 50 token overlap
+)
+```
+
+The internal `TextChunker` defaults to character units. To use token units
+directly, configure the chunker with a token counter:
+
+```python
+from recon_graphrag.extraction.chunking import TextChunker
+from recon_graphrag.utils.tokens import ApproximateTokenCounter
+
+chunker = TextChunker(
+    chunk_size=500,
+    chunk_overlap=50,
+    unit="token",
+    token_counter=ApproximateTokenCounter(),
+)
+```
+
+`ApproximateTokenCounter` uses `ceil(len(text) / 4)` as a fast estimate. For
+provider-level accuracy, use `TiktokenTokenCounter` (requires the `tiktoken`
+package).
+
 ### Key parameters
 
 | Parameter | Description |
@@ -86,15 +126,17 @@ result = await pipeline.build_from_documents(documents)
 | `llm` | An LLM instance from `create_llm()`. |
 | `embedder` | An embedder instance from `create_embedder()`. |
 | `schema` | A `GraphSchema` defining entities, relationships, and patterns. |
-| `chunk_size` | Target size in characters for each text chunk. |
-| `chunk_overlap` | Overlap in characters between consecutive chunks. |
+| `chunk_size` | Target size in characters (or tokens) for each text chunk. |
+| `chunk_overlap` | Overlap in characters (or tokens) between consecutive chunks. |
 | `extraction_concurrency` | Maximum number of chunks to extract in parallel. Set to `1` for sequential extraction. |
+| `max_gleanings` | Number of follow-up extraction loops after the initial pass. Each loop asks the LLM whether it missed any entities, then extracts only the missed items. `0` = single-shot extraction (default). Higher values improve recall at the cost of more LLM calls. |
+| `extract_claims` | When `True`, runs a second LLM call per chunk to extract claims, assertions, and covariates about extracted entities. Claims are stored as `Claim` nodes linked to their subject entity and source chunk, and are available as evidence in community reports and paper global search. Defaults to `False`. |
 | `entity_resolution_strategy` | Duplicate entity resolution strategy: `exact`, `normalized`, `fuzzy`, or `hybrid`. |
 | `entity_resolution_aliases` | Optional alias hints used by the `hybrid` entity resolution strategy. |
 | `entity_resolution_llm_guidance` | Optional guidance included in `hybrid` LLM review prompts. |
 | `entity_resolution_context_properties` | Optional list or label-to-list mapping of extra properties to include in LLM review context. Defaults to safe non-internal properties. |
 | `entity_resolution_conflict_properties` | Optional list or label-to-list mapping of properties that must not conflict before merge. |
-| `entity_resolution_context_mode` | LLM review context mode. Defaults to `"safe_defaults"`; `"config_only"` uses only configured context properties. |
+| `entity_resolution_context_mode` | Controls which properties appear in LLM review profiles. `"safe_defaults"` (default) includes non-internal extra properties. `"config_only"` includes only explicitly configured `context_properties`. `"all"` includes everything, including embeddings and internal fields. |
 | `allow_ai_auto_merge` | Optional. When `True` with `hybrid`, LLM-approved review candidates can be promoted into actual merge groups. Defaults to `False`. |
 
 When `entity_resolution_strategy="hybrid"`, the pipeline forwards its `embedder`
@@ -139,6 +181,65 @@ two non-empty unequal values do. Blocked candidates are returned in
 `review_groups` with `decision="blocked"` and are not sent to the LLM or
 auto-merged.
 
+### Gleaning
+
+By default, the extractor makes a single LLM call per chunk. Set
+`max_gleanings` to enable follow-up extraction loops that catch missed entities:
+
+```python
+pipeline = GraphBuilderPipeline(
+    graph_store=store,
+    llm=llm,
+    embedder=embedder,
+    schema=schema,
+    max_gleanings=1,  # one follow-up loop
+)
+```
+
+Each gleaning loop:
+
+1. **Assess** — asks the LLM whether it missed any entities.
+2. **Continue** — if the LLM says yes, extracts only the missed items.
+3. **Merge** — adds only genuinely new nodes and relationships (deduped by ID).
+
+The loop stops early when the LLM reports nothing was missed or the continuation
+yields no new items. Higher values improve recall at the cost of more LLM calls
+per chunk. Most domains benefit from `max_gleanings=1`; use `0` (default) when
+extraction cost matters more than completeness.
+
+### Claims extraction
+
+Set `extract_claims=True` to run a second LLM call per chunk that extracts
+claims, assertions, and covariates about the entities already found in that
+chunk:
+
+```python
+pipeline = GraphBuilderPipeline(
+    graph_store=store,
+    llm=llm,
+    embedder=embedder,
+    schema=schema,
+    extract_claims=True,
+)
+```
+
+Each claim has a subject entity, a claim type (e.g. `"role"`, `"status"`,
+`"opinion"`, `"attribute"`), a description, and an optional status. Claims are
+stored as `Claim` nodes in the graph with two edges:
+
+- `(Claim)-[:SUBJECT_OF]->(Entity)` — which entity the claim is about.
+- `(Claim)-[:SOURCED_FROM]->(Chunk)` — which text chunk the claim came from.
+
+Claims are automatically available downstream:
+
+- **Community reports** — claims linked to community entities are included in
+  the report context and can be cited as evidence in findings.
+- **Paper global search** — map-phase outputs can reference claims, which
+  resolve to source chunk citations.
+
+Claims are optional. The pipeline works without them; they simply add another
+layer of structured evidence when enabled.
+
 ### Tips
 
 - Run `IndexManager.create_indexes()` before the first build.
@@ -163,6 +264,7 @@ community = CommunityPipeline(
     theta=0.01,                 # Leiden tolerance (default: 0.01)
     relationship_weight_property="weight",  # numeric edge weight property
     summary_prompt=None,        # custom summary prompt (uses default if None)
+    summarize_concurrency=5,    # concurrent community summaries (default: 5)
 )
 ```
 
@@ -193,6 +295,7 @@ result = await community.build(level=0)
 | `theta` | Leiden tolerance parameter. |
 | `relationship_weight_property` | Name of the numeric relationship property to use as the Leiden edge weight, for example `"weight"`. Neo4j runs unweighted when this is omitted; Memgraph defaults to `"weight"`. |
 | `summary_prompt` | Optional custom prompt for generating community summaries. |
+| `summarize_concurrency` | Maximum number of community summaries to generate in parallel. Defaults to `5`. Increase for faster community builds when the LLM provider supports high throughput. |
 
 ### Choosing `relationship_types`
 

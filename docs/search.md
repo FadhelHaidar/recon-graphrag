@@ -201,6 +201,52 @@ Current citation behavior:
 Citation resolution is graph-scoped. A query on one `graph_name` will not resolve
 chunks, claims, or entities from another graph.
 
+## Search Diagnostics
+
+Every `SearchResult` includes a `metadata` dict with diagnostics for debugging
+and monitoring:
+
+```python
+result = await graph_rag.search(
+    "What are the main themes?",
+    mode="global",
+    strategy="paper",
+    community_level="coarsest",
+)
+print(result.metadata)
+# {
+#   "strategy": "paper",
+#   "selected_level": 1,
+#   "random_seed": 42,
+#   "reports_available": 5,
+#   "reports_used": 5,
+#   "map_batches": 1,
+#   "map_succeeded": 1,
+#   "map_failed": 0,
+#   "map_filtered_zero": 0,
+#   "reduce_partials_used": 1,
+#   "elapsed_ms": 10077,
+# }
+```
+
+Common keys across modes:
+
+| Key | Modes | Meaning |
+| --- | --- | --- |
+| `strategy` | global | `"semantic"` or `"paper"` |
+| `communities_used` | global/semantic | Number of communities retrieved |
+| `reports_available` | global/paper | Total reports at the selected level |
+| `reports_used` | global/paper | Reports that passed quality filters |
+| `map_batches` | global/paper | Number of map-phase batches |
+| `map_succeeded` | global/paper | Batches that produced a partial answer |
+| `map_failed` | global/paper | Batches that errored |
+| `map_filtered_zero` | global/paper | Batches filtered for zero helpfulness |
+| `reduce_partials_used` | global/paper | Partial answers included in reduce |
+| `elapsed_ms` | global/paper | Total wall-clock time |
+
+Diagnostics are read-only. Use them for logging, dashboards, or tuning search
+parameters.
+
 ## Community Levels
 
 Recon-GraphRAG stores communities with `level=0` as the **finest / most local**
@@ -450,11 +496,26 @@ This cluster covers Hans Zimmer's collaborations with major directors...
 
 Token budgeting uses shared utilities from `recon_graphrag.utils.tokens`:
 
-- `ApproximateTokenCounter` is the deterministic fallback.
-- `TiktokenTokenCounter` is optional and raises `ImportError` when the package
-  or requested encoding is unavailable.
-- `PackItem`, `PackResult`, and `pack_items` provide stable greedy packing for
-  already ordered items. The caller owns ordering policy.
+- `ApproximateTokenCounter` — fast estimate using `ceil(len(text) / 4)`.
+  Always available, no dependencies.
+- `TiktokenTokenCounter` — exact count using `tiktoken`. Requires the
+  `tiktoken` package. Use when provider-level accuracy matters.
+- `create_token_counter("approximate")` or `create_token_counter("tiktoken")`
+  — factory function.
+- `pack_items(items, max_tokens, counter)` — greedy packing for already ordered
+  items. Returns included/excluded lists with token telemetry.
+
+These are used internally by paper global search (map/reduce batching) and
+community context packing. You can also use them directly for custom workflows:
+
+```python
+from recon_graphrag.utils.tokens import ApproximateTokenCounter, pack_items, PackItem
+
+counter = ApproximateTokenCounter()
+items = [PackItem(id="r1", text="report text..."), PackItem(id="r2", text="...")]
+result = pack_items(items, max_tokens=4000, counter=counter)
+print(f"Packed {len(result.included)} items, {result.used_tokens} tokens")
+```
 
 ## Required Indexes
 
