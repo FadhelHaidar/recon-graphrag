@@ -313,8 +313,8 @@ graph_rag.global_.reduce_prompt = (
 )
 ```
 
-Paper global uses paper-specific map/reduce prompts in
-`recon_graphrag.retrieval.global_paper`.
+Global search uses scored map/reduce prompts defined in
+`recon_graphrag.retrieval.global_search`.
 
 ### DRIFT Prompt
 

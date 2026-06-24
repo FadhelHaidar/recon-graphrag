@@ -22,6 +22,13 @@ class FakeGraphStore:
         if "RETURN max(c.level) AS level" in query:
             return [{"level": 2}]
 
+        # Global search reads reports at a level
+        if "Community" in query and "report_text" in query:
+            level = params.get("level", 0)
+            return [
+                {"id": "c2", "level": level, "summary": "Coarse community summary"}
+            ]
+
         return []
 
     def search_communities(self, index_name, query_vector, graph_name, top_k, level=None):
@@ -135,11 +142,16 @@ async def test_global_search_accepts_coarsest_alias():
     store = FakeGraphStore()
     retriever = GlobalSearchRetriever(store, FakeLLM(), FakeEmbedder())
 
-    result = await retriever.search("themes", top_k=1, community_level="coarsest")
+    result = await retriever.search("themes", community_level="coarsest")
 
-    assert result.answer == "answer"
-    search_call = [c for c in store.calls if c[0] == "search_communities"][0]
-    assert search_call[1]["level"] == 2
+    assert result.answer.strip()
+    # Verify the resolved level was 2 (coarsest)
+    report_call = [
+        c for c in store.calls
+        if c[0] == "execute_query" and "report_text" in c[1]["query"]
+    ]
+    assert len(report_call) == 1
+    assert report_call[0][1]["params"]["level"] == 2
 
 
 @pytest.mark.asyncio
