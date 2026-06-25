@@ -136,7 +136,6 @@ For a step-by-step walkthrough, see [docs/quickstart.md](docs/quickstart.md).
 | [docs/quickstart.md](docs/quickstart.md) | Step-by-step quick start |
 | [docs/pipelines.md](docs/pipelines.md) | `GraphBuilderPipeline` and `CommunityPipeline` architecture |
 | [docs/workflows.md](docs/workflows.md) | Composable building blocks below the high-level pipelines |
-| [docs/backends.md](docs/backends.md) | Checklist for adding graph database backends |
 | [docs/schema.md](docs/schema.md) | Defining schemas with `GraphSchema` and `build_schema()` |
 | [docs/indexing.md](docs/indexing.md) | Creating and managing Neo4j and Memgraph indexes |
 | [docs/providers.md](docs/providers.md) | LLM and embedder providers |

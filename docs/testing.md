@@ -462,4 +462,4 @@ or with `pytest` directly if you installed into an activated virtual environment
 - Integration tests should stay behind explicit run flags.
 - New external-service tests should use `@pytest.mark.integration` and skip unless explicitly enabled.
 - New graph database backends should get backend-specific integration tests under `tests/integration/<backend>/`.
-- Use the [graph backend checklist](backends.md) when adding a new graph database backend.
+- Use the [graph backend checklist](../plans/backends.md) when adding a new graph database backend.
