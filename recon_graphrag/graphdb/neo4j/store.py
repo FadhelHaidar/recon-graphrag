@@ -7,7 +7,6 @@ from typing import Optional
 import neo4j
 
 from recon_graphrag.extraction.types import GraphDocument
-from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.neo4j.cypher import (
     cypher_string_literal,
     escape_cypher_identifier,
@@ -16,9 +15,10 @@ from recon_graphrag.graphdb.neo4j.index_manager import IndexManager
 from recon_graphrag.models.artifacts import CommunityReport, report_to_json, report_to_text
 from recon_graphrag.models.types import IndexConfig
 from recon_graphrag.pipelines.neo4j.writer import Neo4jGraphWriter
+from recon_graphrag.graphdb.store_base import BaseGraphStore
 
 
-class Neo4jGraphStore:
+class Neo4jGraphStore(BaseGraphStore):
     """Neo4j backend backed by the official Neo4j driver."""
 
     def __init__(
@@ -658,57 +658,7 @@ class Neo4jGraphStore:
     # ------------------------------------------------------------------
     # Stats / validation
     # ------------------------------------------------------------------
-    def get_entity_count(self) -> int:
-        result = self.execute_query(
-            "MATCH (e:__Entity__) RETURN count(e) AS cnt"
-        )
-        return result[0]["cnt"] if result else 0
-
-    def get_chunk_count(self) -> int:
-        result = self.execute_query(
-            "MATCH (c:Chunk) RETURN count(c) AS cnt"
-        )
-        return result[0]["cnt"] if result else 0
-
-    def get_evidence_link_count(self) -> int:
-        result = self.execute_query(
-            "MATCH (:Chunk)-[r:FROM_CHUNK]->(:__Entity__) RETURN count(r) AS cnt"
-        )
-        return result[0]["cnt"] if result else 0
-
-    def get_relationship_count(self) -> int:
-        result = self.execute_query(
-            "MATCH (:__Entity__)-[r]-(:__Entity__) RETURN count(r) AS cnt"
-        )
-        return result[0]["cnt"] if result else 0
-
     def backfill_descriptions(self) -> None:
         self.execute_query(
             "MATCH (e:__Entity__) WHERE e.description IS NULL SET e.description = ''"
         )
-
-    def validate_graph_build(self) -> dict:
-        query = """
-        CALL {
-            MATCH (e:__Entity__)
-            RETURN count(e) AS entity_count
-        }
-        CALL {
-            MATCH (c:Chunk)
-            RETURN count(c) AS chunk_count
-        }
-        CALL {
-            MATCH (:Chunk)-[r:FROM_CHUNK]->(:__Entity__)
-            RETURN count(r) AS evidence_link_count
-        }
-        CALL {
-            MATCH (:__Entity__)-[r]-(:__Entity__)
-            RETURN count(r) AS entity_relationship_count
-        }
-        RETURN entity_count,
-               chunk_count,
-               evidence_link_count,
-               entity_relationship_count
-        """
-        result = self.execute_query(query)
-        return result[0] if result else {}

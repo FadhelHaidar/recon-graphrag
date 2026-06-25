@@ -9,7 +9,6 @@ if TYPE_CHECKING:
     import neo4j
 
 from recon_graphrag.extraction.types import GraphDocument
-from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.memgraph.cypher import (
     cypher_string_literal,
     escape_cypher_identifier,
@@ -18,6 +17,7 @@ from recon_graphrag.graphdb.memgraph.index_manager import IndexManager
 from recon_graphrag.models.artifacts import CommunityReport, report_to_json, report_to_text
 from recon_graphrag.models.types import IndexConfig
 from recon_graphrag.pipelines.memgraph.writer import MemgraphGraphWriter
+from recon_graphrag.graphdb.store_base import BaseGraphStore
 
 
 def _escape_tantivy_term(value: str) -> str:
@@ -46,7 +46,7 @@ def _format_tantivy_query(query_text: str) -> str:
     return f'"{escaped}"'
 
 
-class MemgraphGraphStore:
+class MemgraphGraphStore(BaseGraphStore):
     """Memgraph backend backed by a Bolt-compatible driver (e.g., neo4j.Driver)."""
 
     def __init__(
@@ -703,43 +703,13 @@ class MemgraphGraphStore:
     # ------------------------------------------------------------------
     # Stats / validation
     # ------------------------------------------------------------------
-    def get_entity_count(self) -> int:
-        result = self.execute_query(
-            "MATCH (e:__Entity__) RETURN count(e) AS cnt"
-        )
-        return result[0]["cnt"] if result else 0
-
-    def get_chunk_count(self) -> int:
-        result = self.execute_query(
-            "MATCH (c:Chunk) RETURN count(c) AS cnt"
-        )
-        return result[0]["cnt"] if result else 0
-
-    def get_evidence_link_count(self) -> int:
-        result = self.execute_query(
-            "MATCH (:Chunk)-[r:FROM_CHUNK]->(:__Entity__) RETURN count(r) AS cnt"
-        )
-        return result[0]["cnt"] if result else 0
-
-    def get_relationship_count(self) -> int:
-        result = self.execute_query(
-            "MATCH (:__Entity__)-[r]-(:__Entity__) RETURN count(r) AS cnt"
-        )
-        return result[0]["cnt"] if result else 0
-
     def backfill_descriptions(self) -> None:
         self.execute_query(
             "MATCH (e:__Entity__) WHERE e.description IS NULL SET e.description = ''"
         )
 
-    def validate_graph_build(self) -> dict:
-        counts = {
-            "entity_count": self.get_entity_count(),
-            "chunk_count": self.get_chunk_count(),
-            "evidence_link_count": self.get_evidence_link_count(),
-            "entity_relationship_count": self.get_relationship_count(),
-        }
-        extra_queries = {
+    def _extra_validation_count_queries(self) -> dict[str, str]:
+        return {
             "community_count": "MATCH (c:Community) RETURN count(c) AS cnt",
             "community_summary_count": (
                 "MATCH (c:Community) WHERE c.summary IS NOT NULL "
@@ -751,7 +721,3 @@ class MemgraphGraphStore:
                 "RETURN count(DISTINCT r) AS cnt"
             ),
         }
-        for key, query in extra_queries.items():
-            result = self.execute_query(query)
-            counts[key] = result[0]["cnt"] if result else 0
-        return counts
