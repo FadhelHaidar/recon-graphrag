@@ -10,6 +10,13 @@ import asyncio
 from typing import Any
 
 from recon_graphrag.embeddings.base import BaseEmbedder, ModelParamsEmbedder
+from recon_graphrag.providers._compat import (
+    OpenAICompatibleProviderError,
+    _error_value,
+    _response_error,
+    _response_payload,
+    _safe_response_summary,
+)
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
@@ -194,58 +201,3 @@ def _openai_embedding(response: Any) -> list[float]:
         )
     return list(embedding)
 
-
-class OpenAICompatibleProviderError(RuntimeError):
-    """Provider error returned inside an OpenAI-compatible response payload."""
-
-    @classmethod
-    def from_error(
-        cls,
-        operation: str,
-        error: Any,
-        response: Any,
-    ) -> "OpenAICompatibleProviderError":
-        message = _error_value(error, "message") or repr(error)
-        code = _error_value(error, "code")
-        return cls(
-            f"OpenAI-compatible {operation} provider returned error"
-            f"{f' ({code})' if code is not None else ''}: {message}. "
-            f"Response: {_safe_response_summary(response)}"
-        )
-
-
-def _response_error(response: Any) -> Any:
-    payload = _response_payload(response)
-    if isinstance(payload, dict) and payload.get("error"):
-        return payload["error"]
-    return getattr(response, "error", None)
-
-
-def _response_payload(response: Any) -> Any:
-    if isinstance(response, dict):
-        return response
-    model_dump = getattr(response, "model_dump", None)
-    if callable(model_dump):
-        try:
-            return model_dump()
-        except Exception:
-            return None
-    return None
-
-
-def _error_value(error: Any, key: str) -> Any:
-    if isinstance(error, dict):
-        return error.get(key)
-    return getattr(error, key, None)
-
-
-def _safe_response_summary(response: Any) -> str:
-    if response is None:
-        return "None"
-    model_dump = getattr(response, "model_dump", None)
-    if callable(model_dump):
-        try:
-            return repr(model_dump())
-        except Exception:
-            pass
-    return repr(response)

@@ -1,18 +1,14 @@
-"""Cypher escaping helpers for Memgraph.
+"""Memgraph-specific Cypher construction helpers.
 
-Memgraph uses the same identifier/string literal rules as Neo4j for
-labels, relationship types, property names, and string values, so these
-helpers mirror the Neo4j equivalents.
+These are re-exported from the backend-neutral ``graphdb.cypher`` module.
+Backends that need vendor-specific escaping can override here.
 """
 
 from __future__ import annotations
 
+from recon_graphrag.graphdb.cypher import (
+    cypher_string_literal,
+    escape_cypher_identifier,
+)
 
-def escape_cypher_identifier(identifier: str) -> str:
-    """Escape a label, relationship type, or property name for Cypher."""
-    return "`" + identifier.replace("`", "``") + "`"
-
-
-def cypher_string_literal(value: str) -> str:
-    """Return a safely-quoted Cypher string literal."""
-    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+__all__ = ["escape_cypher_identifier", "cypher_string_literal"]
