@@ -176,6 +176,7 @@ GraphDocument(
         EvidenceLink(chunk_id="doc:inception-example:chunk:0", entity_id="<uuid-for-ent-2>", graph_name="entity-graph"),
         EvidenceLink(chunk_id="doc:inception-example:chunk:0", entity_id="<uuid-for-ent-3>", graph_name="entity-graph"),
     ],
+    claims=[],
 )
 ```
 
@@ -195,6 +196,7 @@ extractor = LLMGraphExtractor(llm)
 extraction = await extractor.extract(
     text="Christopher Nolan directed Inception.",
     schema=schema,
+    max_gleanings=0,
 )
 
 print(len(extraction.nodes), len(extraction.relationships))
@@ -224,6 +226,7 @@ graph_doc = assembler.assemble(
     text_hash="sha256...",
     chunks=chunks,
     chunk_extractions={chunk.id: validated for chunk, validated in zip(chunks, validations)},
+    chunk_claims=None,  # optional: dict[chunk_id, list[ExtractedClaim]]
     metadata={"source": "advanced-example"},
     graph_name="entity-graph",
 )
@@ -243,7 +246,11 @@ chunker = TextChunker(chunk_size=1000, chunk_overlap=200)
 chunks = chunker.chunk_text(text, document_id="doc:test", metadata={"source": "text"})
 
 window_builder = PageWindowBuilder(window_size=2, window_overlap=1)
-page_chunks = window_builder.build_windows(pages, document_id="doc:test")
+page_chunks = window_builder.build_windows(
+    pages,
+    document_id="doc:test",
+    metadata={"source": "pages"},
+)
 ```
 
 ## GraphStore / GraphWriter
@@ -368,7 +375,8 @@ The file produced by `save_graph_document_json()` contains the complete
     {"chunk_id": "doc:inception-example:chunk:0", "entity_id": "<uuid-for-ent-1>"},
     {"chunk_id": "doc:inception-example:chunk:0", "entity_id": "<uuid-for-ent-2>"},
     {"chunk_id": "doc:inception-example:chunk:0", "entity_id": "<uuid-for-ent-3>"}
-  ]
+  ],
+  "claims": []
 }
 ```
 
@@ -391,7 +399,7 @@ class ArtifactSavingWriter:
         self.inner = inner
         self.out_dir = Path(out_dir)
 
-    def write_graph_document(self, graph_document: GraphDocument) -> dict:
+    def write_graph_document(self, graph_document: GraphDocument) -> dict[str, int]:
         safe_id = "".join(
             char if char.isalnum() or char in ("-", "_") else "_"
             for char in graph_document.document.id
@@ -414,14 +422,14 @@ pipeline = GraphBuilderPipeline(
 
 ### Implement a custom GraphStore
 
-Implement every method in `GraphStore` to add a new backend. The Neo4j and Memgraph store tests show the shared contract alongside backend-specific query behavior.
+Implement every method in `GraphStore` to add a new backend. The protocol defines around 30 methods spanning index management, entity resolution, vector/keyword search, community detection/persistence, and validation. The Neo4j and Memgraph store tests show the shared contract alongside backend-specific query behavior.
 
 ```python
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.extraction.types import GraphDocument
 
 class InMemoryGraphStore(GraphStore):
-    def write_graph_document(self, graph_document: GraphDocument) -> dict:
+    def write_graph_document(self, graph_document: GraphDocument) -> dict[str, int]:
         ...
 
     def execute_query(self, query: str, parameters: dict | None = None) -> list[dict]:
@@ -429,6 +437,8 @@ class InMemoryGraphStore(GraphStore):
 
     # ... implement remaining GraphStore methods
 ```
+
+See [`recon_graphrag/graphdb/base.py`](../recon_graphrag/graphdb/base.py) for the complete protocol.
 
 ## Run entity resolution independently
 

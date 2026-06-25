@@ -26,15 +26,15 @@ cd Recon-GraphRAG
 cp .env.example .env
 
 # Start one backend
-docker-compose up -d neo4j
-docker-compose up -d memgraph lab
+docker compose up -d neo4j
+docker compose up -d memgraph lab
 
 # Or start both backends and Memgraph Lab
-docker-compose up -d
+docker compose up -d
 
 # Wait for it to be ready (usually takes ~30 seconds)
-docker-compose logs -f neo4j
-docker-compose logs -f memgraph
+docker compose logs -f neo4j
+docker compose logs -f memgraph
 ```
 
 The services will be available at:
@@ -47,9 +47,9 @@ The services will be available at:
 To stop:
 
 ```bash
-docker-compose down
+docker compose down
 # Or to also remove volumes (data will be lost):
-docker-compose down -v
+docker compose down -v
 ```
 
 ### Manual Neo4j setup
@@ -89,26 +89,23 @@ uv run python your_script.py
 
 ## Optional extras
 
-The core package includes the minimum dependencies needed to run the SDK. Provider-specific clients and heavier dependencies are available as extras.
+The core package includes the minimum dependencies needed to run the SDK, including the OpenAI client, `sentence-transformers`, and the Neo4j driver. The only remaining optional extra is for the Ollama provider.
 
 | Extra | Installs | Enables |
 | --------- | --------- | --------- |
-| `[openai]` | `openai>=1.0` | OpenAI, Azure OpenAI, and OpenRouter providers |
-| `[ollama]` | `ollama` | Ollama local LLM/embedder providers |
-| `[sentence-transformers]` | `sentence-transformers>=2.0` | Local sentence-transformer embedders |
-| `[all]` | All of the above | All supported providers |
-| `[dev]` | `pytest`, `pytest-asyncio` | Running the test suite |
+| `[ollama]` | `ollama` | Ollama local LLM/embedder provider |
+| `[all]` | All optional extras | All supported providers |
+| `[dev]` | `pytest`, `pytest-asyncio`, `pydantic` | Running the test suite |
+| `[evaluation]` | `pydantic` | Evaluation helpers |
 
 With `uv`:
 
 ```bash
-# All providers
+# All optional providers
 uv add "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git"
 
-# Individual providers
-uv add "recon-graphrag[openai] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git"
+# Ollama provider only (OpenAI, sentence-transformers, and Neo4j are already included)
 uv add "recon-graphrag[ollama] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git"
-uv add "recon-graphrag[sentence-transformers] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git"
 
 uv sync
 ```
@@ -118,21 +115,21 @@ uv sync
 Pin to a specific release tag so your build stays reproducible:
 
 ```bash
-uv add git+https://github.com/FadhelHaidar/Recon-GraphRAG.git@v0.1.1
+uv add git+https://github.com/FadhelHaidar/Recon-GraphRAG.git@v0.4.0
 uv sync
 ```
 
 With extras:
 
 ```bash
-uv add "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git@v0.1.1"
+uv add "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git@v0.4.0"
 uv sync
 ```
 
 With `pip`:
 
 ```bash
-pip install "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git@v0.1.1"
+pip install "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git@v0.4.0"
 ```
 
 ## Install with pip
@@ -153,7 +150,7 @@ With `uv`:
 git clone https://github.com/FadhelHaidar/Recon-GraphRAG.git
 cd Recon-GraphRAG
 
-# With all provider extras and dev dependencies
+# With all optional provider extras and dev dependencies
 uv pip install -e ".[all,dev]"
 ```
 
@@ -162,7 +159,7 @@ Or use the uv project workflow:
 ```bash
 git clone https://github.com/FadhelHaidar/Recon-GraphRAG.git
 cd Recon-GraphRAG
-uv sync --group dev
+uv sync --extra dev --group dev
 uv run pytest -m "not integration"
 ```
 
@@ -172,6 +169,9 @@ With `pip`:
 git clone https://github.com/FadhelHaidar/Recon-GraphRAG.git
 cd Recon-GraphRAG
 pip install -e ".[all,dev]"
+# The `dotenv` package is managed through uv's dependency group; install it
+# manually when running tests or examples that load environment files:
+pip install python-dotenv
 ```
 
 ## Clone without installing
@@ -201,24 +201,24 @@ print(recon_graphrag.__version__)
 You should see the installed version, for example:
 
 ```text
-0.1.1
+0.4.0
 ```
 
 ## Troubleshooting
 
-### `ModuleNotFoundError: No module named 'openai'` (or `ollama`, etc.)
+### `ModuleNotFoundError: No module named 'ollama'`
 
-You are using a provider that requires an optional extra. Re-install with the appropriate extra:
+You are using the Ollama provider, which requires the `[ollama]` extra. Re-install with the appropriate extra:
 
 ```bash
-uv add "recon-graphrag[openai] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git"
+uv add "recon-graphrag[ollama] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git"
 uv sync
 ```
 
 Or with `pip`:
 
 ```bash
-pip install "recon-graphrag[openai] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git"
+pip install "recon-graphrag[ollama] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git"
 ```
 
 ### Neo4j connection errors
@@ -237,7 +237,7 @@ pip install "recon-graphrag[openai] @ git+https://github.com/FadhelHaidar/Recon-
 
 - Confirm the plugins are in the Neo4j `plugins` directory.
 - For manual installs, make sure `dbms.security.procedures.unrestricted=apoc.*,gds.*` is set in `neo4j.conf`.
-- With Docker Compose, both plugins are pre-installed. If they are missing, try `docker-compose down -v` followed by `docker-compose up -d`.
+- With Docker Compose, both plugins are pre-installed. If they are missing, try `docker compose down -v` followed by `docker compose up -d`.
 
 ### Conflicting Python version
 

@@ -16,10 +16,10 @@ llm = create_llm("openai", model_name="gpt-4o", api_key="sk-...")
 
 | Provider | Key | Requires |
 | --------- | --------- | --------- |
-| OpenAI | `"openai"` | `[openai]` extra |
-| Azure OpenAI | `"azure_openai"` | `[openai]` extra |
+| OpenAI | `"openai"` | Included in core package |
+| Azure OpenAI | `"azure_openai"` | Included in core package |
 | Ollama | `"ollama"` | `[ollama]` extra |
-| OpenRouter | `"openrouter"` | `[openai]` extra (OpenAI-compatible API) |
+| OpenRouter | `"openrouter"` | Included in core package (OpenAI-compatible API) |
 
 ### Examples
 
@@ -82,21 +82,21 @@ embedder = create_embedder("openai", model="text-embedding-3-small", api_key="sk
 
 | Provider | Key | Default Dim | Requires |
 | --------- | --------- | --------- | --------- |
-| OpenAI | `"openai"` | 1536 | `[openai]` extra |
-| Azure OpenAI | `"azure_openai"` | 1536 | `[openai]` extra |
+| OpenAI | `"openai"` | 1536 | Included in core package |
+| Azure OpenAI | `"azure_openai"` | 1536 | Included in core package |
 | Ollama | `"ollama"` | Varies | `[ollama]` extra |
-| OpenRouter | `"openrouter"` | Varies | `[openai]` extra |
-| Sentence-Transformers | `"sentence-transformer"` | Auto-detected | `[sentence-transformers]` extra |
+| OpenRouter | `"openrouter"` | Varies | Included in core package |
+| Sentence-Transformers | `"sentence-transformer"` | Auto-detected | Included in core package |
 
-### Examples
+### Embedder examples
 
-#### OpenAI
+#### OpenAI (embedder)
 
 ```python
 embedder = create_embedder("openai", model="text-embedding-3-small", api_key="sk-...")
 ```
 
-#### Azure OpenAI
+#### Azure OpenAI (embedder)
 
 ```python
 embedder = create_embedder(
@@ -108,13 +108,13 @@ embedder = create_embedder(
 )
 ```
 
-#### Ollama
+#### Ollama (embedder)
 
 ```python
 embedder = create_embedder("ollama", model="nomic-embed-text")
 ```
 
-#### OpenRouter
+#### OpenRouter (embedder)
 
 ```python
 embedder = create_embedder(
@@ -124,7 +124,7 @@ embedder = create_embedder(
 )
 ```
 
-#### Custom OpenAI-compatible endpoint
+#### Custom OpenAI-compatible endpoint (embedder)
 
 ```python
 embedder = create_embedder(
@@ -145,6 +145,17 @@ Sentence-Transformers runs locally and does not require an API key.
 
 ## Passing `model_params`
 
+Use `model_params` to forward extra arguments on every LLM call:
+
+```python
+llm = create_llm(
+    "openai",
+    model_name="gpt-4o",
+    api_key="sk-...",
+    model_params={"temperature": 0.1, "max_tokens": 2048},
+)
+```
+
 Use `model_params` to forward extra arguments on every embedding call:
 
 ```python
@@ -156,16 +167,16 @@ embedder = create_embedder(
 )
 ```
 
-This is useful for OpenAI's `dimensions` or `encoding_format` parameters.
+This is useful for OpenAI's `dimensions` or `encoding_format` parameters, and for LLM parameters such as `temperature`.
 
 ## Embedding dimensions
 
-Most providers have a fixed output dimension. Make sure the `embedding_dim` passed to `IndexManager` matches your embedder.
+Most providers have a fixed output dimension. Make sure the `embedding_dim` passed to `store.create_indexes()` matches your embedder.
 
 | Provider | How to set dimension |
 | --------- | --------- |
-| OpenAI / Azure OpenAI / OpenRouter | Pass `embedding_dim` to `IndexManager`. Use `model_params={"dimensions": ...}` to reduce it. |
-| Sentence-Transformers | `IndexManager` can auto-detect when you pass `embedder=embedder`. |
+| OpenAI / Azure OpenAI / OpenRouter | Pass `embedding_dim` to `store.create_indexes()`. Use `model_params={"dimensions": ...}` to reduce it. |
+| Sentence-Transformers | Detect the dimension with `detect_embedding_dim(embedder)` and pass it to `store.create_indexes()`. |
 | Ollama | Pass `embedding_dim` explicitly. |
 
 See [Indexing](indexing.md) for more details.

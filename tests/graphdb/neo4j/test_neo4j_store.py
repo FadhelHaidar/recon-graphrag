@@ -287,16 +287,31 @@ def test_local_context_uses_element_id():
 
 def test_validate_graph_build_returns_counts():
     driver = FakeDriver()
-    driver.records = [
-        {
-            "entity_count": 10,
-            "chunk_count": 5,
-            "evidence_link_count": 3,
-            "entity_relationship_count": 2,
-        }
-    ]
+
+    def fake_run(query, parameters=None):
+        driver.calls.append((query.strip(), parameters or {}))
+        if "MATCH (e:__Entity__) RETURN count(e) AS cnt" in query:
+            return [{"cnt": 10}]
+        if "MATCH (c:Chunk) RETURN count(c) AS cnt" in query:
+            return [{"cnt": 5}]
+        if "FROM_CHUNK" in query:
+            return [{"cnt": 3}]
+        if "MATCH (:__Entity__)-[r]-(:__Entity__)" in query:
+            return [{"cnt": 2}]
+        return []
+
+    class CountingSession(FakeSession):
+        def run(self, query, parameters=None):
+            return fake_run(query, parameters)
+
+    driver.session = lambda **kwargs: CountingSession(driver.calls, [])
     store = Neo4jGraphStore(driver)
 
     result = store.validate_graph_build()
 
-    assert result == driver.records[0]
+    assert result == {
+        "entity_count": 10,
+        "chunk_count": 5,
+        "evidence_link_count": 3,
+        "entity_relationship_count": 2,
+    }

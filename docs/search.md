@@ -17,7 +17,15 @@ All modes use the same entry point:
 ```python
 from recon_graphrag import GraphRAG
 
-graph_rag = GraphRAG(store, llm, embedder)
+graph_rag = GraphRAG(
+    store,
+    llm,
+    embedder,
+    graph_name="entity-graph",     # graph scope (default: "entity-graph")
+    token_counter=None,            # optional token counter for global search
+    map_budget_tokens=12000,       # global map budget (default: 12000)
+    reduce_budget_tokens=12000,    # global reduce budget (default: 12000)
+)
 result = await graph_rag.search("Your question", mode="local")
 ```
 
@@ -40,6 +48,7 @@ result = await graph_rag.search(
 | `effective_search_ratio` | Over-fetch multiplier before post-filtering. |
 | `ranker` | Hybrid ranker: `"naive"` or `"linear"`. |
 | `alpha` | Required for the `"linear"` ranker. |
+| `query_params` | Optional dict forwarded to the underlying hybrid entity retriever. |
 
 Local search returns citations when retrieved entities have source chunks.
 By default, citation metadata is returned after synthesis but is not shown to
@@ -88,6 +97,8 @@ result = await graph_rag.search(
 | `random_seed` | Seed for reproducible report shuffling. Defaults to `42`. |
 | `map_budget_tokens` | Constructor option on `GlobalSearchRetriever`; maximum report text packed into one map prompt. |
 | `reduce_budget_tokens` | Constructor option on `GlobalSearchRetriever`; maximum partial-answer text packed into the final reduce prompt. |
+| `map_concurrency` | Constructor option on `GlobalSearchRetriever`; max concurrent map calls. Defaults to `1`. |
+| `max_map_calls` | Constructor option on `GlobalSearchRetriever`; max total map calls. Defaults to `None` (unlimited). |
 
 Global search does not embed the user query, query the
 `community-embeddings` vector index, choose communities by vector similarity,
@@ -153,6 +164,7 @@ result = await graph_rag.search(
 | `top_k` | Number of entities to retrieve. |
 | `community_top_k` | Number of communities to expand into. |
 | `community_level` | Which community level to use. |
+| `query_params` | Optional dict forwarded to the underlying hybrid entity retriever. |
 
 DRIFT returns citations for the retrieved local source chunks. Community-summary
 citations are a separate extension point.
@@ -530,7 +542,7 @@ This cluster covers Hans Zimmer's collaborations with major directors...
 
 ## Token Utilities
 
-Token budgeting uses shared utilities from `recon_graphrag.utils.tokens`:
+Token budgeting uses shared utilities from `recon_graphrag.utils`:
 
 - `ApproximateTokenCounter` — fast estimate using `ceil(len(text) / 4)`.
   Always available, no dependencies.
@@ -545,7 +557,7 @@ These are used internally by global search (map/reduce batching) and
 community context packing. You can also use them directly for custom workflows:
 
 ```python
-from recon_graphrag.utils.tokens import ApproximateTokenCounter, pack_items, PackItem
+from recon_graphrag.utils import ApproximateTokenCounter, pack_items, PackItem
 
 counter = ApproximateTokenCounter()
 items = [PackItem(id="r1", text="report text..."), PackItem(id="r2", text="...")]
@@ -555,7 +567,7 @@ print(f"Packed {len(result.included)} items, {result.used_tokens} tokens")
 
 ## Required Indexes
 
-Search depends on indexes created by `IndexManager`:
+Search depends on indexes created by `store.create_indexes()`:
 
 | Index | Type | Indexed property | Used by |
 | --- | --- | --- | --- |

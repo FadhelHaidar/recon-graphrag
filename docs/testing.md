@@ -53,8 +53,12 @@ These tests may be slower, flaky if external services are unhealthy, and may inc
 | `tests/pipelines/neo4j/test_neo4j_writer.py` | No | No | No | Shared graph-writer contract against the Neo4j writer. |
 | `tests/pipelines/memgraph/test_memgraph_writer.py` | No | No | No | The same graph-writer contract against the Memgraph writer. |
 | `tests/pipelines/test_graph_builder.py` | Fake only | Fake only | No | Pipeline orchestration with fake LLM, fake embedder, fake graph store, and fake writer. |
+| `tests/pipelines/test_writer_characterization.py` | No | No | No | Shared `BaseGraphWriter` behavior across backends. |
+| `tests/graphdb/test_store_base.py` | No | No | No | Shared `BaseGraphStore` helpers and read helpers. |
+| `tests/graphdb/test_entity_resolution_contract.py` | No | No | No | Shared `BaseEntityResolver` normalization contract. |
 | `tests/communities/` | No | Fake only | No | Shared, Neo4j, and Memgraph community behavior using fakes. |
 | `tests/retrieval/` | Fake only | Fake only | No | Retrieval, ranking, and answer-generation flow using fake LLM/embedder/store. |
+| `tests/test_provider_compat.py` | No | No | No | Backend-neutral provider compatibility helpers. |
 | `tests/integration/test_azure_openai_env.py` | Yes | Yes | No | Real Azure OpenAI LLM and embedding endpoint checks. |
 | `tests/integration/test_openrouter_env.py` | Yes | Yes | No | Real OpenRouter LLM and embedding endpoint checks. |
 | `tests/integration/test_llm_extraction.py` | Yes | No | No | Real LLM entity extraction through `GraphBuilderPipeline` without a graph database. |
@@ -66,7 +70,16 @@ These tests may be slower, flaky if external services are unhealthy, and may inc
 | `tests/integration/neo4j/test_neo4j_movie_smoke.py` | Yes | Yes | Yes | Neo4j end-to-end movie example with APOC/GDS. |
 | `tests/integration/memgraph/test_memgraph_store_smoke.py` | No | No | Yes | Scoped graph-document write/read checks against Memgraph. |
 | `tests/integration/memgraph/test_memgraph_movie_smoke.py` | Yes | Yes | Yes | Memgraph end-to-end movie example with MAGE. |
-| `tests/integration/test_smoke_full.py` | Yes | Yes | Yes | Backend-neutral full movie workflow against Neo4j and Memgraph when both run flags are enabled. |
+| `tests/communities/test_summarization.py` | No | Fake only | No | Community summarization and report generation using fake LLM. |
+| `tests/communities/test_context.py` | No | No | No | Community context formatting and packing. |
+| `tests/communities/test_pipeline.py` | No | Fake only | No | `CommunityPipeline` orchestration with fake store and LLM. |
+| `tests/communities/test_reports.py` | No | Fake only | No | Structured report rubric and output shape. |
+| `tests/retrieval/test_context.py` | No | No | No | Retrieval context formatting. |
+| `tests/retrieval/test_global_paper.py` | Fake only | Fake only | No | Paper-aligned global search scoring. |
+| `tests/models/test_artifacts.py` | No | No | No | `GraphDocument`, `Citation`, and `DocumentSource` models. |
+| `tests/examples/test_movie_common.py` | No | No | No | Shared movie example query suite and assertions. |
+| `tests/evaluation/test_schemas.py` | No | No | No | Evaluation runner schema definitions. |
+| `tests/evaluation/test_runner.py` | No | No | No | Evaluation runner orchestration. |
 
 Meaning:
 
@@ -218,7 +231,7 @@ Focused coverage for the gaps-with-paper alignment:
 | Structured report persistence: `report_json`, `report_text`, `report_status` | `tests/graphdb/neo4j/test_neo4j_store.py`, `tests/graphdb/memgraph/test_memgraph_store.py`, `tests/communities/test_summarization.py` |
 | Graph-scoped claim and citation reads | `tests/graphdb/neo4j/test_neo4j_store.py`, `tests/graphdb/memgraph/test_memgraph_store.py`, `tests/retrieval/test_global_search.py` |
 | Global explicit references and citations | `tests/retrieval/test_global_search.py` |
-| Local and DRIFT citations from source chunks | `tests/retrieval/test_hybrid.py`, `tests/retrieval/test_community_levels.py` |
+| Local and DRIFT citations from source chunks | `tests/retrieval/test_hybrid.py`, `tests/retrieval/test_community_levels_expanded.py` |
 | Arbitrary source metadata on citations | `tests/models/test_artifacts.py`, `tests/retrieval/test_hybrid.py`, `tests/graphdb/neo4j/test_neo4j_store.py`, `tests/graphdb/memgraph/test_memgraph_store.py` |
 | Shared token packing API: `PackItem`, `PackResult`, `pack_items` | `tests/utils/test_tokens.py` |
 
@@ -437,13 +450,16 @@ This requires `MEMGRAPH_URL` plus the selected LLM and embedder variables from t
 Install development dependencies. We recommend using `uv`:
 
 ```bash
-uv sync --group dev
+uv sync --extra dev --group dev
 ```
 
 Or with `pip`:
 
 ```bash
 pip install -e ".[dev]"
+# `dotenv` is managed through uv's dependency group; install it manually
+# when running tests or examples that load environment files:
+pip install python-dotenv
 ```
 
 Copy `.env.example` to `.env` and fill only the values needed for the optional tests you intend to run.
@@ -460,5 +476,7 @@ or with `pytest` directly if you installed into an activated virtual environment
 
 - `pytest` uses `pythonpath = ["."]` from `pyproject.toml`, so the local package imports from the repository checkout.
 - Integration tests should stay behind explicit run flags.
+- `pyproject.toml` also defines a `characterization` marker for tests that document current behavior, including known defects. Use it for tests that pin behavior without asserting ideal correctness.
 - New external-service tests should use `@pytest.mark.integration` and skip unless explicitly enabled.
 - New graph database backends should get backend-specific integration tests under `tests/integration/<backend>/`.
+- Use the [graph backend checklist](../plans/backends.md) when adding a new graph database backend.

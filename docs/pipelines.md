@@ -9,7 +9,7 @@ Recon-GraphRAG splits indexing into two pipelines: one that builds the entity gr
 | **Graph Building** | `GraphBuilderPipeline` | 1. Extract entities & relationships via LLM |
 | | | 2. Entity resolution (merge duplicates) |
 | | | 3. Entity embedding |
-| **Community Building** | `CommunityPipeline` | 4. Community detection (Neo4j GDS or Memgraph MAGE Leiden) |
+| **Community Building** | `CommunityPipeline` | 4. Community detection (Leiden via the backend store) |
 | | | 5. Community summarization (LLM) |
 | | | 6. Community embedding |
 
@@ -27,15 +27,16 @@ pipeline = GraphBuilderPipeline(
     llm=llm,
     embedder=embedder,
     schema=schema,
-    chunk_size=1000,            # text chunking size (default: 1000)
-    chunk_overlap=200,          # overlap between chunks (default: 200)
+    chunk_size=1000,            # text chunking size in characters (default: 1000)
+    chunk_overlap=200,          # overlap between chunks in characters (default: 200)
+    graph_name="entity-graph",  # graph scope (default: "entity-graph")
     extraction_concurrency=5,   # max chunks extracted in parallel (default: 5)
     max_gleanings=1,            # follow-up extraction loops (default: 0)
     extract_claims=True,        # extract claims about entities (default: False)
 )
 ```
 
-### Build methods
+### `GraphBuilderPipeline` build methods
 
 #### `build_from_text`
 
@@ -70,41 +71,32 @@ result = await pipeline.build_from_pages(pages)
 
 #### `build_from_documents`
 
-Ingest pre-chunked documents:
+Ingest a list of documents, one per source unit. Each document is passed to
+`build_from_text()` internally, so it is re-chunked using the pipeline's
+`TextChunker`:
 
 ```python
 documents = [
-    {"text": "Chunk one...", "metadata": {"record_id": "row-1", "table": "tickets"}},
-    {"text": "Chunk two...", "metadata": {"record_id": "row-2", "table": "tickets"}},
+    {"text": "Document one text...", "metadata": {"record_id": "row-1", "table": "tickets"}},
+    {"text": "Document two text...", "metadata": {"record_id": "row-2", "table": "tickets"}},
 ]
-result = await pipeline.build_from_documents(documents)
+results = await pipeline.build_from_documents(documents)
 ```
+
+Returns a list of per-document results. To use pre-tokenized or pre-chunked
+units, chunk the text yourself with `TextChunker` and pass each chunk through
+`build_from_documents()` as its own `"text"`, or assemble `GraphDocument`
+artifacts directly (see [Workflows](workflows.md)).
 
 ### Token-based chunking
 
-By default, `chunk_size` and `chunk_overlap` are measured in characters. For
-more accurate budgeting, use token-based chunking:
-
-```python
-from recon_graphrag import GraphBuilderPipeline
-from recon_graphrag.utils.tokens import ApproximateTokenCounter
-
-pipeline = GraphBuilderPipeline(
-    graph_store=store,
-    llm=llm,
-    embedder=embedder,
-    schema=schema,
-    chunk_size=500,             # 500 tokens per chunk
-    chunk_overlap=50,           # 50 token overlap
-)
-```
-
-The internal `TextChunker` defaults to character units. To use token units
-directly, configure the chunker with a token counter:
+By default, `chunk_size` and `chunk_overlap` are measured in characters. The
+pipeline always uses the internal `TextChunker` with character units. For
+token-based chunking, pre-chunk your documents and use `build_from_documents()`:
 
 ```python
 from recon_graphrag.extraction.chunking import TextChunker
-from recon_graphrag.utils.tokens import ApproximateTokenCounter
+from recon_graphrag.utils import ApproximateTokenCounter
 
 chunker = TextChunker(
     chunk_size=500,
@@ -112,13 +104,17 @@ chunker = TextChunker(
     unit="token",
     token_counter=ApproximateTokenCounter(),
 )
+chunks = chunker.chunk_text(text, document_id="doc:test")
+documents = [{"text": c.text, "metadata": c.metadata} for c in chunks]
+
+results = await pipeline.build_from_documents(documents)
 ```
 
 `ApproximateTokenCounter` uses `ceil(len(text) / 4)` as a fast estimate. For
 provider-level accuracy, use `TiktokenTokenCounter` (requires the `tiktoken`
 package).
 
-### Key parameters
+### `GraphBuilderPipeline` key parameters
 
 | Parameter | Description |
 | --------- | --------- |
@@ -126,11 +122,22 @@ package).
 | `llm` | An LLM instance from `create_llm()`. |
 | `embedder` | An embedder instance from `create_embedder()`. |
 | `schema` | A `GraphSchema` defining entities, relationships, and patterns. |
-| `chunk_size` | Target size in characters (or tokens) for each text chunk. |
-| `chunk_overlap` | Overlap in characters (or tokens) between consecutive chunks. |
+| `chunk_size` | Target size in characters for each text chunk. Use token-based chunking by pre-chunking externally and calling `build_from_documents()`. |
+| `chunk_overlap` | Overlap in characters between consecutive chunks. |
+| `graph_name` | Graph scope for all created nodes and relationships. Defaults to `"entity-graph"`. |
+| `graph_writer` | Optional `GraphWriter` implementation. When omitted, the pipeline writes directly to `graph_store`. |
 | `extraction_concurrency` | Maximum number of chunks to extract in parallel. Set to `1` for sequential extraction. |
 | `max_gleanings` | Number of follow-up extraction loops after the initial pass. Each loop asks the LLM whether it missed any entities, then extracts only the missed items. `0` = single-shot extraction (default). Higher values improve recall at the cost of more LLM calls. |
 | `extract_claims` | When `True`, runs a second LLM call per chunk to extract claims, assertions, and covariates about extracted entities. Claims are stored as `Claim` nodes linked to their subject entity and source chunk, and are available as evidence in community reports and global search. Defaults to `False`. |
+| `perform_entity_resolution` | When `True` (default), resolves duplicate entities after extraction. Set to `False` to skip resolution. |
+| `embed_entities` | When `True` (default), embeds entity nodes after extraction and resolution. Set to `False` to skip embedding. |
+| `fail_on_resolution_error` | When `True`, raises resolution errors instead of logging and continuing. Defaults to `False`. |
+| `fail_on_embedding_error` | When `True`, raises embedding errors instead of logging and continuing. Defaults to `False`. |
+
+### `GraphBuilderPipeline` entity resolution parameters
+
+| Parameter | Description |
+| --------- | --------- |
 | `entity_resolution_strategy` | Duplicate entity resolution strategy: `exact`, `normalized`, `fuzzy`, or `hybrid`. |
 | `entity_resolution_aliases` | Optional alias hints used by the `hybrid` entity resolution strategy. |
 | `entity_resolution_llm_guidance` | Optional guidance included in `hybrid` LLM review prompts. |
@@ -242,14 +249,14 @@ layer of structured evidence when enabled.
 
 ### Tips
 
-- Run `IndexManager.create_indexes()` before the first build.
+- Run `store.create_indexes()` before the first build.
 - The pipeline can be run multiple times on new text; it appends to the existing graph.
 - Pass `metadata` to link extracted chunks and entities back to any source
   shape: documents, pages, database rows, tickets, API objects, or list items.
 
 ## CommunityPipeline
 
-`CommunityPipeline` detects hierarchical communities using Neo4j GDS or Memgraph MAGE Leiden, summarizes each community with an LLM, and embeds the summaries.
+`CommunityPipeline` detects hierarchical communities using the backend store's Leiden implementation, summarizes each community with an LLM, and embeds the summaries.
 
 ```python
 from recon_graphrag import CommunityPipeline
@@ -259,12 +266,20 @@ community = CommunityPipeline(
     llm=llm,
     embedder=embedder,
     relationship_types=["DIRECTED", "ACTED_IN"],  # required
+    graph_name="entity-graph",  # graph scope (default: "entity-graph")
     max_levels=3,               # hierarchy depth (default: 3)
     gamma=1.0,                  # Leiden resolution (default: 1.0)
-    theta=0.01,                 # Leiden tolerance (default: 0.01)
+    theta=0.01,                 # Leiden theta (default: 0.01)
+    tolerance=1e-4,             # Leiden tolerance (default: 1e-4)
     relationship_weight_property="weight",  # numeric edge weight property
+    random_seed=42,             # deterministic detection (default: 42)
     summary_prompt=None,        # custom summary prompt (uses default if None)
+    use_reports=False,          # generate structured reports (default: False)
+    report_rubric=None,         # rating rubric for structured reports
     summarize_concurrency=1,    # concurrent community summaries (default: 1)
+    skip_existing=False,        # skip communities that already have a summary
+    max_context_tokens=None,    # token budget for community context
+    token_counter=None,         # token counter for context packing
 )
 ```
 
@@ -282,7 +297,7 @@ result = await community.build()
 result = await community.build(level=0)
 ```
 
-### Key parameters
+### `CommunityPipeline` key parameters
 
 | Parameter | Description |
 | --------- | --------- |
@@ -290,12 +305,20 @@ result = await community.build(level=0)
 | `llm` | An LLM instance from `create_llm()`. |
 | `embedder` | An embedder instance from `create_embedder()`. |
 | `relationship_types` | Which relationship types form the community graph. **Required.** |
+| `graph_name` | Graph scope to detect communities within. Defaults to `"entity-graph"`. |
 | `max_levels` | Maximum number of community hierarchy levels to detect. |
 | `gamma` | Leiden resolution parameter. Higher values produce more communities. |
-| `theta` | Leiden tolerance parameter. |
+| `theta` | Leiden theta parameter. |
+| `tolerance` | Leiden tolerance parameter. |
 | `relationship_weight_property` | Name of the numeric relationship property to use as the Leiden edge weight, for example `"weight"`. Neo4j runs unweighted when this is omitted; Memgraph defaults to `"weight"`. |
+| `random_seed` | Random seed for deterministic Neo4j community detection. |
 | `summary_prompt` | Optional custom prompt for generating community summaries. |
+| `use_reports` | When `True`, generate structured reports instead of plain summaries. |
+| `report_rubric` | Optional rating rubric for structured reports. |
 | `summarize_concurrency` | Maximum number of community summaries to generate in parallel. Defaults to `1`. Increase for faster community builds when the LLM provider supports high throughput. |
+| `skip_existing` | Skip communities that already have a summary. |
+| `max_context_tokens` | Maximum tokens for community context passed to the LLM. When set, degree-ranked context is packed to fit this budget. |
+| `token_counter` | Token counter for context packing. Defaults to `ApproximateTokenCounter` when `max_context_tokens` is set. |
 
 ### Choosing `relationship_types`
 

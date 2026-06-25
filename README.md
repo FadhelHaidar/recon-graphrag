@@ -50,10 +50,12 @@ uv add "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG
 uv sync
 ```
 
+`openai`, `sentence-transformers`, and the Neo4j driver are included in the core package, so the `[all]` extra only adds the Ollama client and any remaining optional providers.
+
 Pin to a specific release:
 
 ```bash
-uv add git+https://github.com/FadhelHaidar/Recon-GraphRAG.git@v0.1.1
+uv add git+https://github.com/FadhelHaidar/Recon-GraphRAG.git@v0.4.0
 uv sync
 ```
 
@@ -68,18 +70,21 @@ from recon_graphrag import (
     GraphBuilderPipeline,
     CommunityPipeline,
     Neo4jGraphStore,
-    IndexManager,
+    IndexConfig,
     create_llm,
     create_embedder,
+    GraphSchema,
+    NodeType,
+    PropertyType,
+    RelationshipType,
 )
-from recon_graphrag.extraction.schema import GraphSchema, NodeType, PropertyType, RelationshipType
 
 # Connect to Neo4j (see the quick start for the Memgraph alternative)
 driver = GraphDatabase.driver("bolt://localhost:7688", auth=("neo4j", "password"))
 store = Neo4jGraphStore(driver)
 
 # Create indexes
-IndexManager(store, embedding_dim=1536).create_indexes()
+store.create_indexes(IndexConfig(), embedding_dim=1536)
 
 # Define a schema
 schema = GraphSchema(
@@ -111,11 +116,16 @@ llm = create_llm("openai", model_name="gpt-4o", api_key="sk-...")
 embedder = create_embedder("openai", model="text-embedding-3-small", api_key="sk-...")
 
 # Build the graph
-pipeline = GraphBuilderPipeline(store, llm, embedder, schema=schema)
+pipeline = GraphBuilderPipeline(graph_store=store, llm=llm, embedder=embedder, schema=schema)
 await pipeline.build_from_text("Christopher Nolan directed Inception...")
 
 # Build communities
-community = CommunityPipeline(store, llm, embedder, relationship_types=["DIRECTED"])
+community = CommunityPipeline(
+    graph_store=store,
+    llm=llm,
+    embedder=embedder,
+    relationship_types=["DIRECTED"],
+)
 await community.build()
 
 # Search

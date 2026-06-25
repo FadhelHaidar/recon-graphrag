@@ -9,15 +9,14 @@ if TYPE_CHECKING:
     import neo4j
 
 from recon_graphrag.extraction.types import GraphDocument
-from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.memgraph.cypher import (
     cypher_string_literal,
     escape_cypher_identifier,
 )
 from recon_graphrag.graphdb.memgraph.index_manager import IndexManager
-from recon_graphrag.models.artifacts import CommunityReport, report_to_json, report_to_text
 from recon_graphrag.models.types import IndexConfig
 from recon_graphrag.pipelines.memgraph.writer import MemgraphGraphWriter
+from recon_graphrag.graphdb.store_base import BaseGraphStore
 
 
 def _escape_tantivy_term(value: str) -> str:
@@ -46,7 +45,7 @@ def _format_tantivy_query(query_text: str) -> str:
     return f'"{escaped}"'
 
 
-class MemgraphGraphStore:
+class MemgraphGraphStore(BaseGraphStore):
     """Memgraph backend backed by a Bolt-compatible driver (e.g., neo4j.Driver)."""
 
     def __init__(
@@ -403,158 +402,6 @@ class MemgraphGraphStore:
         )
         return detector.detect()
 
-    def get_communities(
-        self,
-        graph_name: str,
-        level: Optional[int] = None,
-    ) -> list[dict]:
-        community_label = escape_cypher_identifier("Community")
-        if level is not None:
-            query = f"""
-            MATCH (c:{community_label} {{graph_name: $graph_name, level: $level}})
-            OPTIONAL MATCH (c)<-[:IN_COMMUNITY]-(e:__Entity__)
-            WITH c, count(DISTINCT e) AS entity_count
-            OPTIONAL MATCH (c)<-[:PARENT_COMMUNITY]-(child:Community)
-            WITH c,
-                 entity_count,
-                 count(DISTINCT child) AS child_community_count
-            RETURN c.id AS id,
-                   c.level AS level,
-                   entity_count,
-                   child_community_count
-            ORDER BY entity_count DESC, id
-            """
-            params = {"graph_name": graph_name, "level": level}
-        else:
-            query = f"""
-            MATCH (c:{community_label} {{graph_name: $graph_name}})
-            OPTIONAL MATCH (c)<-[:IN_COMMUNITY]-(e:__Entity__)
-            WITH c, count(DISTINCT e) AS entity_count
-            OPTIONAL MATCH (c)<-[:PARENT_COMMUNITY]-(child:Community)
-            WITH c,
-                 entity_count,
-                 count(DISTINCT child) AS child_community_count
-            RETURN c.id AS id,
-                   c.level AS level,
-                   entity_count,
-                   child_community_count
-            ORDER BY c.level, entity_count DESC, id
-            """
-            params = {"graph_name": graph_name}
-        return self.execute_query(query, params)
-
-    def get_community_stats(self, graph_name: str) -> list[dict]:
-        query = """
-        MATCH (c:Community {graph_name: $graph_name})
-        OPTIONAL MATCH (c)<-[:IN_COMMUNITY]-(e:__Entity__)
-        WITH c, count(DISTINCT e) AS entity_count
-        OPTIONAL MATCH (c)<-[:PARENT_COMMUNITY]-(child:Community)
-        WITH c, entity_count, count(DISTINCT child) AS child_community_count
-        RETURN c.id AS community_id,
-               c.level AS level,
-               entity_count,
-               child_community_count
-        ORDER BY c.level, entity_count DESC
-        """
-        return self.execute_query(query, {"graph_name": graph_name})
-
-    def store_community_summary(
-        self,
-        community_id: str,
-        level: int,
-        summary: str,
-        graph_name: str,
-    ) -> None:
-        query = """
-        MATCH (c:Community {
-            graph_name: $graph_name,
-            id: $cid,
-            level: $level
-        })
-        SET c.summary = $summary,
-            c.embedding = NULL,
-            c.updated = timestamp()
-        """
-        self.execute_query(
-            query,
-            {
-                "graph_name": graph_name,
-                "cid": community_id,
-                "level": level,
-                "summary": summary,
-            },
-        )
-
-    def store_community_report(
-        self,
-        report: CommunityReport,
-        graph_name: str,
-    ) -> None:
-        report_text = report_to_text(report)
-        query = """
-        MATCH (c:Community {
-            graph_name: $graph_name,
-            id: $cid,
-            level: $level
-        })
-        SET c.report_json = $report_json,
-            c.report_text = $report_text,
-            c.title = $title,
-            c.summary = $report_text,
-            c.rating = $rating,
-            c.rating_explanation = $rating_explanation,
-            c.report_status = 'success',
-            c.report_error = NULL,
-            c.schema_version = $schema_version,
-            c.prompt_version = $prompt_version,
-            c.input_fingerprint = $input_fingerprint,
-            c.embedding = NULL,
-            c.updated = timestamp()
-        """
-        self.execute_query(
-            query,
-            {
-                "graph_name": graph_name,
-                "cid": report.community_id,
-                "level": report.level,
-                "report_json": report_to_json(report),
-                "report_text": report_text,
-                "title": report.title,
-                "rating": report.rating,
-                "rating_explanation": report.rating_explanation,
-                "schema_version": report.version.schema_version,
-                "prompt_version": report.version.prompt_version,
-                "input_fingerprint": report.version.input_fingerprint,
-            },
-        )
-
-    def mark_community_report_failed(
-        self,
-        graph_name: str,
-        community_id: str,
-        level: int,
-        error: str,
-    ) -> None:
-        query = """
-        MATCH (c:Community {
-            graph_name: $graph_name,
-            id: $cid,
-            level: $level
-        })
-        SET c.report_status = 'failed',
-            c.report_error = $error,
-            c.updated = timestamp()
-        """
-        self.execute_query(
-            query,
-            {
-                "graph_name": graph_name,
-                "cid": community_id,
-                "level": level,
-                "error": error,
-            },
-        )
-
     def get_unembedded_communities(
         self, graph_name: str, level: int
     ) -> list[dict]:
@@ -647,99 +494,15 @@ class MemgraphGraphStore:
         )
 
     # ------------------------------------------------------------------
-    # Claims
-    # ------------------------------------------------------------------
-    def get_claims_for_entities(
-        self,
-        graph_name: str,
-        entity_ids: list[str],
-    ) -> list[dict]:
-        if not entity_ids:
-            return []
-        query = """
-        UNWIND $entity_ids AS eid
-        MATCH (c:Claim {graph_name: $graph_name})-[:SUBJECT_OF]->
-              (e:__Entity__ {graph_name: $graph_name})
-        WHERE e.id = eid OR e.canonical_key = eid OR e.human_readable_id = eid
-        OPTIONAL MATCH (c)-[:SOURCED_FROM]->(ch:Chunk {graph_name: $graph_name})
-        RETURN c.id AS claim_id,
-               coalesce(e.human_readable_id, e.canonical_key, e.id) AS entity_id,
-               c.claim_type AS claim_type,
-               c.description AS description,
-               c.status AS status,
-               ch.id AS chunk_id
-        ORDER BY c.claim_type, c.id
-        """
-        return self.execute_query(
-            query,
-            {"graph_name": graph_name, "entity_ids": entity_ids},
-        )
-
-    def resolve_chunk_citations(
-        self,
-        graph_name: str,
-        chunk_ids: list[str],
-    ) -> list[dict]:
-        if not chunk_ids:
-            return []
-        query = """
-        UNWIND $chunk_ids AS cid
-        MATCH (c:Chunk {id: cid, graph_name: $graph_name})
-        OPTIONAL MATCH (c)-[:PART_OF]->(d:Document {graph_name: $graph_name})
-        RETURN c.id AS chunk_id,
-               d.id AS document_id,
-               coalesce(d.title, d.source, d.filename) AS document_name,
-               c.page_start AS page_start,
-               c.page_end AS page_end,
-               properties(c) AS chunk_metadata,
-               properties(d) AS document_metadata,
-               substring(c.text, 0, 200) AS excerpt
-        """
-        return self.execute_query(
-            query,
-            {"graph_name": graph_name, "chunk_ids": chunk_ids},
-        )
-
-    # ------------------------------------------------------------------
     # Stats / validation
     # ------------------------------------------------------------------
-    def get_entity_count(self) -> int:
-        result = self.execute_query(
-            "MATCH (e:__Entity__) RETURN count(e) AS cnt"
-        )
-        return result[0]["cnt"] if result else 0
-
-    def get_chunk_count(self) -> int:
-        result = self.execute_query(
-            "MATCH (c:Chunk) RETURN count(c) AS cnt"
-        )
-        return result[0]["cnt"] if result else 0
-
-    def get_evidence_link_count(self) -> int:
-        result = self.execute_query(
-            "MATCH (:Chunk)-[r:FROM_CHUNK]->(:__Entity__) RETURN count(r) AS cnt"
-        )
-        return result[0]["cnt"] if result else 0
-
-    def get_relationship_count(self) -> int:
-        result = self.execute_query(
-            "MATCH (:__Entity__)-[r]-(:__Entity__) RETURN count(r) AS cnt"
-        )
-        return result[0]["cnt"] if result else 0
-
     def backfill_descriptions(self) -> None:
         self.execute_query(
             "MATCH (e:__Entity__) WHERE e.description IS NULL SET e.description = ''"
         )
 
-    def validate_graph_build(self) -> dict:
-        counts = {
-            "entity_count": self.get_entity_count(),
-            "chunk_count": self.get_chunk_count(),
-            "evidence_link_count": self.get_evidence_link_count(),
-            "entity_relationship_count": self.get_relationship_count(),
-        }
-        extra_queries = {
+    def _extra_validation_count_queries(self) -> dict[str, str]:
+        return {
             "community_count": "MATCH (c:Community) RETURN count(c) AS cnt",
             "community_summary_count": (
                 "MATCH (c:Community) WHERE c.summary IS NOT NULL "
@@ -751,7 +514,3 @@ class MemgraphGraphStore:
                 "RETURN count(DISTINCT r) AS cnt"
             ),
         }
-        for key, query in extra_queries.items():
-            result = self.execute_query(query)
-            counts[key] = result[0]["cnt"] if result else 0
-        return counts

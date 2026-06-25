@@ -44,22 +44,25 @@ For questions, troubleshooting help, or general discussion, use GitHub Discussio
 2. Install dependencies. We recommend using `uv`:
 
    ```bash
-   uv sync --group dev
+   uv sync --extra dev --group dev
    ```
 
-   This creates the virtual environment and installs all dependencies from `uv.lock`.
+   This creates the virtual environment and installs all dependencies from `uv.lock`, including the dev extra and dependency group.
 
    If you prefer `pip`, install in editable mode:
 
    ```bash
    pip install -e ".[all,dev]"
+   # `dotenv` is managed through uv's dependency group; install it manually
+   # when running tests or examples that load environment files:
+   pip install python-dotenv
    ```
 
 3. Start the database needed for your change (Neo4j with APOC/GDS, Memgraph with MAGE, or both):
 
    ```bash
-   docker-compose up -d neo4j
-   docker-compose up -d memgraph lab
+   docker compose up -d neo4j
+   docker compose up -d memgraph lab
    ```
 
 4. Copy the environment file and fill in any values needed for tests:

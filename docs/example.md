@@ -52,14 +52,14 @@ python ingest.py --backend neo4j --entity-resolution-strategy hybrid --allow-ai-
 
 ### Search modes per test case
 
-`search.py` runs the query modes declared by each test case in the shared suite (e.g. `["local"]`, `["global", "drift"]`, `["local", "global", "drift"]`). Omitting `modes` defaults to running all three.
+`search.py` runs the query modes declared by each test case in the shared suite (e.g. `["local"]`, `["global", "drift"]`, `["local", "global", "drift"]`). The `--modes` flag filters which cases to run, not which modes are executed within a case.
 
 ### Run the example with Neo4j
 
 1. Start Neo4j with APOC and GDS:
 
    ```bash
-   docker-compose up -d
+   docker compose up -d
    ```
 
 2. Copy and fill in your environment variables:
@@ -93,7 +93,7 @@ python ingest.py --backend neo4j --entity-resolution-strategy hybrid --allow-ai-
 1. Start Memgraph with MAGE:
 
    ```bash
-   docker-compose up -d memgraph
+   docker compose up -d memgraph
    ```
 
 2. Ensure `MEMGRAPH_URL` is set in your environment (default is `bolt://localhost:7689`).

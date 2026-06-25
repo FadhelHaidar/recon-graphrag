@@ -19,7 +19,7 @@ Both backends use the Bolt-compatible `GraphDatabase` driver. Choose the matchin
 
 ```python
 from neo4j import GraphDatabase
-from recon_graphrag import IndexManager, Neo4jGraphStore
+from recon_graphrag import Neo4jGraphStore
 
 driver = GraphDatabase.driver(
     "bolt://localhost:7688",
@@ -27,7 +27,6 @@ driver = GraphDatabase.driver(
 )
 
 store = Neo4jGraphStore(driver)
-index_manager_cls = IndexManager
 ```
 
 ### Memgraph
@@ -35,22 +34,19 @@ index_manager_cls = IndexManager
 ```python
 from neo4j import GraphDatabase
 from recon_graphrag import MemgraphGraphStore
-from recon_graphrag.graphdb.memgraph.index_manager import (
-    IndexManager as MemgraphIndexManager,
-)
 
 driver = GraphDatabase.driver("bolt://localhost:7689")
 store = MemgraphGraphStore(driver)
-index_manager_cls = MemgraphIndexManager
 ```
 
 ## 2. Create indexes
 
-`IndexManager` creates the vector and fulltext indexes required by the retrievers. Run this once after setting up the store.
+Each backend store creates the vector and fulltext indexes required by the retrievers. Run this once after setting up the store.
 
 ```python
-manager = index_manager_cls(store, embedding_dim=1536)
-manager.create_indexes()
+from recon_graphrag import IndexConfig
+
+store.create_indexes(IndexConfig(), embedding_dim=1536)
 ```
 
 The indexes created are:
@@ -60,14 +56,14 @@ The indexes created are:
 - `community-embeddings` — vector index on `Community.embedding` for custom community retrieval
 - `entity-names` — fulltext index on `__Entity__.name`
 
-Use `manager.verify()` to print the created indexes and node/relationship counts.
+Use the backend-specific `IndexManager.verify()` to print the created indexes and node/relationship counts.
 
 ## 3. Define a schema
 
 A schema tells the extraction pipeline which entities and relationships to look for. Start with a small schema:
 
 ```python
-from recon_graphrag.extraction.schema import GraphSchema, NodeType, PropertyType, RelationshipType
+from recon_graphrag import GraphSchema, NodeType, PropertyType, RelationshipType
 
 schema = GraphSchema(
     node_types=[
@@ -224,18 +220,21 @@ from recon_graphrag import (
     GraphBuilderPipeline,
     CommunityPipeline,
     Neo4jGraphStore,
-    IndexManager,
+    IndexConfig,
     create_llm,
     create_embedder,
+    GraphSchema,
+    NodeType,
+    PropertyType,
+    RelationshipType,
 )
-from recon_graphrag.extraction.schema import GraphSchema, NodeType, PropertyType, RelationshipType
 
 # Connect
 driver = GraphDatabase.driver("bolt://localhost:7688", auth=("neo4j", "password"))
 store = Neo4jGraphStore(driver)
 
 # Indexes
-IndexManager(store, embedding_dim=1536).create_indexes()
+store.create_indexes(IndexConfig(), embedding_dim=1536)
 
 # Schema
 schema = GraphSchema(
@@ -267,11 +266,16 @@ llm = create_llm("openai", model_name="gpt-4o", api_key="sk-...")
 embedder = create_embedder("openai", model="text-embedding-3-small", api_key="sk-...")
 
 # Build graph
-pipeline = GraphBuilderPipeline(store, llm, embedder, schema=schema)
+pipeline = GraphBuilderPipeline(graph_store=store, llm=llm, embedder=embedder, schema=schema)
 await pipeline.build_from_text("Christopher Nolan directed Inception.")
 
 # Build communities
-community = CommunityPipeline(store, llm, embedder, relationship_types=["DIRECTED"])
+community = CommunityPipeline(
+    graph_store=store,
+    llm=llm,
+    embedder=embedder,
+    relationship_types=["DIRECTED"],
+)
 await community.build()
 
 # Search
@@ -280,7 +284,7 @@ result = await graph_rag.search("What are the key findings?", mode="local")
 print(result.answer)
 ```
 
-To run the complete example on Memgraph, replace the connection and manager setup with the Memgraph snippet from step 1. The schema, providers, pipelines, and search calls remain unchanged.
+To run the complete example on Memgraph, replace the connection setup with the Memgraph snippet from step 1. The schema, providers, pipelines, and search calls remain unchanged.
 
 ## Next steps
 

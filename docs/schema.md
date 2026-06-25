@@ -16,22 +16,24 @@ The LLM extractor uses the schema to:
 The most explicit way to define a schema is with the `GraphSchema` class:
 
 ```python
-from recon_graphrag.extraction.schema import GraphSchema, NodeType, PropertyType, RelationshipType
+from recon_graphrag import GraphSchema, NodeType, PropertyType, RelationshipType, build_schema
 
 schema = GraphSchema(
     node_types=[
         NodeType(
             label="Movie",
             description="A film or motion picture",
+            identity_property="name",
             properties=[
                 PropertyType(name="release_year", type="STRING", description="Year the film was released"),
-                PropertyType(name="genre", type="STRING", description="Primary genre of the film"),
+                PropertyType(name="genre", type="STRING", description="Primary genre of the film", required=False),
                 PropertyType(name="plot_summary", type="STRING", description="Brief summary of the film's plot"),
             ],
         ),
         NodeType(
             label="Person",
             description="An individual in the film industry",
+            identity_property="name",
             properties=[
                 PropertyType(name="nationality", type="STRING", description="Country or countries the person is associated with"),
                 PropertyType(name="occupation", type="STRING", description="Primary role such as director, actor, or composer"),
@@ -40,7 +42,13 @@ schema = GraphSchema(
     ],
     relationship_types=[
         RelationshipType(label="DIRECTED", description="Person directed a movie"),
-        RelationshipType(label="ACTED_IN", description="Person acted in a movie"),
+        RelationshipType(
+            label="ACTED_IN",
+            description="Person acted in a movie",
+            properties=[
+                PropertyType(name="role", type="STRING", description="Character name"),
+            ],
+        ),
     ],
     patterns=[
         ("Person", "DIRECTED", "Movie"),
@@ -53,19 +61,22 @@ schema = GraphSchema(
 
 | Component | Purpose |
 | --------- | --------- |
-| `NodeType` | A kind of entity. Has a `label`, a `description`, and optional `properties`. |
-| `PropertyType` | A property on a node. Has a `name` and a `type`. |
-| `RelationshipType` | A kind of relationship. Has a `label` and a `description`. |
+| `NodeType` | A kind of entity. Has a `label`, a `description`, an `identity_property` (defaults to `"name"`), and optional `properties`. |
+| `PropertyType` | A property on a node or relationship. Has a `name`, a `type` (defaults to `"STRING"`), an optional `description`, and a `required` flag (defaults to `False`). |
+| `RelationshipType` | A kind of relationship. Has a `label`, a `description`, and optional `properties`. |
 | `patterns` | Valid source-label / relationship / target-label triples. Used to validate extracted relationships. |
 
 ### Property types
 
-Common property types:
+Supported property types:
 
 - `STRING`
 - `INTEGER`
 - `FLOAT`
 - `BOOLEAN`
+- `DATE`
+- `DATETIME`
+- `LIST`
 
 Use `STRING` for dates, years, or any value that you do not need to compare numerically.
 
@@ -74,7 +85,7 @@ Use `STRING` for dates, years, or any value that you do not need to compare nume
 For a more compact definition, use the `build_schema()` helper:
 
 ```python
-from recon_graphrag.extraction.schema import build_schema
+from recon_graphrag import build_schema
 
 schema = build_schema(
     node_types=[
@@ -125,6 +136,20 @@ patterns=[
 ```
 
 During extraction, relationships that do not match a pattern are dropped. This prevents the graph from accumulating low-quality or off-schema edges.
+
+## GraphSchema helpers
+
+`GraphSchema` provides helper methods for inspecting and validating the schema:
+
+| Method | Purpose |
+| ------ | ------- |
+| `node_labels()` | Return a set of all node labels. |
+| `relationship_labels()` | Return a set of all relationship labels. |
+| `pattern_set()` | Return the patterns as a set of `(source, relationship, target)` tuples. |
+| `get_node_type(label)` | Return the `NodeType` for a label, or `None`. |
+| `get_relationship_type(label)` | Return the `RelationshipType` for a label, or `None`. |
+| `is_valid_pattern(source, relationship, target)` | Check whether a triple is allowed by the patterns (or by the relationship labels when no patterns are defined). |
+| `validate()` | Raise `ValueError` for duplicate labels, unknown pattern labels, or invalid patterns. Called automatically on construction. |
 
 ## Entity Identity
 

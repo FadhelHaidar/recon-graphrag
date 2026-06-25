@@ -27,7 +27,7 @@ from recon_graphrag.retrieval.community_levels import (
 from recon_graphrag.retrieval.citations import resolve_chunk_citations
 from recon_graphrag.retrieval.hybrid import HybridEntityRetriever, HybridRanker
 from recon_graphrag.retrieval.local import (
-    _format_citation_metadata,
+    _format_entity_context,
     _source_chunk_ids_from_result,
 )
 
@@ -165,31 +165,12 @@ class DriftSearchRetriever(BaseRetriever):
         citations=None,
         citation_metadata_keys: list[str] | None = None,
     ) -> str:
-        citation_lines = _format_citation_metadata(
-            citations or [],
-            citation_metadata_keys,
+        return _format_entity_context(
+            retriever_result,
+            citations=citations,
+            citation_metadata_keys=citation_metadata_keys,
+            drift=True,
         )
-        parts = []
-        for item in retriever_result.items:
-            content = item.content
-            if isinstance(content, str):
-                parts.append(content)
-            elif isinstance(content, dict):
-                title = content.get("title", "Unknown")
-                rels = content.get("relationships", [])
-                sources = content.get("source_text", [])
-                section = f"Finding: {title}"
-                if rels:
-                    section += "\n  Connections:\n    " + "\n    ".join(rels)
-                if sources:
-                    section += "\n  Evidence:\n    " + "\n    ".join(sources[:2])
-                if citation_lines:
-                    section += (
-                        "\n  Citation metadata:\n    "
-                        + "\n    ".join(citation_lines)
-                    )
-                parts.append(section)
-        return "\n\n".join(parts)
 
     def _extract_community_keys(
         self,

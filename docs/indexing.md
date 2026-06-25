@@ -1,19 +1,13 @@
 # Indexing
 
-Recon-GraphRAG uses native vector and fulltext indexes in Neo4j and Memgraph. Each backend has an `IndexManager` that creates the required indexes in one call.
+Recon-GraphRAG uses native vector and fulltext indexes in Neo4j and Memgraph. Each backend store exposes a backend-neutral `create_indexes()` method that creates the required indexes in one call.
 
-## What IndexManager creates
+## What `create_indexes` creates
 
 ```python
-from recon_graphrag import IndexManager as Neo4jIndexManager
-from recon_graphrag.graphdb.memgraph.index_manager import (
-    IndexManager as MemgraphIndexManager,
-)
+from recon_graphrag import IndexConfig
 
-# Select the class matching your store.
-manager_cls = Neo4jIndexManager  # or MemgraphIndexManager
-manager = manager_cls(store, embedding_dim=1536)
-manager.create_indexes()
+store.create_indexes(IndexConfig(), embedding_dim=1536)
 ```
 
 This creates:
@@ -37,7 +31,9 @@ These indexes power:
 Create indexes once after setting up a new graph database, before running any pipeline:
 
 ```python
-manager_cls(store, embedding_dim=1536).create_indexes()
+from recon_graphrag import IndexConfig
+
+store.create_indexes(IndexConfig(), embedding_dim=1536)
 ```
 
 You do not need to recreate them every time you ingest more text, unless you change the embedding dimension or want to drop and rebuild the graph from scratch.
@@ -51,17 +47,18 @@ The `embedding_dim` parameter must match the dimension of your embedder.
 | OpenAI `text-embedding-3-small` | 1536 | Default for OpenAI examples. |
 | OpenAI `text-embedding-3-large` | 3072 | Pass `embedding_dim=3072`. |
 | Azure OpenAI | 1536 or 3072 | Depends on the deployment. |
-| Sentence-Transformers | Auto-detected | `IndexManager` can detect it for sentence-transformers. |
+| Sentence-Transformers | Auto-detected | Pass the embedder to `create_indexes` to detect the dimension. |
 | Ollama / OpenRouter | Varies | Check the model card and pass explicitly. |
 
-For sentence-transformers, `IndexManager` can auto-detect the dimension:
+For sentence-transformers, detect the dimension and pass it explicitly:
 
 ```python
-from recon_graphrag import create_embedder
+from recon_graphrag import create_embedder, IndexConfig
+from recon_graphrag.embeddings import detect_embedding_dim
 
 embedder = create_embedder("sentence-transformer", model="all-MiniLM-L6-v2")
-manager = manager_cls(store, embedder=embedder)
-manager.create_indexes()
+embedding_dim = detect_embedding_dim(embedder)
+store.create_indexes(IndexConfig(), embedding_dim=embedding_dim)
 ```
 
 For all other providers, pass `embedding_dim` explicitly.
@@ -71,7 +68,7 @@ For all other providers, pass `embedding_dim` explicitly.
 Some OpenAI embedding models support a `dimensions` parameter:
 
 ```python
-from recon_graphrag import create_embedder
+from recon_graphrag import create_embedder, IndexConfig
 
 embedder = create_embedder(
     "openai",
@@ -80,18 +77,19 @@ embedder = create_embedder(
     model_params={"dimensions": 512},
 )
 
-manager = manager_cls(store, embedding_dim=512)
-manager.create_indexes()
+store.create_indexes(IndexConfig(), embedding_dim=512)
 ```
 
 Make sure `embedding_dim` matches the `dimensions` value.
 
 ## Verify indexes
 
-Use `verify()` to print the existing indexes and node/relationship counts:
+Each backend has an internal `IndexManager` with a `verify()` helper that prints the created indexes and node/relationship counts. You can access it through the backend-specific module:
 
 ```python
-manager.verify()
+from recon_graphrag.graphdb.neo4j.index_manager import IndexManager
+
+IndexManager(store).verify()
 ```
 
 This is useful during development to confirm that:
@@ -104,10 +102,14 @@ This is useful during development to confirm that:
 If you change the embedding dimension, recreate the managed indexes:
 
 ```python
-manager.create_indexes()
+store.create_indexes(IndexConfig(), embedding_dim=1536)
 ```
 
-Both managers replace their managed indexes during `create_indexes()`. This does not delete graph data, but queries may briefly run without those indexes while they are recreated.
+`create_indexes()` replaces its managed indexes. This does not delete graph data, but queries may briefly run without those indexes while they are recreated.
+
+## Backend-specific `IndexManager`
+
+Both backends still have an internal `IndexManager` (`recon_graphrag.graphdb.neo4j.index_manager` and `recon_graphrag.graphdb.memgraph.index_manager`) that `create_indexes()` delegates to. You do not need to use it directly unless you are extending a backend.
 
 ## Next steps
 

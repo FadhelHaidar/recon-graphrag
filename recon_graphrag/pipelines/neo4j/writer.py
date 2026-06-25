@@ -5,15 +5,11 @@ Maps neutral GraphDocument into Neo4j using Cypher MERGE queries.
 
 from __future__ import annotations
 
-from collections import defaultdict
-from typing import Optional
-
-from recon_graphrag.extraction.types import GraphDocument
-from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.neo4j.cypher import escape_cypher_identifier
+from recon_graphrag.pipelines.writer_base import BaseGraphWriter
 
 
-class Neo4jGraphWriter:
+class Neo4jGraphWriter(BaseGraphWriter):
     """Write GraphDocument records to Neo4j.
 
     Preserves the graph shape expected by retrieval, embedding, and community detection:
@@ -26,39 +22,9 @@ class Neo4jGraphWriter:
     - (:__Entity__)-[:DOMAIN_RELATIONSHIP]->(:__Entity__)
     """
 
-    def __init__(self, graph_store: GraphStore):
-        self.graph_store = graph_store
-
-    def write_graph_document(self, graph_document: GraphDocument) -> dict:
-        self._write_documents([graph_document.document])
-        self._write_chunks(graph_document.chunks)
-        self._write_entities(graph_document.entities)
-        self._write_evidence_links(graph_document.evidence_links)
-        self._write_relationships(graph_document.relationships)
-        self._write_claims(graph_document.claims)
-
-        return {
-            "documents": 1,
-            "chunks": len(graph_document.chunks),
-            "entities": len(graph_document.entities),
-            "relationships": len(graph_document.relationships),
-            "evidence_links": len(graph_document.evidence_links),
-            "claims": len(graph_document.claims),
-        }
-
     def _write_documents(self, documents: list) -> None:
         if not documents:
             return
-
-        rows = [
-            {
-                "id": doc.id,
-                "text_hash": doc.text_hash,
-                "graph_name": doc.graph_name,
-                "metadata": doc.metadata,
-            }
-            for doc in documents
-        ]
 
         self.graph_store.execute_query(
             """
@@ -69,24 +35,12 @@ class Neo4jGraphWriter:
                 d.updated = timestamp(),
                 d.created = coalesce(d.created, timestamp())
             """,
-            {"documents": rows},
+            {"documents": self._document_rows(documents)},
         )
 
     def _write_chunks(self, chunks: list) -> None:
         if not chunks:
             return
-
-        rows = [
-            {
-                "id": chunk.id,
-                "document_id": chunk.document_id,
-                "text": chunk.text,
-                "index": chunk.index,
-                "graph_name": chunk.graph_name,
-                "metadata": chunk.metadata,
-            }
-            for chunk in chunks
-        ]
 
         self.graph_store.execute_query(
             """
@@ -100,31 +54,15 @@ class Neo4jGraphWriter:
                 c.created = coalesce(c.created, timestamp())
             MERGE (c)-[:PART_OF]->(d)
             """,
-            {"chunks": rows},
+            {"chunks": self._chunk_rows(chunks)},
         )
 
     def _write_entities(self, entities: list) -> None:
         if not entities:
             return
 
-        by_type = defaultdict(list)
-        for entity in entities:
-            by_type[entity.type].append(entity)
-
-        for entity_type, group in by_type.items():
+        for entity_type, group in self._group_by_type(entities).items():
             label = escape_cypher_identifier(entity_type)
-            rows = [
-                {
-                    "id": entity.id,
-                    "type": entity.type,
-                    "graph_name": entity.graph_name,
-                    "canonical_key": entity.canonical_key,
-                    "human_readable_id": entity.human_readable_id,
-                    "properties": entity.properties,
-                }
-                for entity in group
-            ]
-
             self.graph_store.execute_query(
                 f"""
                 UNWIND $entities AS row
@@ -139,21 +77,12 @@ class Neo4jGraphWriter:
                     e.updated = timestamp(),
                     e.created = coalesce(e.created, timestamp())
                 """,
-                {"entities": rows},
+                {"entities": self._entity_rows(group)},
             )
 
     def _write_evidence_links(self, links: list) -> None:
         if not links:
             return
-
-        rows = [
-            {
-                "chunk_id": link.chunk_id,
-                "entity_id": link.entity_id,
-                "graph_name": link.graph_name,
-            }
-            for link in links
-        ]
 
         self.graph_store.execute_query(
             """
@@ -163,30 +92,15 @@ class Neo4jGraphWriter:
             MERGE (c)-[r:FROM_CHUNK]->(e)
             SET r.graph_name = row.graph_name
             """,
-            {"links": rows},
+            {"links": self._evidence_link_rows(links)},
         )
 
     def _write_relationships(self, relationships: list) -> None:
         if not relationships:
             return
 
-        by_type = defaultdict(list)
-        for rel in relationships:
-            by_type[rel.type].append(rel)
-
-        for rel_type, group in by_type.items():
+        for rel_type, group in self._group_by_type(relationships).items():
             rel_label = escape_cypher_identifier(rel_type)
-            rows = [
-                {
-                    "id": rel.id,
-                    "source_id": rel.source_id,
-                    "target_id": rel.target_id,
-                    "graph_name": rel.graph_name,
-                    "properties": rel.properties,
-                }
-                for rel in group
-            ]
-
             self.graph_store.execute_query(
                 f"""
                 UNWIND $relationships AS row
@@ -199,26 +113,13 @@ class Neo4jGraphWriter:
                     r.updated = timestamp(),
                     r.created = coalesce(r.created, timestamp())
                 """,
-                {"relationships": rows},
+                {"relationships": self._relationship_rows(group)},
             )
 
     def _write_claims(self, claims: list) -> None:
         """Write Claim nodes with SUBJECT_OF and SOURCED_FROM edges."""
         if not claims:
             return
-
-        rows = [
-            {
-                "id": claim.id,
-                "entity_id": claim.entity_id,
-                "chunk_id": claim.source.chunk_id,
-                "claim_type": claim.claim_type,
-                "description": claim.description,
-                "status": claim.status,
-                "graph_name": claim.graph_name,
-            }
-            for claim in claims
-        ]
 
         self.graph_store.execute_query(
             """
@@ -236,5 +137,5 @@ class Neo4jGraphWriter:
             MATCH (ch:Chunk {id: row.chunk_id, graph_name: row.graph_name})
             MERGE (c)-[:SOURCED_FROM]->(ch)
             """,
-            {"claims": rows},
+            {"claims": self._claim_rows(claims)},
         )
