@@ -116,28 +116,11 @@ class LocalSearchRetriever(BaseRetriever):
         citation_metadata_keys: list[str] | None = None,
     ) -> str:
         """Format retriever results into a context string for the LLM."""
-        citation_lines = _format_citation_metadata(
-            citations or [],
-            citation_metadata_keys,
+        return _format_entity_context(
+            retriever_result,
+            citations=citations,
+            citation_metadata_keys=citation_metadata_keys,
         )
-        parts = []
-        for item in retriever_result.items:
-            content = item.content
-            if isinstance(content, str):
-                parts.append(content)
-            elif isinstance(content, dict):
-                title = content.get("title", "Unknown")
-                rels = content.get("relationships", [])
-                sources = content.get("source_text", [])
-                section = f"Finding: {title}"
-                if rels:
-                    section += "\nConnections:\n  " + "\n  ".join(rels)
-                if sources:
-                    section += "\nEvidence:\n  " + "\n  ".join(sources[:3])
-                if citation_lines:
-                    section += "\nCitation metadata:\n  " + "\n  ".join(citation_lines)
-                parts.append(section)
-        return "\n\n---\n\n".join(parts)
 
     def _resolve_citations(self, retriever_result):
         chunk_ids = _source_chunk_ids_from_result(retriever_result)
@@ -189,11 +172,44 @@ def _format_citation_metadata(
             }
         if not metadata:
             continue
-        metadata_text = json.dumps(
-            metadata,
-            ensure_ascii=True,
-            sort_keys=True,
-            default=str,
-        )
+        metadata_text = json.dumps(metadata, ensure_ascii=True, sort_keys=True, default=str)
         lines.append(f"{citation.chunk_id}: {metadata_text}")
     return lines
+
+
+def _format_entity_context(
+    retriever_result,
+    *,
+    citations: list[Citation] | None = None,
+    citation_metadata_keys: list[str] | None = None,
+    drift: bool = False,
+) -> str:
+    citation_lines = _format_citation_metadata(citations or [], citation_metadata_keys)
+    heading_prefix = "  " if drift else ""
+    indent = "    " if drift else "  "
+    source_limit = 2 if drift else 3
+    item_separator = "\n\n" if drift else "\n\n---\n\n"
+
+    def block(heading: str, values: list[str]) -> str:
+        return f"\n{heading_prefix}{heading}:\n" + indent + f"\n{indent}".join(values)
+
+    parts = []
+    for item in retriever_result.items:
+        content = item.content
+        if isinstance(content, str):
+            parts.append(content)
+            continue
+        if not isinstance(content, dict):
+            continue
+
+        section = f"Finding: {content.get('title', 'Unknown')}"
+        relationships = content.get("relationships", [])
+        if relationships:
+            section += block("Connections", relationships)
+        sources = content.get("source_text", [])
+        if sources:
+            section += block("Evidence", sources[:source_limit])
+        if citation_lines:
+            section += block("Citation metadata", citation_lines)
+        parts.append(section)
+    return item_separator.join(parts)
