@@ -22,6 +22,17 @@ def test_base_store_get_community_stats_uses_shared_result_shape():
     assert params == {"graph_name": "graph-a"}
 
 
+def test_base_store_get_communities_reads_level_scope():
+    store = FakeBaseStore()
+
+    store.get_communities("graph-a", level=1)
+
+    query, params = store.calls[-1]
+    assert "MATCH (c:`Community` {graph_name: $graph_name, level: $level})" in query
+    assert "child_community_count" in query
+    assert params == {"graph_name": "graph-a", "level": 1}
+
+
 def test_base_store_store_community_summary_clears_embedding():
     store = FakeBaseStore()
 
@@ -71,3 +82,19 @@ def test_base_store_mark_community_report_failed_sets_status():
         "level": 0,
         "error": "bad json",
     }
+
+
+def test_base_store_claim_and_citation_reads_are_graph_scoped():
+    store = FakeBaseStore()
+
+    store.get_claims_for_entities("graph-a", ["person:alice"])
+    query, params = store.calls[-1]
+    assert "graph_name: $graph_name" in query
+    assert params["graph_name"] == "graph-a"
+
+    store.resolve_chunk_citations("graph-a", ["chunk:1"])
+    query, params = store.calls[-1]
+    assert "Chunk {id: cid, graph_name: $graph_name}" in query
+    assert "properties(c) AS chunk_metadata" in query
+    assert "properties(d) AS document_metadata" in query
+    assert params == {"graph_name": "graph-a", "chunk_ids": ["chunk:1"]}

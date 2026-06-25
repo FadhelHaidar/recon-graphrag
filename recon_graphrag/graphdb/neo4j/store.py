@@ -361,44 +361,6 @@ class Neo4jGraphStore(BaseGraphStore):
         )
         return detector.detect()
 
-    def get_communities(
-        self,
-        graph_name: str,
-        level: Optional[int] = None,
-    ) -> list[dict]:
-        community_label = escape_cypher_identifier("Community")
-        if level is not None:
-            query = f"""
-            MATCH (c:{community_label} {{graph_name: $graph_name, level: $level}})
-            OPTIONAL MATCH (c)<-[:IN_COMMUNITY]-(e:__Entity__)
-            OPTIONAL MATCH (c)<-[:PARENT_COMMUNITY]-(child:Community)
-            WITH c,
-                 count(DISTINCT e) AS entity_count,
-                 count(DISTINCT child) AS child_community_count
-            RETURN c.id AS id,
-                   c.level AS level,
-                   entity_count,
-                   child_community_count
-            ORDER BY entity_count DESC
-            """
-            params = {"graph_name": graph_name, "level": level}
-        else:
-            query = f"""
-            MATCH (c:{community_label} {{graph_name: $graph_name}})
-            OPTIONAL MATCH (c)<-[:IN_COMMUNITY]-(e:__Entity__)
-            OPTIONAL MATCH (c)<-[:PARENT_COMMUNITY]-(child:Community)
-            WITH c,
-                 count(DISTINCT e) AS entity_count,
-                 count(DISTINCT child) AS child_community_count
-            RETURN c.id AS id,
-                   c.level AS level,
-                   entity_count,
-                   child_community_count
-            ORDER BY entity_count DESC
-            """
-            params = {"graph_name": graph_name}
-        return self.execute_query(query, params)
-
     def get_unembedded_communities(
         self, graph_name: str, level: int
     ) -> list[dict]:
@@ -488,60 +450,6 @@ class Neo4jGraphStore(BaseGraphStore):
         return self.execute_query(
             DRIFT_COMMUNITY_ENTITIES_QUERY,
             {"keys": keys, "graph_name": graph_name},
-        )
-
-    # ------------------------------------------------------------------
-    # Claims
-    # ------------------------------------------------------------------
-    def get_claims_for_entities(
-        self,
-        graph_name: str,
-        entity_ids: list[str],
-    ) -> list[dict]:
-        if not entity_ids:
-            return []
-        query = """
-        UNWIND $entity_ids AS eid
-        MATCH (c:Claim {graph_name: $graph_name})-[:SUBJECT_OF]->
-              (e:__Entity__ {graph_name: $graph_name})
-        WHERE e.id = eid OR e.canonical_key = eid OR e.human_readable_id = eid
-        OPTIONAL MATCH (c)-[:SOURCED_FROM]->(ch:Chunk {graph_name: $graph_name})
-        RETURN c.id AS claim_id,
-               coalesce(e.human_readable_id, e.canonical_key, e.id) AS entity_id,
-               c.claim_type AS claim_type,
-               c.description AS description,
-               c.status AS status,
-               ch.id AS chunk_id
-        ORDER BY c.claim_type, c.id
-        """
-        return self.execute_query(
-            query,
-            {"graph_name": graph_name, "entity_ids": entity_ids},
-        )
-
-    def resolve_chunk_citations(
-        self,
-        graph_name: str,
-        chunk_ids: list[str],
-    ) -> list[dict]:
-        if not chunk_ids:
-            return []
-        query = """
-        UNWIND $chunk_ids AS cid
-        MATCH (c:Chunk {id: cid, graph_name: $graph_name})
-        OPTIONAL MATCH (c)-[:PART_OF]->(d:Document {graph_name: $graph_name})
-        RETURN c.id AS chunk_id,
-               d.id AS document_id,
-               coalesce(d.title, d.source, d.filename) AS document_name,
-               c.page_start AS page_start,
-               c.page_end AS page_end,
-               properties(c) AS chunk_metadata,
-               properties(d) AS document_metadata,
-               substring(c.text, 0, 200) AS excerpt
-        """
-        return self.execute_query(
-            query,
-            {"graph_name": graph_name, "chunk_ids": chunk_ids},
         )
 
     # ------------------------------------------------------------------
