@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "recon-graphrag"
-version = "0.4.0"
+version = "0.4.1"
 description = "Domain-agnostic GraphRAG SDK for Neo4j and Memgraph with extraction, community detection, and multi-mode retrieval"
 readme = "README.md"
 requires-python = ">=3.11"

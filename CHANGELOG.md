@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/FadhelHaidar/Recon-GraphRAG/compare/v0.4.0...v0.4.1) (2026-06-26)
+
+
+### Documentation
+
+* remove Louvain mention — only Leiden is supported ([#44](https://github.com/FadhelHaidar/Recon-GraphRAG/issues/44)) ([f768c8c](https://github.com/FadhelHaidar/Recon-GraphRAG/commit/f768c8c706b11fcc3bc8c648b62d86599da8f3b4))
+
 ## [0.4.0](https://github.com/FadhelHaidar/Recon-GraphRAG/compare/v0.3.0...v0.4.0) (2026-06-24)
 
 
