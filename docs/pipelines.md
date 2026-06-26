@@ -11,7 +11,6 @@ Recon-GraphRAG splits indexing into two pipelines: one that builds the entity gr
 | | | 3. Entity embedding |
 | **Community Building** | `CommunityPipeline` | 4. Community detection (Leiden via the backend store) |
 | | | 5. Community summarization (LLM) |
-| | | 6. Community embedding |
 
 After both pipelines run, the graph is ready for `GraphRAG.search()` in `local`, `global`, or `drift` mode.
 
@@ -256,7 +255,7 @@ layer of structured evidence when enabled.
 
 ## CommunityPipeline
 
-`CommunityPipeline` detects hierarchical communities using the backend store's Leiden implementation, summarizes each community with an LLM, and embeds the summaries.
+`CommunityPipeline` detects hierarchical communities using the backend store's Leiden implementation and summarizes each community with an LLM.
 
 ```python
 from recon_graphrag import CommunityPipeline
@@ -264,7 +263,6 @@ from recon_graphrag import CommunityPipeline
 community = CommunityPipeline(
     graph_store=store,
     llm=llm,
-    embedder=embedder,
     relationship_types=["DIRECTED", "ACTED_IN"],  # required
     graph_name="entity-graph",  # graph scope (default: "entity-graph")
     max_levels=3,               # hierarchy depth (default: 3)
@@ -303,7 +301,6 @@ result = await community.build(level=0)
 | --------- | --------- |
 | `graph_store` | A `GraphStore` implementation such as `Neo4jGraphStore` or `MemgraphGraphStore`. |
 | `llm` | An LLM instance from `create_llm()`. |
-| `embedder` | An embedder instance from `create_embedder()`. |
 | `relationship_types` | Which relationship types form the community graph. **Required.** |
 | `graph_name` | Graph scope to detect communities within. Defaults to `"entity-graph"`. |
 | `max_levels` | Maximum number of community hierarchy levels to detect. |

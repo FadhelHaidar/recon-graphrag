@@ -16,15 +16,12 @@ This creates:
 | --------- | --------- | --------- |
 | `chunk-embeddings` | Vector | `Chunk.embedding` |
 | `entity-embeddings` | Vector | `__Entity__.embedding` |
-| `community-embeddings` | Vector | `Community.embedding` |
 | `entity-names` | Fulltext | `__Entity__.name` |
 
 These indexes power:
 
 - Semantic search over chunks and entities.
 - Keyword search over entity names.
-- Custom community-summary vector retrieval. Built-in global search reads all
-  reports at a selected level instead of using this index.
 
 ## When to create indexes
 

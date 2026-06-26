@@ -20,7 +20,6 @@ try:
     from .common import BACKEND_CHOICES, get_backend_targets
     from .config import (
         EMBEDDING_DIM,
-        get_embedder,
         get_llm,
     )
     from .prompts import COMMUNITY_SUMMARY_PROMPT
@@ -29,7 +28,6 @@ except ImportError:
     from common import BACKEND_CHOICES, get_backend_targets
     from config import (
         EMBEDDING_DIM,
-        get_embedder,
         get_llm,
     )
     from prompts import COMMUNITY_SUMMARY_PROMPT
@@ -52,15 +50,10 @@ def parse_args():
         default=os.getenv("LLM_PROVIDER", "azure_openai"),
     )
     parser.add_argument(
-        "--embedder-provider",
-        choices=["openrouter", "azure_openai", "openai", "sentence-transformer"],
-        default=os.getenv("EMBEDDER_PROVIDER", "azure_openai"),
-    )
-    parser.add_argument(
         "--level",
         type=int,
         default=None,
-        help="Highest community level to summarize/embed. Defaults to all levels.",
+        help="Highest community level to summarize. Defaults to all levels.",
     )
     parser.add_argument(
         "--community-gamma",
@@ -98,7 +91,6 @@ def parse_args():
 async def build_communities(
     backend: str,
     llm_provider: str,
-    embedder_provider: str,
     level: int | None = None,
     community_gamma: float = 3.0,
     community_max_levels: int = 3,
@@ -107,7 +99,6 @@ async def build_communities(
     random_seed: int = 42,
 ) -> dict:
     llm = get_llm(llm_provider)
-    embedder = get_embedder(embedder_provider)
     results = {}
 
     for name, store, index_manager_cls in get_backend_targets(backend):
@@ -124,7 +115,7 @@ async def build_communities(
             "random_seed": random_seed,
         }
 
-        community = CommunityPipeline(store, llm, embedder, **kwargs)
+        community = CommunityPipeline(store, llm, **kwargs)
         results[name] = await community.build(level=level)
         print(f"{name} community result: {results[name]}")
 
@@ -137,7 +128,6 @@ if __name__ == "__main__":
         build_communities(
             args.backend,
             args.llm_provider,
-            args.embedder_provider,
             level=args.level,
             community_gamma=args.community_gamma,
             community_max_levels=args.community_max_levels,

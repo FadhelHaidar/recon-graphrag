@@ -43,7 +43,6 @@ class IndexConfig:
 
     chunk_vector_index: str = "chunk-embeddings"
     entity_vector_index: str = "entity-embeddings"
-    community_vector_index: str = "community-embeddings"
     entity_fulltext_index: str = "entity-names"
     entity_label: str = "__Entity__"
     chunk_label: str = "Chunk"

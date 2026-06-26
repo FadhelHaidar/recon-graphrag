@@ -193,7 +193,7 @@ async def test_ingest_artifact_finalizes_after_all_backend_writes(monkeypatch):
         def create_indexes(self):
             events.append((self.store.name, "indexes"))
 
-    class FakeCommunityEmbedder:
+    class FakeEntityEmbedder:
         def __init__(self, store, embedder):
             self.store = store
 
@@ -210,7 +210,7 @@ async def test_ingest_artifact_finalizes_after_all_backend_writes(monkeypatch):
             ("memgraph", FakeStore("memgraph"), FakeIndexManager),
         ],
     )
-    monkeypatch.setattr(common, "CommunityEmbedder", FakeCommunityEmbedder)
+    monkeypatch.setattr(common, "EntityEmbedder", FakeEntityEmbedder)
 
     result = await ingest_artifact(
         Path("movie_graph.json"),

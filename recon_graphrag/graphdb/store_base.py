@@ -125,7 +125,6 @@ class BaseGraphStore:
             level: $level
         })
         SET c.summary = $summary,
-            c.embedding = NULL,
             c.updated = timestamp()
         """
         self.execute_query(
@@ -161,7 +160,6 @@ class BaseGraphStore:
             c.schema_version = $schema_version,
             c.prompt_version = $prompt_version,
             c.input_fingerprint = $input_fingerprint,
-            c.embedding = NULL,
             c.updated = timestamp()
         """
         self.execute_query(

@@ -100,7 +100,7 @@ Meaning:
 | Community detection integration | No | No | Yes | Database only |
 | Entity resolution without AI flag | No | No | Yes | Database only |
 | Entity resolution with AI flag | Yes | Yes | Yes | Provider calls and database writes |
-| Movie workflow smoke | Yes | Yes | Yes | Highest cost; extraction, embeddings, summaries, and searches |
+| Movie workflow smoke | Yes | Yes | Yes | Highest cost; extraction, entity embeddings, summaries, and searches |
 | Backend-neutral full smoke | Yes | Yes | Yes | Runs the same graph build, community build, local/global/DRIFT/paper search path on Neo4j and Memgraph |
 
 Provider endpoint tests are fixed to the provider named by the test file. Database-plus-AI tests use `LLM_PROVIDER` and `EMBEDDER_PROVIDER` after their run flags are enabled; they do not probe providers automatically.
@@ -218,7 +218,7 @@ pytest tests/integration/test_smoke_full.py
 ```
 
 The full smoke validates that extraction, optional claim extraction,
-aggregation, community detection, summarization, embeddings, local search,
+aggregation, entity embeddings, community detection, summarization, local search,
 global search and DRIFT run end to end on both
 backends. Because it uses live LLM output, it does not require nondeterministic
 behaviors such as `claims_written > 0` or non-empty answer citations. Those
@@ -250,7 +250,7 @@ Focused coverage for the gaps-with-paper alignment:
 | Memgraph store, indexes, writer queries | `pytest tests/graphdb/memgraph tests/pipelines/memgraph` |
 | Graph builder pipeline | `pytest tests/pipelines/test_graph_builder.py tests/extraction tests/graphdb` |
 | Real LLM extraction through pipeline | `LLM_PROVIDER=azure_openai RUN_LLM_EXTRACTION_INTEGRATION_TESTS=1 pytest tests/integration/test_llm_extraction.py` |
-| Community detection/embedding helpers | `pytest tests/communities` |
+| Community detection/summarization helpers | `pytest tests/communities` |
 | Retrieval or search behavior | `pytest tests/retrieval` |
 | Provider credentials or provider request shape | Run `pytest tests/llm tests/embeddings`, then the relevant provider integration test |
 | Real Neo4j end-to-end graph build/search | `RUN_NEO4J_MOVIE_EXAMPLE_SMOKE_TESTS=1 pytest tests/integration/neo4j/test_neo4j_movie_smoke.py` |

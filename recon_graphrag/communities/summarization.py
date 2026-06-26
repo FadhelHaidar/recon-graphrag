@@ -14,9 +14,8 @@ to skip communities whose context has not changed.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from recon_graphrag.communities.context import (

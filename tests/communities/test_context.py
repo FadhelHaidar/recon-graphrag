@@ -6,7 +6,6 @@ from recon_graphrag.communities.context import (
     CommunityContext,
     EdgeContext,
     EntityContext,
-    PackedCommunityContext,
     pack_community_context,
     parse_community_context,
     render_community_context,

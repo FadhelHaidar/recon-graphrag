@@ -1,6 +1,6 @@
-"""Community pipeline: detect → summarize → embed (steps 4-6).
+"""Community pipeline: detect → summarize (steps 4-5).
 
-Convenience wrapper that chains the three community steps into a single
+Convenience wrapper that chains the two community steps into a single
 build() call. Typically run on a schedule (e.g. weekly) after new entities
 have been ingested.
 """
@@ -9,23 +9,20 @@ from __future__ import annotations
 
 from typing import Optional
 
-from recon_graphrag.communities.embeddings import CommunityEmbedder
 from recon_graphrag.communities.reports import ReportRubric
-from recon_graphrag.communities.summarization import BuildStats, CommunitySummarizer
-from recon_graphrag.embeddings.base import BaseEmbedder
+from recon_graphrag.communities.summarization import CommunitySummarizer
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.utils.tokens import TokenCounter
 
 
 class CommunityPipeline:
-    """Run the full community pipeline: detect → summarize → embed."""
+    """Run the full community pipeline: detect → summarize."""
 
     def __init__(
         self,
         graph_store: GraphStore,
         llm: BaseLLM,
-        embedder: BaseEmbedder,
         relationship_types: Optional[list[str]] = None,
         max_levels: int = 3,
         gamma: float = 1.0,
@@ -47,7 +44,6 @@ class CommunityPipeline:
         Args:
             graph_store: Store that provides community detection and persistence.
             llm: LLM used to summarize detected communities.
-            embedder: Embedder used for community summary embeddings.
             relationship_types: Relationship types to include in the detection graph.
             max_levels: Maximum number of community hierarchy levels to detect.
             gamma: Leiden resolution parameter.
@@ -71,7 +67,6 @@ class CommunityPipeline:
         """
         self.graph_store = graph_store
         self.llm = llm
-        self.embedder = embedder
         self.relationship_types = relationship_types
         self.max_levels = max_levels
         self.gamma = gamma
@@ -89,13 +84,13 @@ class CommunityPipeline:
         self.token_counter = token_counter
 
     async def build(self, level: Optional[int] = None) -> dict:
-        """Run steps 4-6: detect communities, summarize, and embed.
+        """Run steps 4-5: detect communities and summarize.
 
         Processes levels bottom-up. Within each level, runs up to
         ``summarize_concurrency`` summaries in parallel.
 
         Args:
-            level: Highest community hierarchy level to summarize and embed.
+            level: Highest community hierarchy level to summarize.
                 If None, processes all detected levels. If provided, lower
                 levels are also processed first so parent summaries can use
                 child summaries.
@@ -136,11 +131,6 @@ class CommunityPipeline:
             max_context_tokens=self.max_context_tokens,
             token_counter=self.token_counter,
         )
-        community_embedder = CommunityEmbedder(
-            self.graph_store,
-            self.embedder,
-            graph_name=self.graph_name,
-        )
 
         for lvl in levels:
             print(f"Step 5: Summarizing communities (level {lvl})...")
@@ -152,9 +142,6 @@ class CommunityPipeline:
                 f"{stats.skipped} skipped, {stats.failed} failed "
                 f"({stats.elapsed_seconds:.1f}s)"
             )
-
-            print(f"Step 6: Embedding community summaries (level {lvl})...")
-            await community_embedder.embed_communities(level=lvl)
 
             total_summaries += len(summaries)
             level_stats.append({

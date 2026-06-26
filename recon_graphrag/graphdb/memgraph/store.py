@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     import neo4j
@@ -319,59 +319,6 @@ class MemgraphGraphStore(BaseGraphStore):
     # ------------------------------------------------------------------
     # Communities
     # ------------------------------------------------------------------
-    def search_communities(
-        self,
-        index_name: str,
-        query_vector: list[float],
-        graph_name: str,
-        top_k: int,
-        level: Optional[int] = None,
-    ) -> list[dict]:
-        overfetch_k = max(top_k * 5, top_k)
-        if level is not None:
-            query = """
-            CALL vector_search.search($index_name, $k, $query_vector)
-            YIELD node AS community, similarity
-            WHERE community.graph_name = $graph_name
-              AND community.level = $level
-              AND community.summary IS NOT NULL
-            RETURN community.id AS id,
-                   community.summary AS summary,
-                   community.level AS level,
-                   similarity AS score
-            ORDER BY similarity DESC
-            LIMIT $top_k
-            """
-            params = {
-                "index_name": index_name,
-                "k": overfetch_k,
-                "top_k": top_k,
-                "query_vector": query_vector,
-                "level": level,
-                "graph_name": graph_name,
-            }
-        else:
-            query = """
-            CALL vector_search.search($index_name, $k, $query_vector)
-            YIELD node AS community, similarity
-            WHERE community.graph_name = $graph_name
-              AND community.summary IS NOT NULL
-            RETURN community.id AS id,
-                   community.summary AS summary,
-                   community.level AS level,
-                   similarity AS score
-            ORDER BY similarity DESC
-            LIMIT $top_k
-            """
-            params = {
-                "index_name": index_name,
-                "k": overfetch_k,
-                "top_k": top_k,
-                "query_vector": query_vector,
-                "graph_name": graph_name,
-            }
-        return self.execute_query(query, params)
-
     def detect_communities(
         self,
         graph_name: str = "entity-graph",
@@ -401,21 +348,6 @@ class MemgraphGraphStore(BaseGraphStore):
             community_label=community_label,
         )
         return detector.detect()
-
-    def get_unembedded_communities(
-        self, graph_name: str, level: int
-    ) -> list[dict]:
-        query = """
-        MATCH (c:Community {graph_name: $graph_name, level: $level})
-        WHERE c.summary IS NOT NULL AND c.embedding IS NULL
-        RETURN id(c) AS id,
-               c.id AS community_id,
-               c.level AS level,
-               c.summary AS summary
-        """
-        return self.execute_query(
-            query, {"graph_name": graph_name, "level": level}
-        )
 
     def get_unembedded_entities(self, limit: int = 500) -> list[dict]:
         query = """

@@ -1,10 +1,10 @@
-"""Tests for CommunityEmbedder."""
+"""Tests for entity embedding."""
 
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from recon_graphrag.communities.embeddings import CommunityEmbedder
+from recon_graphrag.embeddings import EntityEmbedder
 
 
 class FakeGraphStore:
@@ -17,9 +17,6 @@ class FakeGraphStore:
     def execute_query(self, query, parameters=None):
         self.queries.append(query.strip())
         return []
-
-    def get_unembedded_communities(self, graph_name, level):
-        return self._communities
 
     def get_unembedded_entities(self, limit=500):
         batch = self._entities[:limit]
@@ -47,7 +44,7 @@ async def test_embed_entities_accepts_list_description(fake_embedder):
             "description": ["dream heist", "memory architecture"],
         },
     ])
-    embedder = CommunityEmbedder(store, fake_embedder)
+    embedder = EntityEmbedder(store, fake_embedder)
 
     await embedder.embed_entities(batch_size=500)
 

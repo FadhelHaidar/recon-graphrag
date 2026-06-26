@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from recon_graphrag import GraphRAG, IndexManager as Neo4jIndexManager
-from recon_graphrag.communities.embeddings import CommunityEmbedder
+from recon_graphrag.embeddings import EntityEmbedder
 from recon_graphrag.extraction.assembler import GraphDocumentAssembler
 from recon_graphrag.extraction.chunking import PageWindowBuilder
 from recon_graphrag.extraction.extractor import LLMGraphExtractor
@@ -192,7 +192,7 @@ async def finalize_graph_ingest(
         print("Entity resolution skipped")
 
     if embed_entities:
-        await CommunityEmbedder(store, embedder).embed_entities()
+        await EntityEmbedder(store, embedder).embed_entities()
 
     validation = store.validate_graph_build()
     print(f"Validation: {validation}")

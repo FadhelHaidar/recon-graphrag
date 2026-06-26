@@ -3,8 +3,8 @@
 Ingests text via internal extraction backend, then automatically
 runs entity resolution and embedding (steps 1-3 of the full pipeline).
 
-Steps 4-6 (community detection, summarization, community embedding)
-are handled separately by the CommunityPipeline — typically on a schedule.
+Steps 4-5 (community detection and summarization) are handled separately by the
+CommunityPipeline, typically on a schedule.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import hashlib
 import re
 from typing import Optional
 
-from recon_graphrag.communities.embeddings import CommunityEmbedder
+from recon_graphrag.embeddings import EntityEmbedder
 from recon_graphrag.extraction.chunking import (
     PageWindowBuilder,
     TextChunker,
@@ -104,7 +104,7 @@ class GraphBuilderPipeline:
           - Step 2: Entity resolution (merge duplicates)
           - Step 3: Entity embedding (for local/DRIFT search)
 
-        Steps 4-6 must be run separately via CommunityPipeline.
+        Steps 4-5 must be run separately via CommunityPipeline.
         """
         metadata = metadata or {}
         document_id = self._make_document_id(text=text, metadata=metadata)
@@ -399,7 +399,7 @@ class GraphBuilderPipeline:
 
     async def _embed_entities(self):
         """Step 3: Generate vector embeddings for entity nodes."""
-        embedder = CommunityEmbedder(self.graph_store, self.embedder)
+        embedder = EntityEmbedder(self.graph_store, self.embedder)
         try:
             await embedder.embed_entities()
         except Exception as e:

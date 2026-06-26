@@ -53,12 +53,6 @@ class IndexManager:
             embedding_property="embedding",
             dimensions=self.embedding_dim,
         )
-        self.graph_store.create_vector_index(
-            name=self.config.community_vector_index,
-            label=self.config.community_label,
-            embedding_property="embedding",
-            dimensions=self.embedding_dim,
-        )
         self.graph_store.create_fulltext_index(
             name=self.config.entity_fulltext_index,
             label=self.config.entity_label,
@@ -71,7 +65,6 @@ class IndexManager:
         for name in [
             self.config.chunk_vector_index,
             self.config.entity_vector_index,
-            self.config.community_vector_index,
             self.config.entity_fulltext_index,
         ]:
             try:

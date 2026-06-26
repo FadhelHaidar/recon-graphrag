@@ -33,14 +33,13 @@ def test_base_store_get_communities_reads_level_scope():
     assert params == {"graph_name": "graph-a", "level": 1}
 
 
-def test_base_store_store_community_summary_clears_embedding():
+def test_base_store_store_community_summary_sets_summary():
     store = FakeBaseStore()
 
     store.store_community_summary("community:1", 0, "summary", "graph-a")
 
     query, params = store.calls[-1]
     assert "SET c.summary = $summary" in query
-    assert "c.embedding = NULL" in query
     assert params == {
         "graph_name": "graph-a",
         "cid": "community:1",

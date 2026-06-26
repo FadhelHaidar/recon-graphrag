@@ -7,7 +7,6 @@ import json
 import pytest
 
 from evaluation.runner import (
-    FakeGraphStore,
     FakeLLM,
     _hash_file,
     _load_jsonl,
@@ -108,25 +107,6 @@ async def test_fake_llm_is_deterministic():
     assert r1.content == r2.content
     assert r1.usage is not None
     assert r1.usage.total_tokens == 0
-
-
-def test_fake_graph_store_search_communities_respects_top_k():
-    store = FakeGraphStore(
-        [
-            {"id": "c1", "summary": "s1", "level": 0, "score": 0.9},
-            {"id": "c2", "summary": "s2", "level": 0, "score": 0.8},
-            {"id": "c3", "summary": "s3", "level": 1, "score": 0.7},
-        ]
-    )
-    results = store.search_communities(
-        index_name="idx",
-        query_vector=[0.1],
-        graph_name="entity-graph",
-        top_k=2,
-        level=0,
-    )
-    assert len(results) == 2
-    assert results[0]["id"] == "c1"
 
 
 def test_load_jsonl_skips_blank_lines(tmp_path):

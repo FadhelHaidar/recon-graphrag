@@ -71,30 +71,6 @@ class FakeGraphStore:
             ]
         return []
 
-    def search_communities(self, index_name, query_vector, graph_name, top_k, level=None):
-        self.calls.append(
-            (
-                "search_communities",
-                {
-                    "index_name": index_name,
-                    "graph_name": graph_name,
-                    "top_k": top_k,
-                    "level": level,
-                },
-            )
-        )
-        results = [
-            {
-                "id": c["id"],
-                "summary": c["summary"],
-                "level": c.get("level", 0),
-                "score": c.get("score", 0.5),
-            }
-            for c in self._communities
-            if level is None or c.get("level") == level
-        ]
-        return results[:top_k]
-
 
 CorpusItem = dict[str, str | dict]
 QuestionItem = dict[str, str | list]

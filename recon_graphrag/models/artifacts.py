@@ -206,11 +206,10 @@ def report_to_json(report: CommunityReport) -> str:
 
 
 def report_to_text(report: CommunityReport) -> str:
-    """Render a community report as plain text for embeddings.
+    """Render a community report as plain text for storage and retrieval.
 
     Title, summary, rating (if present), and findings in stable order.
-    This produces a stable text representation suitable for embedding models
-    and community-report retrieval.
+    This produces a stable text representation for global and DRIFT search.
     """
     sorted_findings = sorted(report.findings, key=lambda f: (-f.rank, f.id))
     lines = []

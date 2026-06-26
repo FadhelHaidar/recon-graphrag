@@ -12,9 +12,7 @@ from typing import Any
 from recon_graphrag.embeddings.base import BaseEmbedder, ModelParamsEmbedder
 from recon_graphrag.providers._compat import (
     OpenAICompatibleProviderError,
-    _error_value,
     _response_error,
-    _response_payload,
     _safe_response_summary,
 )
 

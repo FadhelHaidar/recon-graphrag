@@ -201,25 +201,6 @@ def test_keyword_search_runs_fulltext_procedure_with_label_filter():
     assert params["query_text"] == "Alice"
 
 
-def test_search_communities_overfetches_before_filtering():
-    driver = FakeDriver()
-    store = Neo4jGraphStore(driver)
-
-    store.search_communities(
-        index_name="community-embeddings",
-        query_vector=[0.1, 0.2],
-        graph_name="entity-graph",
-        top_k=3,
-        level=1,
-    )
-
-    _, params = driver.calls[-1]
-    assert params["k"] == 15
-    assert params["top_k"] == 3
-    assert params["graph_name"] == "entity-graph"
-    assert params["level"] == 1
-
-
 def test_store_community_report_sets_structured_fields():
     driver = FakeDriver()
     store = Neo4jGraphStore(driver)

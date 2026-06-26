@@ -20,7 +20,6 @@ async def test_build_forwards_relationship_weight_property():
     pipeline = CommunityPipeline(
         graph_store=store,
         llm=object(),
-        embedder=object(),
         relationship_types=["ACTED_IN"],
         relationship_weight_property="weight",
     )

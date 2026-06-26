@@ -298,9 +298,7 @@ class TestGraphDocumentClaims:
             ChunkRecord,
             DocumentRecord,
             EntityRecord,
-            EvidenceLink,
             GraphDocument,
-            RelationshipRecord,
         )
 
         doc = GraphDocument(
@@ -317,9 +315,7 @@ class TestGraphDocumentClaims:
             ChunkRecord,
             DocumentRecord,
             EntityRecord,
-            EvidenceLink,
             GraphDocument,
-            RelationshipRecord,
         )
 
         source = SourceReference(document_id="d1", chunk_id="c1")

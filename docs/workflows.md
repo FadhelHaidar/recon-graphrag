@@ -709,23 +709,18 @@ result = await retriever.search("Who directed Inception?", top_k=10)
 
 ## Community primitives
 
-[`recon_graphrag.communities.pipeline.CommunityPipeline`](../recon_graphrag/communities/pipeline.py) is a convenience wrapper around three steps:
+[`recon_graphrag.communities.pipeline.CommunityPipeline`](../recon_graphrag/communities/pipeline.py) is a convenience wrapper around two steps:
 
 1. `graph_store.detect_communities()` — run the Leiden algorithm.
 2. `CommunitySummarizer` — generate a natural-language summary per community.
-3. `CommunityEmbedder` — embed those summaries.
 
 You can call these steps individually if you need more control:
 
 ```python
 from recon_graphrag.communities.summarization import CommunitySummarizer
-from recon_graphrag.communities.embeddings import CommunityEmbedder
 
 summarizer = CommunitySummarizer(store, llm, graph_name="entity-graph")
 summaries = await summarizer.summarize_all(level=0)
-
-embedder = CommunityEmbedder(store, embedder, graph_name="entity-graph")
-await embedder.embed_communities(level=0)
 ```
 
 ## LLM / embedder base classes

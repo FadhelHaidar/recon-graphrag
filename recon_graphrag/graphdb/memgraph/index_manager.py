@@ -15,7 +15,6 @@ from typing import Optional
 from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.memgraph.cypher import (
-    cypher_string_literal,
     escape_cypher_identifier,
 )
 from recon_graphrag.models.types import IndexConfig
@@ -59,12 +58,6 @@ class IndexManager:
             embedding_property="embedding",
             dimensions=self.embedding_dim,
         )
-        self.graph_store.create_vector_index(
-            name=self.config.community_vector_index,
-            label=self.config.community_label,
-            embedding_property="embedding",
-            dimensions=self.embedding_dim,
-        )
         self.graph_store.create_fulltext_index(
             name=self.config.entity_fulltext_index,
             label=self.config.entity_label,
@@ -77,7 +70,6 @@ class IndexManager:
         for name in [
             self.config.chunk_vector_index,
             self.config.entity_vector_index,
-            self.config.community_vector_index,
             self.config.entity_fulltext_index,
         ]:
             try:

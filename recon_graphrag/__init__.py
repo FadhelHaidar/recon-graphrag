@@ -14,7 +14,12 @@ from recon_graphrag.retrieval.drift import DriftSearchRetriever
 
 # Providers
 from recon_graphrag.llm import create_llm, BaseLLM, LLMResponse, LLMUsage
-from recon_graphrag.embeddings import create_embedder, BaseEmbedder, ModelParamsEmbedder
+from recon_graphrag.embeddings import (
+    create_embedder,
+    BaseEmbedder,
+    EntityEmbedder,
+    ModelParamsEmbedder,
+)
 
 # Graph store
 from recon_graphrag.graphdb import GraphStore
@@ -40,7 +45,6 @@ from recon_graphrag.extraction.artifacts import (
 # Communities
 from recon_graphrag.communities import (
     CommunitySummarizer,
-    CommunityEmbedder,
     CommunityPipeline,
 )
 
@@ -66,6 +70,7 @@ __all__ = [
     "LLMResponse",
     "LLMUsage",
     "BaseEmbedder",
+    "EntityEmbedder",
     "ModelParamsEmbedder",
     # Graph store
     "GraphStore",
@@ -88,7 +93,6 @@ __all__ = [
     # Communities
     "CommunityDetector",
     "CommunitySummarizer",
-    "CommunityEmbedder",
     "CommunityPipeline",
     # Config
     "PipelineConfig",

@@ -9,8 +9,6 @@ Runs on both Neo4j and Memgraph when their respective run flags are set.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from examples.config import get_embedder, get_llm, get_memgraph_store, get_neo4j_store
@@ -232,7 +230,6 @@ async def _run_smoke_pipeline(store, graph_name: str):
         community = CommunityPipeline(
             graph_store=store,
             llm=llm,
-            embedder=embedder,
             relationship_types=COMMUNITY_RELATIONSHIP_TYPES,
             graph_name=graph_name,
             summary_prompt=COMMUNITY_SUMMARY_PROMPT,

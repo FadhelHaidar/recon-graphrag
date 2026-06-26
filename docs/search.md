@@ -100,10 +100,9 @@ result = await graph_rag.search(
 | `map_concurrency` | Constructor option on `GlobalSearchRetriever`; max concurrent map calls. Defaults to `1`. |
 | `max_map_calls` | Constructor option on `GlobalSearchRetriever`; max total map calls. Defaults to `None` (unlimited). |
 
-Global search does not embed the user query, query the
-`community-embeddings` vector index, choose communities by vector similarity,
-or traverse raw entity nodes at query time. It reads stored
-`Community.report_text` / `Community.summary` values directly from the graph.
+Global search reads stored `Community.report_text` / `Community.summary`
+values directly from the graph. It does not embed the user query, use vector
+similarity, or traverse raw entity nodes at query time.
 
 One map batch means one map LLM call, followed by one reduce LLM call:
 
@@ -401,7 +400,7 @@ Before search can work, the graph should contain:
 | `__Entity__` | Extracted people, places, concepts, etc. | UUID `id`, `canonical_key`, `human_readable_id`, `name`, `title`, `description`, `embedding`, `graph_name` |
 | `Chunk` | A text chunk from the original source unit | `id`, `text`, `embedding`, arbitrary source metadata such as `record_id`, `page`, `table`, `ticket_id` |
 | `Document` | The source unit or container | metadata such as `title`, `source`, `filename`, `collection`, `external_id` |
-| `Community` | A cluster of related entities | `summary`, `report_text`, `report_json`, `report_status`, `embedding`, `level` |
+| `Community` | A cluster of related entities | `summary`, `report_text`, `report_json`, `report_status`, `level` |
 | `Claim` | A claim/covariate extracted from text | `description`, `claim_type`, `status`, `graph_name` |
 
 Important relationships:
@@ -470,7 +469,7 @@ query + selected community_level
 Structured report generation stores `report_json`, `report_text`, title,
 compatibility `summary`, rating fields, version fields, `report_status`, and
 `report_error`. Failed report generations are marked with
-`report_status="failed"` and are not embedded or read by global search.
+`report_status="failed"` and are not read by global search.
 
 The map phase reads summaries/reports, not raw nodes. The reduce phase reads
 map partial answers, not the original reports. Neither phase performs vector
@@ -572,7 +571,6 @@ Search depends on indexes created by `store.create_indexes()`:
 | Index | Type | Indexed property | Used by |
 | --- | --- | --- | --- |
 | `entity-embeddings` | Vector | `__Entity__.embedding` | Local, DRIFT |
-| `community-embeddings` | Vector | `Community.embedding` | Maintained for custom community retrieval; not used by built-in Global search |
 | `chunk-embeddings` | Vector | `Chunk.embedding` | Not used directly by search modes |
 | `entity-names` | Full-text / text | `__Entity__.name` | Local, DRIFT |
 
@@ -586,10 +584,9 @@ Global and DRIFT search need communities. The community pipeline:
 1. Detects communities with Leiden.
 2. Writes `Community` nodes and hierarchy edges.
 3. Summarizes or generates structured reports.
-4. Optionally embeds canonical report text for custom workflows that use
-   community vectors.
 
-Built-in global search uses step 3. It does not require step 4.
+Built-in global search uses the stored reports from step 3. It does not require
+community embeddings.
 
 ## Current Limits
 

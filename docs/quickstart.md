@@ -53,7 +53,6 @@ The indexes created are:
 
 - `chunk-embeddings` — vector index on `Chunk.embedding`
 - `entity-embeddings` — vector index on `__Entity__.embedding`
-- `community-embeddings` — vector index on `Community.embedding` for custom community retrieval
 - `entity-names` — fulltext index on `__Entity__.name`
 
 Use the backend-specific `IndexManager.verify()` to print the created indexes and node/relationship counts.
@@ -140,7 +139,7 @@ You can also ingest paginated text with `build_from_pages()` or pre-chunked docu
 
 ## 6. Build communities
 
-`CommunityPipeline` detects hierarchical communities, generates summaries, and embeds them:
+`CommunityPipeline` detects hierarchical communities and generates summaries:
 
 ```python
 from recon_graphrag import CommunityPipeline
@@ -148,7 +147,6 @@ from recon_graphrag import CommunityPipeline
 community = CommunityPipeline(
     graph_store=store,
     llm=llm,
-    embedder=embedder,
     relationship_types=["DIRECTED"],
 )
 
@@ -273,7 +271,6 @@ await pipeline.build_from_text("Christopher Nolan directed Inception.")
 community = CommunityPipeline(
     graph_store=store,
     llm=llm,
-    embedder=embedder,
     relationship_types=["DIRECTED"],
 )
 await community.build()

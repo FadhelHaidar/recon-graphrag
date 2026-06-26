@@ -97,7 +97,6 @@ async def run_movie_smoke(
     community = CommunityPipeline(
         graph_store=store,
         llm=llm,
-        embedder=embedder,
         relationship_types=COMMUNITY_RELATIONSHIP_TYPES,
         graph_name=graph_name,
         summary_prompt=COMMUNITY_SUMMARY_PROMPT,
@@ -109,7 +108,7 @@ async def run_movie_smoke(
         store,
         """
         MATCH (c:Community {graph_name: $graph_name})
-        WHERE c.embedding IS NOT NULL
+        WHERE coalesce(c.report_text, c.summary, '') <> ''
         RETURN count(c) AS count
         """,
         graph_name,

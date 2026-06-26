@@ -15,13 +15,6 @@ from recon_graphrag.extraction.schema import (
     PropertyType,
     RelationshipType,
 )
-from recon_graphrag.extraction.types import (
-    ExtractedNode,
-    ExtractedRelationship,
-    GraphExtraction,
-)
-
-
 def _make_schema() -> GraphSchema:
     return GraphSchema(
         node_types=[

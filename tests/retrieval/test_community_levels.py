@@ -31,17 +31,6 @@ class FakeGraphStore:
 
         return []
 
-    def search_communities(self, index_name, query_vector, graph_name, top_k, level=None):
-        self.calls.append(("search_communities", {"index_name": index_name, "top_k": top_k, "level": level, "graph_name": graph_name}))
-        return [
-            {
-                "id": "c2",
-                "summary": "Coarse community summary",
-                "level": level,
-                "score": 0.9,
-            }
-        ]
-
     def get_community_summaries_by_keys(self, graph_name, keys, top_k):
         self.calls.append(
             (
