@@ -10,7 +10,6 @@ from recon_graphrag.graphdb.memgraph.store import (
     _format_tantivy_query,
 )
 from recon_graphrag.models.artifacts import CommunityReport
-from recon_graphrag.models.types import IndexConfig
 
 
 class FakeRecord:
@@ -445,8 +444,11 @@ def test_validate_graph_build_runs_counts(store, fake_driver):
 def test_create_indexes_runs_uid_constraint(store, fake_driver):
     fake_driver.session_obj._next_result = FakeResult([])
 
-    store.create_indexes(IndexConfig(), embedding_dim=1536)
+    store.create_indexes(embedding_dim=1536)
 
     query_text = "\n".join(fake_driver.session_obj.queries)
+    assert "CREATE VECTOR INDEX `chunk-embeddings`" in query_text
+    assert "CREATE VECTOR INDEX `entity-embeddings`" in query_text
+    assert "CREATE TEXT INDEX `entity-names`" in query_text
     assert "CREATE CONSTRAINT" in query_text
     assert "c.uid IS UNIQUE" in query_text

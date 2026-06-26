@@ -83,11 +83,13 @@ class MemgraphGraphStore(BaseGraphStore):
     # ------------------------------------------------------------------
     # Indexes
     # ------------------------------------------------------------------
-    def create_indexes(self, config: IndexConfig, embedding_dim: int) -> None:
+    def create_indexes(
+        self, config: Optional[IndexConfig] = None, embedding_dim: int = 1536
+    ) -> None:
         mgr = IndexManager(self, embedding_dim=embedding_dim, index_config=config)
         mgr.create_indexes()
 
-    def drop_indexes(self, config: IndexConfig) -> None:
+    def drop_indexes(self, config: Optional[IndexConfig] = None) -> None:
         mgr = IndexManager(self, index_config=config)
         mgr._drop_indexes()
 

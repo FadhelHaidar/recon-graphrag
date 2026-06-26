@@ -44,11 +44,13 @@ class GraphStore(Protocol):
     # ------------------------------------------------------------------
     # Indexes
     # ------------------------------------------------------------------
-    def create_indexes(self, config: IndexConfig, embedding_dim: int) -> None:
+    def create_indexes(
+        self, config: Optional[IndexConfig] = None, embedding_dim: int = 1536
+    ) -> None:
         """Create all required vector, fulltext, and uniqueness indexes."""
         ...
 
-    def drop_indexes(self, config: IndexConfig) -> None:
+    def drop_indexes(self, config: Optional[IndexConfig] = None) -> None:
         """Drop existing indexes so they can be recreated."""
         ...
 
