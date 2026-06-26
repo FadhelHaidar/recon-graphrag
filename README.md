@@ -27,7 +27,7 @@ The `GraphStore` protocol is designed to be backend-agnostic. A backend must sup
 
 - Vector indexes and approximate nearest-neighbor search
 - Fulltext indexes
-- Multi-level community detection (e.g., Leiden or Louvain)
+- Multi-level community detection (Leiden)
 - Cypher-compatible query language
 - Internal node identity-based embedding upsert
 - Entity merge / deduplication
