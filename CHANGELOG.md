@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0](https://github.com/FadhelHaidar/Recon-GraphRAG/compare/v0.4.1...v0.5.0) (2026-06-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **pipeline:** `build_from_pages()` removed — use `build_from_documents([{"pages": pages}], window_size=..., window_overlap=...)` instead. `chunk_size` and `chunk_overlap` are no longer accepted in the `GraphBuilderPipeline` constructor; pass them per call.
+
+### Features
+
+* **pipeline:** consolidate multi-source input and add token-based chunking ([#47](https://github.com/FadhelHaidar/Recon-GraphRAG/issues/47)) ([a927cfe](https://github.com/FadhelHaidar/Recon-GraphRAG/commit/a927cfe57be514bb9afacfe7da1b523a3b1d9772))
+
 ## [0.4.1](https://github.com/FadhelHaidar/Recon-GraphRAG/compare/v0.4.0...v0.4.1) (2026-06-26)
 
 
