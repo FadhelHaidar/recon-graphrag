@@ -8,6 +8,7 @@ from recon_graphrag.config.settings import PipelineConfig
 from recon_graphrag.utils.tokens import (
     ApproximateTokenCounter,
     PackItem,
+    TiktokenTokenCounter,
     count_tokens,
     create_token_counter,
     pack_items,
@@ -81,10 +82,19 @@ class TestCreateTokenCounter:
         with pytest.raises(ValueError):
             create_token_counter("unknown")
 
-    def test_create_tiktoken_without_dependency_raises(self):
-        # tiktoken is not a mandatory dependency; this test documents the error.
+    def test_create_tiktoken(self):
+        counter = create_token_counter("tiktoken")
+        assert isinstance(counter, TiktokenTokenCounter)
+
+    def test_create_tiktoken_with_encoding(self):
+        counter = create_token_counter("tiktoken", model="cl100k_base")
+        assert isinstance(counter, TiktokenTokenCounter)
+        # "hello world" is two tokens in cl100k_base
+        assert counter.count("hello world") == 2
+
+    def test_create_tiktoken_unknown_encoding_raises(self):
         with pytest.raises(ImportError):
-            create_token_counter("tiktoken")
+            create_token_counter("tiktoken", model="unknown-encoding-xyz")
 
 
 class TestConvenienceFunctions:

@@ -26,8 +26,6 @@ pipeline = GraphBuilderPipeline(
     llm=llm,
     embedder=embedder,
     schema=schema,
-    chunk_size=1000,            # text chunking size in characters (default: 1000)
-    chunk_overlap=200,          # overlap between chunks in characters (default: 200)
     graph_name="entity-graph",  # graph scope (default: "entity-graph")
     extraction_concurrency=5,   # max chunks extracted in parallel (default: 5)
     max_gleanings=1,            # follow-up extraction loops (default: 0)
@@ -49,6 +47,9 @@ result = await pipeline.build_from_text(
         "record_id": "movie-row-001",
         "collection": "movies",
     },
+    chunk_size=1000,          # text chunking size (default: 1000)
+    chunk_overlap=200,        # overlap between chunks (default: 200)
+    chunk_unit="characters",  # "characters" or "tokens" (default: "characters")
 )
 ```
 
@@ -56,62 +57,104 @@ result = await pipeline.build_from_text(
 same keys are stored on chunks and returned later through
 `citation.metadata`.
 
-#### `build_from_pages`
+Chunking settings are per-call. `chunk_unit="tokens"` measures `chunk_size`
+and `chunk_overlap` in tokens; see [Token-based chunking](#token-based-chunking)
+below.
 
-Ingest a list of pages, for example from a paginated document:
+#### `build_from_documents`
+
+Ingest a batch of document envelopes. Each envelope must contain exactly one
+of:
+
+- `"text"`: a raw text string.
+- `"pages"`: a list of page strings or page dicts with `"text"`.
+
+Each envelope may also include `"metadata"`. The method always returns a
+`list[dict]` with one result per input envelope.
+
+```python
+documents = [
+    {
+        "text": "Document one text...",
+        "metadata": {"record_id": "row-1", "table": "tickets"},
+    },
+    {
+        "text": "Document two text...",
+        "metadata": {"record_id": "row-2", "table": "tickets"},
+    },
+]
+results = await pipeline.build_from_documents(documents)
+```
+
+Paginated documents use sliding page windows instead of text chunking:
 
 ```python
 pages = [
     {"text": "Page one text...", "metadata": {"page": 1, "file_id": "pdf-7"}},
     {"text": "Page two text...", "metadata": {"page": 2, "file_id": "pdf-7"}},
 ]
-result = await pipeline.build_from_pages(pages)
+results = await pipeline.build_from_documents(
+    [{"pages": pages}],
+    window_size=2,
+    window_overlap=1,
+)
+result = results[0]
 ```
 
-#### `build_from_documents`
+Text envelopes are chunked with `chunk_size`, `chunk_overlap`, `chunk_unit`,
+`token_counter`, and `token_encoding`. Page envelopes are windowed with
+`window_size` and `window_overlap`. You can mix text and page envelopes in the
+same call.
 
-Ingest a list of documents, one per source unit. Each document is passed to
-`build_from_text()` internally, so it is re-chunked using the pipeline's
-`TextChunker`:
+#### Build method parameters
 
-```python
-documents = [
-    {"text": "Document one text...", "metadata": {"record_id": "row-1", "table": "tickets"}},
-    {"text": "Document two text...", "metadata": {"record_id": "row-2", "table": "tickets"}},
-]
-results = await pipeline.build_from_documents(documents)
-```
-
-Returns a list of per-document results. To use pre-tokenized or pre-chunked
-units, chunk the text yourself with `TextChunker` and pass each chunk through
-`build_from_documents()` as its own `"text"`, or assemble `GraphDocument`
-artifacts directly (see [Workflows](workflows.md)).
+| Parameter | Applies to | Description |
+| --------- | ---------- | ----------- |
+| `chunk_size` | `build_from_text`, `build_from_documents` text envelopes | Target chunk size. In characters by default, or tokens when `chunk_unit="tokens"`. Defaults to `1000`. |
+| `chunk_overlap` | `build_from_text`, `build_from_documents` text envelopes | Overlap between consecutive chunks. Defaults to `200`. |
+| `chunk_unit` | `build_from_text`, `build_from_documents` text envelopes | `"characters"` (default) or `"tokens"`. |
+| `token_counter` | `build_from_text`, `build_from_documents` text envelopes | Optional `TokenCounter`. Overrides the default tiktoken counter in token mode. |
+| `token_encoding` | `build_from_text`, `build_from_documents` text envelopes | Tiktoken encoding name when `chunk_unit="tokens"` and no custom counter is provided. Defaults to `"cl100k_base"`. |
+| `window_size` | `build_from_documents` page envelopes | Number of pages per window. Defaults to `2`. |
+| `window_overlap` | `build_from_documents` page envelopes | Number of pages shared between consecutive windows. Defaults to `1`. |
 
 ### Token-based chunking
 
-By default, `chunk_size` and `chunk_overlap` are measured in characters. The
-pipeline always uses the internal `TextChunker` with character units. For
-token-based chunking, pre-chunk your documents and use `build_from_documents()`:
+By default, `chunk_size` and `chunk_overlap` are measured in characters. Set
+`chunk_unit="tokens"` to measure them in tokens instead. When no custom
+`token_counter` is provided, the pipeline uses `TiktokenTokenCounter` with the
+`cl100k_base` encoding:
 
 ```python
-from recon_graphrag.extraction.chunking import TextChunker
-from recon_graphrag.utils import ApproximateTokenCounter
-
-chunker = TextChunker(
+result = await pipeline.build_from_text(
+    text,
     chunk_size=500,
     chunk_overlap=50,
-    unit="token",
+    chunk_unit="tokens",
+)
+```
+
+Use a custom `TokenCounter` for non-OpenAI tokenizers:
+
+```python
+from recon_graphrag.utils import ApproximateTokenCounter
+
+result = await pipeline.build_from_text(
+    text,
+    chunk_size=500,
+    chunk_overlap=50,
+    chunk_unit="tokens",
     token_counter=ApproximateTokenCounter(),
 )
-chunks = chunker.chunk_text(text, document_id="doc:test")
-documents = [{"text": c.text, "metadata": c.metadata} for c in chunks]
-
-results = await pipeline.build_from_documents(documents)
 ```
 
 `ApproximateTokenCounter` uses `ceil(len(text) / 4)` as a fast estimate. For
-provider-level accuracy, use `TiktokenTokenCounter` (requires the `tiktoken`
-package).
+provider-level accuracy with OpenAI models, use the default tiktoken-backed
+counter or pass `token_encoding`.
+
+You can still pre-chunk text externally with `TextChunker` and pass each chunk
+as its own `"text"` envelope if you need full control over chunk boundaries
+(see [Workflows](workflows.md)).
 
 ### `GraphBuilderPipeline` key parameters
 
@@ -121,8 +164,6 @@ package).
 | `llm` | An LLM instance from `create_llm()`. |
 | `embedder` | An embedder instance from `create_embedder()`. |
 | `schema` | A `GraphSchema` defining entities, relationships, and patterns. |
-| `chunk_size` | Target size in characters for each text chunk. Use token-based chunking by pre-chunking externally and calling `build_from_documents()`. |
-| `chunk_overlap` | Overlap in characters between consecutive chunks. |
 | `graph_name` | Graph scope for all created nodes and relationships. Defaults to `"entity-graph"`. |
 | `graph_writer` | Optional `GraphWriter` implementation. When omitted, the pipeline writes directly to `graph_store`. |
 | `extraction_concurrency` | Maximum number of chunks to extract in parallel. Set to `1` for sequential extraction. |

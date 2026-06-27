@@ -115,8 +115,6 @@ async def test_real_llm_extracts_movie_entities(movie_schema):
             llm=llm,
             embedder=MagicMock(),
             schema=movie_schema,
-            chunk_size=500,
-            chunk_overlap=50,
             extraction_concurrency=2,
             perform_entity_resolution=False,
             embed_entities=False,
@@ -131,6 +129,8 @@ async def test_real_llm_extracts_movie_entities(movie_schema):
         result = await pipeline.build_from_text(
             text,
             metadata={"source": "integration-test"},
+            chunk_size=500,
+            chunk_overlap=50,
         )
 
         assert result["extraction"]["chunks"] >= 1

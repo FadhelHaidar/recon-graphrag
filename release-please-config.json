@@ -6,6 +6,7 @@
       "package-name": "recon-graphrag",
       "include-component-in-tag": false,
       "include-v-in-tag": true,
+      "bump-minor-pre-major": true,
       "extra-files": [
         {
           "type": "toml",
