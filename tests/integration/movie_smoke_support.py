@@ -77,12 +77,14 @@ async def run_movie_smoke(
         schema=MOVIE_SCHEMA,
         graph_name=graph_name,
     )
-    build_result = await builder.build_from_pages(
-        MOVIE_EXAMPLE_PAGES,
-        metadata={"source": f"{graph_name}-source"},
+    build_result = (await builder.build_from_documents(
+        [{
+            "pages": MOVIE_EXAMPLE_PAGES,
+            "metadata": {"source": f"{graph_name}-source"},
+        }],
         window_size=2,
         window_overlap=1,
-    )
+    ))[0]
 
     validation = build_result.get("validation", {})
     for key in (

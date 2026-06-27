@@ -27,6 +27,7 @@ from recon_graphrag.extraction.validator import SchemaValidator
 from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graphdb.base import GraphStore, GraphWriter
 from recon_graphrag.llm.base import BaseLLM
+from recon_graphrag.utils.tokens import TokenCounter, TiktokenTokenCounter
 
 
 class GraphBuilderPipeline:
@@ -38,8 +39,6 @@ class GraphBuilderPipeline:
         llm: BaseLLM,
         embedder: BaseEmbedder,
         schema: GraphSchema,
-        chunk_size: int = 1000,
-        chunk_overlap: int = 200,
         graph_name: str = "entity-graph",
         graph_writer: Optional[GraphWriter] = None,
         extraction_concurrency: int = 5,
@@ -65,8 +64,6 @@ class GraphBuilderPipeline:
         self.llm = llm
         self.embedder = embedder
         self.schema = schema
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
         self.graph_name = graph_name
         self.extraction_concurrency = extraction_concurrency
         self.max_gleanings = max_gleanings
@@ -87,7 +84,6 @@ class GraphBuilderPipeline:
         self.fail_on_resolution_error = fail_on_resolution_error
         self.fail_on_embedding_error = fail_on_embedding_error
 
-        self.chunker = TextChunker(chunk_size, chunk_overlap)
         self.extractor = LLMGraphExtractor(llm)
         self.validator = SchemaValidator()
         self.assembler = GraphDocumentAssembler()
@@ -97,6 +93,12 @@ class GraphBuilderPipeline:
         self,
         text: str,
         metadata: Optional[dict] = None,
+        *,
+        chunk_size: int = 1000,
+        chunk_overlap: int = 200,
+        chunk_unit: str = "characters",
+        token_counter: TokenCounter | None = None,
+        token_encoding: str = "cl100k_base",
     ) -> dict:
         """Build knowledge graph from raw text.
 
@@ -108,39 +110,86 @@ class GraphBuilderPipeline:
         """
         metadata = metadata or {}
         document_id = self._make_document_id(text=text, metadata=metadata)
+        text_hash = self._hash_text(text)
         print(f"Starting graph build from text: document_id={document_id} chars={len(text)}")
 
-        result = await self._extract_and_write_text(text=text, metadata=metadata)
+        chunker = self._make_text_chunker(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            chunk_unit=chunk_unit,
+            token_counter=token_counter,
+            token_encoding=token_encoding,
+        )
+        chunks = chunker.chunk_text(
+            text=text,
+            document_id=document_id,
+            metadata=metadata,
+        )
 
-        print("Backfilling missing entity descriptions")
-        self._backfill_descriptions()
-
-        if self.perform_entity_resolution:
-            print("Resolving duplicate entities")
-            await self._resolve_entities()
-
-        if self.embed_entity_nodes:
-            print("Embedding entity nodes")
-            await self._embed_entities()
-
-        print("Validating graph build")
-        validation = self._validate_graph_build()
+        result = await self._build_from_chunks(
+            document_id=document_id,
+            text_hash=text_hash,
+            chunks=chunks,
+            metadata=metadata,
+        )
 
         print(f"Graph build complete: document_id={document_id}")
-        return {
-            "extraction": result,
-            "validation": validation,
-        }
+        return result
 
-    async def build_from_pages(
+    async def build_from_documents(
         self,
-        pages: list[str | dict],
-        metadata: Optional[dict] = None,
+        documents: list[dict],
+        *,
+        chunk_size: int = 1000,
+        chunk_overlap: int = 200,
+        chunk_unit: str = "characters",
+        token_counter: TokenCounter | None = None,
+        token_encoding: str = "cl100k_base",
         window_size: int = 2,
         window_overlap: int = 1,
+    ) -> list[dict]:
+        """Build knowledge graph from multiple document envelopes.
+
+        Each envelope must contain exactly one of:
+          - ``text``: a raw text string.
+          - ``pages``: a list of page strings or page dicts with ``text``.
+
+        Envelopes may optionally include ``metadata``.
+
+        Returns one result dict per input envelope.
+        """
+        self._validate_document_envelopes(documents)
+
+        results = []
+        for envelope in documents:
+            metadata = envelope.get("metadata") or {}
+            if "text" in envelope:
+                result = await self.build_from_text(
+                    text=envelope["text"],
+                    metadata=metadata,
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
+                    chunk_unit=chunk_unit,
+                    token_counter=token_counter,
+                    token_encoding=token_encoding,
+                )
+            else:
+                result = await self._build_from_pages_envelope(
+                    pages=envelope["pages"],
+                    metadata=metadata,
+                    window_size=window_size,
+                    window_overlap=window_overlap,
+                )
+            results.append(result)
+        return results
+
+    async def _build_from_pages_envelope(
+        self,
+        pages: list[str | dict],
+        metadata: dict,
+        window_size: int,
+        window_overlap: int,
     ) -> dict:
-        """Build knowledge graph from paginated text using sliding windows."""
-        metadata = metadata or {}
         text = "\n\n".join(_page_text(page) for page in pages)
         document_id = self._make_document_id(text=text, metadata=metadata)
         text_hash = self._hash_text(text)
@@ -168,7 +217,67 @@ class GraphBuilderPipeline:
         else:
             print(f"Built page windows: document_id={document_id} chunks=0")
 
-        result = await self._extract_and_write_chunks(
+        result = await self._build_from_chunks(
+            document_id=document_id,
+            text_hash=text_hash,
+            chunks=chunks,
+            metadata=metadata,
+        )
+
+        print(f"Graph build complete: document_id={document_id}")
+        return result
+
+    def _validate_document_envelopes(self, documents: list[dict]) -> None:
+        if not isinstance(documents, list):
+            raise ValueError("documents must be a list")
+
+        for envelope in documents:
+            if not isinstance(envelope, dict):
+                raise ValueError("each document envelope must be a dict")
+
+            has_text = "text" in envelope
+            has_pages = "pages" in envelope
+
+            if has_text and has_pages:
+                raise ValueError("document envelope must not contain both 'text' and 'pages'")
+            if not has_text and not has_pages:
+                raise ValueError("document envelope must contain either 'text' or 'pages'")
+
+            if has_text and not isinstance(envelope["text"], str):
+                raise ValueError("document envelope 'text' must be a string")
+            if has_pages and not isinstance(envelope["pages"], list):
+                raise ValueError("document envelope 'pages' must be a list")
+
+            metadata = envelope.get("metadata")
+            if metadata is not None and not isinstance(metadata, dict):
+                raise ValueError("document envelope 'metadata' must be a dict")
+
+    def _make_text_chunker(
+        self,
+        chunk_size: int,
+        chunk_overlap: int,
+        chunk_unit: str,
+        token_counter: TokenCounter | None,
+        token_encoding: str,
+    ) -> TextChunker:
+        if chunk_unit == "tokens" and token_counter is None:
+            token_counter = TiktokenTokenCounter(model=token_encoding)
+
+        return TextChunker(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            unit=chunk_unit,
+            token_counter=token_counter,
+        )
+
+    async def _build_from_chunks(
+        self,
+        document_id: str,
+        text_hash: str,
+        chunks: list,
+        metadata: dict,
+    ) -> dict:
+        extraction = await self._extract_and_write_chunks(
             document_id=document_id,
             text_hash=text_hash,
             chunks=chunks,
@@ -189,47 +298,10 @@ class GraphBuilderPipeline:
         print("Validating graph build")
         validation = self._validate_graph_build()
 
-        print(f"Graph build complete: document_id={document_id}")
         return {
-            "extraction": result,
+            "extraction": extraction,
             "validation": validation,
         }
-
-    async def build_from_documents(
-        self,
-        documents: list[dict],
-    ) -> list[dict]:
-        """Build knowledge graph from multiple documents."""
-        results = []
-        for doc in documents:
-            result = await self.build_from_text(
-                text=doc["text"],
-                metadata=doc.get("metadata"),
-            )
-            results.append(result)
-        return results
-
-    async def _extract_and_write_text(
-        self,
-        text: str,
-        metadata: Optional[dict] = None,
-    ) -> dict:
-        metadata = metadata or {}
-        document_id = self._make_document_id(text=text, metadata=metadata)
-        text_hash = self._hash_text(text)
-
-        chunks = self.chunker.chunk_text(
-            text=text,
-            document_id=document_id,
-            metadata=metadata,
-        )
-
-        return await self._extract_and_write_chunks(
-            document_id=document_id,
-            text_hash=text_hash,
-            chunks=chunks,
-            metadata=metadata,
-        )
 
     async def _extract_and_write_chunks(
         self,
@@ -345,19 +417,6 @@ class GraphBuilderPipeline:
             "chunks": len(chunks),
             "write_stats": write_stats,
         }
-
-    def _chunk_log_extra(self, chunk) -> str:
-        """Return a formatted string with chunk metadata for printing."""
-        parts = []
-        if "page_start" in chunk.metadata:
-            parts.append(f" page_start={chunk.metadata['page_start']}")
-        if "page_end" in chunk.metadata:
-            parts.append(f" page_end={chunk.metadata['page_end']}")
-        if "char_start" in chunk.metadata:
-            parts.append(f" char_start={chunk.metadata['char_start']}")
-        if "char_end" in chunk.metadata:
-            parts.append(f" char_end={chunk.metadata['char_end']}")
-        return "".join(parts)
 
     def _backfill_descriptions(self):
         """Set description = '' on __Entity__ nodes missing the property."""

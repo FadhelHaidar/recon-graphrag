@@ -159,16 +159,18 @@ async def _run_smoke_pipeline(store, graph_name: str):
             ),
             allow_ai_auto_merge=False,
         )
-        build_result = await builder.build_from_pages(
-            SMOKE_PAGES,
-            metadata={
-                "source": f"{graph_name}-source",
-                "collection": "movie-smoke-document",
-                "external_id": f"{graph_name}-external",
-            },
+        build_result = (await builder.build_from_documents(
+            [{
+                "pages": SMOKE_PAGES,
+                "metadata": {
+                    "source": f"{graph_name}-source",
+                    "collection": "movie-smoke-document",
+                    "external_id": f"{graph_name}-external",
+                },
+            }],
             window_size=2,
             window_overlap=1,
-        )
+        ))[0]
 
         # Validate build
         validation = build_result.get("validation", {})

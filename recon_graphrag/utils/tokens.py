@@ -2,8 +2,9 @@
 
 These primitives are intentionally dependency-light. The default
 ``ApproximateTokenCounter`` uses a configurable character-to-token ratio so that
-budgeting works without installing a tokenizer. An optional ``tiktoken`` adapter
-is available when the library is installed.
+budgeting works without an exact tokenizer. For provider-level accuracy, the
+``TiktokenTokenCounter`` adapter is available and ``tiktoken`` is included as a
+required project dependency.
 """
 
 from __future__ import annotations
@@ -132,10 +133,7 @@ def pack_items(
 
 
 class TiktokenTokenCounter:
-    """Exact token counter backed by ``tiktoken``, when available.
-
-    Falls back to a clear import-time error if ``tiktoken`` is not installed.
-    """
+    """Exact token counter backed by ``tiktoken``."""
 
     def __init__(self, model: str = "cl100k_base"):
         try:
@@ -176,7 +174,7 @@ def create_token_counter(name: str = "approximate", **kwargs) -> TokenCounter:
     Supported names:
     - ``"approximate"``: ``ApproximateTokenCounter`` (always available).
       Accepts ``ratio``.
-    - ``"tiktoken"``: ``TiktokenTokenCounter`` (requires ``tiktoken``).
+    - ``"tiktoken"``: ``TiktokenTokenCounter`` (uses ``tiktoken``).
       Accepts ``model`` (defaults to ``"cl100k_base"``).
     """
     if name == "approximate":

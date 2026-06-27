@@ -17,6 +17,7 @@ dependencies = [
     "openai>=2.36.0",
     "rapidfuzz>=3.0",
     "sentence-transformers>=5.4.1",
+    "tiktoken>=0.8",
 ]
 
 [project.optional-dependencies]

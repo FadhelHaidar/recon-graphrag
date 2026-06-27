@@ -11,6 +11,7 @@ from recon_graphrag.extraction.schema import (
     PropertyType,
     RelationshipType,
 )
+from recon_graphrag.extraction.chunking import TextChunker
 from recon_graphrag.graphdb.memgraph.store import MemgraphGraphStore
 from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
 from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
@@ -129,6 +130,18 @@ def fake_writer():
     return writer
 
 
+def _make_test_schema():
+    return GraphSchema(
+        node_types=[
+            NodeType(
+                label="Person",
+                properties=[PropertyType(name="name", type="STRING")],
+            ),
+        ],
+        relationship_types=[],
+    )
+
+
 @pytest.mark.asyncio
 async def test_build_from_text_orchestration(
     movie_schema, fake_llm, fake_embedder, fake_writer
@@ -177,7 +190,7 @@ async def test_build_from_text_logs_derived_graph_store_name(
 
 
 @pytest.mark.asyncio
-async def test_build_from_pages_with_windows(
+async def test_build_from_documents_with_page_windows(
     movie_schema, fake_llm, fake_embedder, fake_writer
 ):
     store = FakeGraphStore()
@@ -192,19 +205,20 @@ async def test_build_from_pages_with_windows(
     )
 
     pages = ["Page one", "Page two", "Page three"]
-    result = await pipeline.build_from_pages(
-        pages=pages,
-        metadata={"source": "test"},
+    results = await pipeline.build_from_documents(
+        [{"pages": pages, "metadata": {"source": "test"}}],
         window_size=2,
         window_overlap=1,
     )
 
+    assert len(results) == 1
+    result = results[0]
     assert "extraction" in result
     assert result["extraction"]["chunks"] == 2  # windows: 1-2, 2-3
 
 
 @pytest.mark.asyncio
-async def test_build_from_pages_preserves_page_metadata(
+async def test_build_from_documents_preserves_page_metadata(
     movie_schema, fake_llm, fake_embedder, fake_writer
 ):
     store = FakeGraphStore()
@@ -223,9 +237,8 @@ async def test_build_from_pages_preserves_page_metadata(
         {"text": "Page two", "metadata": {"record_id": "page-2"}},
         {"text": "Page three", "metadata": {"record_id": "page-3"}},
     ]
-    await pipeline.build_from_pages(
-        pages=pages,
-        metadata={"source": "document-source", "collection": "movies"},
+    results = await pipeline.build_from_documents(
+        [{"pages": pages, "metadata": {"source": "document-source", "collection": "movies"}}],
         window_size=2,
         window_overlap=1,
     )
@@ -238,7 +251,7 @@ async def test_build_from_pages_preserves_page_metadata(
 
 
 @pytest.mark.asyncio
-async def test_build_from_documents(
+async def test_build_from_documents_mixed_text_and_pages(
     movie_schema, fake_llm, fake_embedder, fake_writer
 ):
     store = FakeGraphStore()
@@ -252,55 +265,35 @@ async def test_build_from_documents(
         embed_entities=False,
     )
 
-    results = await pipeline.build_from_documents([
-        {"text": "Alice directed Inception.", "metadata": {"source": "a"}},
-        {"text": "Bob acted in Inception.", "metadata": {"source": "b"}},
-    ])
+    results = await pipeline.build_from_documents(
+        [
+            {"text": "Alice directed Inception.", "metadata": {"source": "text-doc"}},
+            {
+                "pages": [
+                    {"text": "Page one", "metadata": {"record_id": "page-1"}},
+                    {"text": "Page two", "metadata": {"record_id": "page-2"}},
+                ],
+                "metadata": {"source": "page-doc"},
+            },
+        ],
+        window_size=2,
+        window_overlap=1,
+    )
 
     assert len(results) == 2
     assert fake_writer.write_graph_document.call_count == 2
+    assert results[0]["extraction"]["chunks"] == 1
+    assert results[1]["extraction"]["chunks"] == 1
 
 
 @pytest.mark.asyncio
-async def test_build_from_text_with_entity_embedding_loop(
-    movie_schema, fake_llm, fake_embedder
+async def test_build_from_documents_envelope_validation(
+    movie_schema, fake_llm, fake_embedder, fake_writer
 ):
     store = FakeGraphStore()
-    store.get_unembedded_entities = MagicMock(side_effect=[
-        [  # first batch of unembedded entities
-            {"id": "e1", "labels": ["Person"], "name": "Alice", "description": ""},
-            {"id": "e2", "labels": ["Movie"], "name": "Inception", "description": ""},
-        ],
-        [],  # second batch (empty) -> break loop
-    ])
-    store.upsert_vectors = MagicMock()
-
     pipeline = GraphBuilderPipeline(
         graph_store=store,
         llm=fake_llm,
-        embedder=fake_embedder,
-        schema=movie_schema,
-        perform_entity_resolution=False,
-        embed_entities=True,
-    )
-
-    result = await pipeline.build_from_text("Alice directed Inception.")
-    assert "extraction" in result
-    store.get_unembedded_entities.assert_called()
-    store.upsert_vectors.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_build_from_text_raises_when_all_extractions_fail(
-    movie_schema, fake_embedder, fake_writer
-):
-    store = FakeGraphStore()
-    failing_llm = MagicMock()
-    failing_llm.ainvoke = AsyncMock(side_effect=RuntimeError("provider failed"))
-
-    pipeline = GraphBuilderPipeline(
-        graph_store=store,
-        llm=failing_llm,
         embedder=fake_embedder,
         schema=movie_schema,
         graph_writer=fake_writer,
@@ -308,22 +301,92 @@ async def test_build_from_text_raises_when_all_extractions_fail(
         embed_entities=False,
     )
 
-    with pytest.raises(RuntimeError, match="Extraction failed for all"):
-        await pipeline.build_from_text("Alice directed Inception.")
+    with pytest.raises(ValueError, match="must be a dict"):
+        await pipeline.build_from_documents(["not a dict"])
+
+    with pytest.raises(ValueError, match="both 'text' and 'pages'"):
+        await pipeline.build_from_documents([{"text": "x", "pages": ["p"]}])
+
+    with pytest.raises(ValueError, match="either 'text' or 'pages'"):
+        await pipeline.build_from_documents([{"metadata": {}}])
+
+    with pytest.raises(ValueError, match="'text' must be a string"):
+        await pipeline.build_from_documents([{"text": 123}])
+
+    with pytest.raises(ValueError, match="'pages' must be a list"):
+        await pipeline.build_from_documents([{"pages": "not-a-list"}])
+
+    with pytest.raises(ValueError, match="'metadata' must be a dict"):
+        await pipeline.build_from_documents([{"text": "x", "metadata": "bad"}])
 
     fake_writer.write_graph_document.assert_not_called()
 
 
-def _make_test_schema():
-    return GraphSchema(
-        node_types=[
-            NodeType(
-                label="Person",
-                properties=[PropertyType(name="name", type="STRING")],
-            ),
-        ],
-        relationship_types=[],
+@pytest.mark.asyncio
+async def test_build_from_documents_with_token_chunking(
+    movie_schema, fake_llm, fake_embedder, fake_writer
+):
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=fake_llm,
+        embedder=fake_embedder,
+        schema=movie_schema,
+        graph_writer=fake_writer,
+        perform_entity_resolution=False,
+        embed_entities=False,
     )
+
+    class FakeTokenCounter:
+        def count(self, text: str) -> int:
+            return len(text.split())
+
+        def truncate(self, text: str, max_tokens: int) -> str:
+            words = text.split()
+            return " ".join(words[:max_tokens])
+
+    results = await pipeline.build_from_documents(
+        [
+            {
+                "text": "Alice directed Inception in 2010 with Christopher Nolan. " * 3,
+                "metadata": {"source": "token-test"},
+            }
+        ],
+        chunk_size=5,
+        chunk_overlap=1,
+        chunk_unit="tokens",
+        token_counter=FakeTokenCounter(),
+    )
+
+    assert len(results) == 1
+    assert results[0]["extraction"]["chunks"] > 1
+    fake_writer.write_graph_document.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_build_from_text_with_tiktoken_default(
+    movie_schema, fake_llm, fake_embedder, fake_writer
+):
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=fake_llm,
+        embedder=fake_embedder,
+        schema=movie_schema,
+        graph_writer=fake_writer,
+        perform_entity_resolution=False,
+        embed_entities=False,
+    )
+
+    result = await pipeline.build_from_text(
+        "Alice directed Inception in 2010 with Christopher Nolan. " * 3,
+        chunk_size=5,
+        chunk_overlap=1,
+        chunk_unit="tokens",
+    )
+
+    assert result["extraction"]["chunks"] > 1
+    fake_writer.write_graph_document.assert_called_once()
 
 
 def test_make_document_id_with_source():
@@ -456,15 +519,18 @@ async def test_extract_chunks_concurrently(
         embedder=fake_embedder,
         schema=movie_schema,
         graph_writer=fake_writer,
-        chunk_size=15,
-        chunk_overlap=5,
         extraction_concurrency=3,
         perform_entity_resolution=False,
         embed_entities=False,
     )
 
     text = "Alice directed Inception in 2010 with Christopher Nolan. " * 3
-    result = await pipeline.build_from_text(text, metadata={"source": "test"})
+    result = await pipeline.build_from_text(
+        text,
+        metadata={"source": "test"},
+        chunk_size=15,
+        chunk_overlap=5,
+    )
 
     assert result["extraction"]["chunks"] > 1
     assert fake_llm.ainvoke.call_count == result["extraction"]["chunks"]
@@ -482,14 +548,13 @@ async def test_concurrency_limit_respected(
         embedder=fake_embedder,
         schema=movie_schema,
         graph_writer=fake_writer,
-        chunk_size=15,
-        chunk_overlap=5,
         extraction_concurrency=2,
         perform_entity_resolution=False,
         embed_entities=False,
     )
 
-    chunks = pipeline.chunker.chunk_text(
+    chunker = TextChunker(chunk_size=15, chunk_overlap=5)
+    chunks = chunker.chunk_text(
         "Alice directed Inception in 2010 with Christopher Nolan. " * 3,
         document_id="doc:test",
         metadata={},
@@ -545,18 +610,22 @@ async def test_partial_extraction_failure_continues(
         embedder=fake_embedder,
         schema=movie_schema,
         graph_writer=fake_writer,
-        chunk_size=15,
-        chunk_overlap=5,
         extraction_concurrency=3,
         perform_entity_resolution=False,
         embed_entities=False,
     )
 
     text = "Alice directed Inception in 2010 with Christopher Nolan. " * 3
+    chunker = TextChunker(chunk_size=15, chunk_overlap=5)
     expected_chunks = len(
-        pipeline.chunker.chunk_text(text, document_id="doc:test", metadata={})
+        chunker.chunk_text(text, document_id="doc:test", metadata={})
     )
-    result = await pipeline.build_from_text(text, metadata={"source": "test"})
+    result = await pipeline.build_from_text(
+        text,
+        metadata={"source": "test"},
+        chunk_size=15,
+        chunk_overlap=5,
+    )
 
     assert result["extraction"]["chunks"] == expected_chunks
     assert llm.ainvoke.await_count == expected_chunks

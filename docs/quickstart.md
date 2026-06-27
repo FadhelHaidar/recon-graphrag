@@ -135,7 +135,7 @@ await pipeline.build_from_text(
 )
 ```
 
-You can also ingest paginated text with `build_from_pages()` or pre-chunked documents with `build_from_documents()`.
+You can also ingest multiple documents or paginated sources with `build_from_documents()`.
 
 ## 6. Build communities
 
