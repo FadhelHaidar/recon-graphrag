@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/FadhelHaidar/Recon-GraphRAG/compare/v0.6.1...v0.6.2) (2026-06-28)
+
+
+### Bug Fixes
+
+* add Anthropic LLM provider and packaging fixes for PyPI readiness ([#57](https://github.com/FadhelHaidar/Recon-GraphRAG/issues/57)) ([139ec3f](https://github.com/FadhelHaidar/Recon-GraphRAG/commit/139ec3f336d65e1dcb01bd768a979dec08de33c9))
+
 ## [0.6.1](https://github.com/FadhelHaidar/Recon-GraphRAG/compare/v0.6.0...v0.6.1) (2026-06-28)
 
 
