@@ -42,10 +42,51 @@ jobs:
       issues: write
       pull-requests: write
 
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      upload_url: ${{ steps.release.outputs.upload_url }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+
     steps:
       - name: Create or update release PR
+        id: release
         uses: googleapis/release-please-action@v4
         with:
           target-branch: master
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  publish-artifacts:
+    needs: release-please
+    if: needs.release-please.outputs.release_created
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Build package
+        run: uv build
+
+      - name: Validate package
+        run: |
+          pip install twine
+          twine check dist/*
+
+      - name: Attach artifacts to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ needs.release-please.outputs.tag_name }} dist/* --clobber

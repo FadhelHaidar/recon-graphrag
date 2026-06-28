@@ -23,7 +23,8 @@ def create_llm(provider: str, **kwargs: Any) -> BaseLLM:
     """Create an LLM instance for a supported provider.
 
     Args:
-        provider: One of "openai", "azure_openai", "ollama", "openrouter".
+        provider: One of "openai", "azure_openai", "ollama", "openrouter",
+            "anthropic".
         **kwargs: Passed to the underlying provider adapter.
     """
     providers = {
@@ -31,6 +32,7 @@ def create_llm(provider: str, **kwargs: Any) -> BaseLLM:
         "azure_openai": _create_azure_openai_llm,
         "ollama": _create_ollama_llm,
         "openrouter": _create_openrouter_llm,
+        "anthropic": _create_anthropic_llm,
     }
     if provider not in providers:
         raise ValueError(
@@ -178,6 +180,65 @@ def _create_openrouter_llm(**kwargs: Any) -> BaseLLM:
     return OpenAIChatLLM(**kwargs)
 
 
+class AnthropicLLM:
+    """Anthropic Claude chat adapter."""
+
+    supports_structured_output = False
+
+    def __init__(
+        self,
+        model_name: str,
+        model_params: Optional[dict[str, Any]] = None,
+        **kwargs: Any,
+    ):
+        try:
+            import anthropic
+        except ImportError as exc:
+            raise ImportError(
+                "Could not import anthropic Python client. "
+                "Install it with `pip install anthropic`."
+            ) from exc
+
+        self.model_name = model_name
+        self.model_params = model_params or {}
+        self.client = anthropic.Anthropic(**kwargs)
+        self.async_client = anthropic.AsyncAnthropic(**kwargs)
+
+    def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
+        params = {**self.model_params, **kwargs}
+        max_tokens = params.pop("max_tokens", 4096)
+        response = self.client.messages.create(
+            model=self.model_name,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+            **params,
+        )
+        return _anthropic_response_to_llm_response(response)
+
+    async def ainvoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
+        params = {**self.model_params, **kwargs}
+        max_tokens = params.pop("max_tokens", 4096)
+        response = await self.async_client.messages.create(
+            model=self.model_name,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+            **params,
+        )
+        return _anthropic_response_to_llm_response(response)
+
+    async def aclose(self) -> None:
+        close = getattr(self.client, "close", None)
+        if callable(close):
+            close()
+        async_close = getattr(self.async_client, "close", None)
+        if callable(async_close):
+            await async_close()
+
+
+def _create_anthropic_llm(**kwargs: Any) -> BaseLLM:
+    return AnthropicLLM(**kwargs)
+
+
 def _openai_chat_response_to_llm_response(response: Any) -> LLMResponse:
     error = _response_error(response)
     if error is not None:
@@ -257,6 +318,22 @@ def _ollama_chat_response_to_llm_response(response: Any) -> LLMResponse:
         if request_tokens is not None or response_tokens is not None
         else None
     )
+    return LLMResponse(content=content, usage=usage)
+
+
+def _anthropic_response_to_llm_response(response: Any) -> LLMResponse:
+    content = ""
+    for block in getattr(response, "content", []):
+        if getattr(block, "type", None) == "text":
+            content += block.text
+
+    usage = None
+    if getattr(response, "usage", None):
+        usage = LLMUsage(
+            request_tokens=response.usage.input_tokens,
+            response_tokens=response.usage.output_tokens,
+            total_tokens=response.usage.input_tokens + response.usage.output_tokens,
+        )
     return LLMResponse(content=content, usage=usage)
 
 

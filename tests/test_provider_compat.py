@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from recon_graphrag.llm.factory import _anthropic_response_to_llm_response
 from recon_graphrag.providers import (
     OpenAICompatibleProviderError,
     _response_error,
@@ -39,3 +40,29 @@ def test_provider_error_message_uses_shared_summary():
 
 def test_safe_response_summary_handles_none():
     assert _safe_response_summary(None) == "None"
+
+
+def test_anthropic_response_to_llm_response():
+    text_block = SimpleNamespace(type="text", text="Hello world")
+    usage = SimpleNamespace(input_tokens=10, output_tokens=5)
+    response = SimpleNamespace(content=[text_block], usage=usage)
+
+    result = _anthropic_response_to_llm_response(response)
+
+    assert result.content == "Hello world"
+    assert result.usage.request_tokens == 10
+    assert result.usage.response_tokens == 5
+    assert result.usage.total_tokens == 15
+
+
+def test_anthropic_response_multiple_text_blocks():
+    blocks = [
+        SimpleNamespace(type="text", text="Part 1. "),
+        SimpleNamespace(type="text", text="Part 2."),
+    ]
+    usage = SimpleNamespace(input_tokens=10, output_tokens=5)
+    response = SimpleNamespace(content=blocks, usage=usage)
+
+    result = _anthropic_response_to_llm_response(response)
+
+    assert result.content == "Part 1. Part 2."

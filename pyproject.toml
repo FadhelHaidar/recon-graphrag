@@ -8,7 +8,7 @@ version = "0.6.1"
 description = "Domain-agnostic GraphRAG SDK for Neo4j and Memgraph with extraction, community detection, and multi-mode retrieval"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "MIT"}
+license = "MIT"
 authors = [{name = "Recon-GraphRAG contributors"}]
 keywords = ["graphrag", "neo4j", "memgraph", "knowledge-graph", "retrieval", "rag"]
 
@@ -21,10 +21,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-openai = ["openai>=1.0"]
+anthropic = [
+    "anthropic>=0.34.0",
+]
 ollama = ["ollama"]
-sentence-transformers = ["sentence-transformers>=2.0"]
-all = ["openai>=1.0", "ollama", "sentence-transformers>=2.0"]
+all = ["anthropic>=0.34.0", "ollama"]
 evaluation = ["pydantic>=2.0"]
 dev = ["pytest>=8.0", "pytest-asyncio>=1.3.0", "pydantic>=2.0"]
 

@@ -1,0 +1,13 @@
+recursive-exclude tests *
+recursive-exclude examples *
+recursive-exclude docs *
+recursive-exclude plans *
+recursive-exclude evaluation *
+recursive-exclude .github *
+exclude .env
+exclude .env.example
+exclude docker-compose.yml
+exclude .dockerignore
+exclude release-please-config.json
+exclude .release-please-manifest.json
+
