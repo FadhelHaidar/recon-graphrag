@@ -12,7 +12,7 @@ from tests.integration.database_scenarios import (
 from tests.integration.support import require_integration_env
 
 
-RUN_FLAG = "RUN_NEO4J_COMMUNITY_INTEGRATION_TESTS"
+RUN_FLAG = "RUN_DATABASE_INTEGRATION_TESTS"
 GRAPH_NAME = "neo4j-community-weight-integration"
 REQUIRED_ENV = ["NEO4J_URL", "NEO4J_USERNAME", "NEO4J_PASSWORD"]
 
@@ -57,5 +57,6 @@ def neo4j_store():
 
 
 @pytest.mark.integration
+@pytest.mark.database
 def test_neo4j_leiden_uses_configured_relationship_weight_property(neo4j_store):
     assert_weighted_community_detection(neo4j_store, GRAPH_NAME)

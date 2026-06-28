@@ -83,7 +83,7 @@ For questions, troubleshooting help, or general discussion, use GitHub Discussio
    pytest -m "not integration"
    ```
 
-See [Testing](docs/testing.md) for more test commands and integration test setup.
+See [Testing](docs/10-testing.md) for more test commands and integration test setup.
 
 ## Branch naming
 

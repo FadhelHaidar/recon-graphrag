@@ -83,3 +83,8 @@ def test_openai_embedding_response_with_provider_error_has_clear_error():
 
     with pytest.raises(RuntimeError, match="provider returned error"):
         _openai_embedding(response)
+
+
+def test_create_embedder_unknown_provider_raises():
+    with pytest.raises(ValueError, match="Unknown embedder provider"):
+        create_embedder("unknown_provider")

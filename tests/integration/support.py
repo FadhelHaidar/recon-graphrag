@@ -1,4 +1,13 @@
-"""Shared helpers for opt-in integration tests."""
+"""Shared helpers for opt-in integration tests.
+
+Tier run flags
+--------------
+RUN_PROVIDER_INTEGRATION_TESTS   - real LLM/embedder endpoint checks
+RUN_DATABASE_INTEGRATION_TESTS   - real graph database checks (no real AI)
+RUN_WORKFLOW_INTEGRATION_TESTS   - real database + deterministic fake AI
+RUN_E2E_INTEGRATION_TESTS        - full real LLM/embedder/database workflow
+RUN_ENTITY_RESOLUTION_AI_TESTS   - secondary gate for AI-assisted entity resolution
+"""
 
 from __future__ import annotations
 
@@ -9,6 +18,7 @@ from dotenv import load_dotenv
 
 
 ENABLED_VALUES = {"1", "true", "yes"}
+
 PROVIDER_REQUIREMENTS = {
     "azure_openai": {
         "llm": [
@@ -85,3 +95,19 @@ def require_selected_provider_env(
         pytest.skip(message)
 
     return llm_provider, embedder_provider
+
+
+def cleanup_graph(store, graph_name: str) -> None:
+    """Delete only data owned by one test graph."""
+    store.execute_query(
+        "MATCH (n {graph_name: $graph_name}) DETACH DELETE n",
+        {"graph_name": graph_name},
+    )
+
+
+def single_count(store, query: str, graph_name: str) -> int:
+    """Run a scalar count query scoped to *graph_name* and return the integer result."""
+    result = store.execute_query(query, {"graph_name": graph_name})
+    if not result:
+        return 0
+    return int(next(iter(result[0].values())))

@@ -17,8 +17,8 @@ from tests.integration.support import (
 )
 
 
-RUN_FLAG = "RUN_MEMGRAPH_ENTITY_RESOLUTION_INTEGRATION_TESTS"
-RUN_AI_FLAG = "RUN_MEMGRAPH_ENTITY_RESOLUTION_AI_TESTS"
+RUN_FLAG = "RUN_DATABASE_INTEGRATION_TESTS"
+RUN_AI_FLAG = "RUN_ENTITY_RESOLUTION_AI_TESTS"
 GRAPH_NAME = "memgraph-entity-resolution-integration"
 REQUIRED_ENV = ["MEMGRAPH_URL"]
 
@@ -43,11 +43,13 @@ def memgraph_store():
 
 
 @pytest.mark.integration
+@pytest.mark.database
 async def test_memgraph_normalized_entity_resolution_merges_real_nodes(memgraph_store):
     await assert_normalized_entity_resolution(memgraph_store, GRAPH_NAME)
 
 
 @pytest.mark.integration
+@pytest.mark.database
 async def test_memgraph_hybrid_alias_dry_run_returns_candidate_without_merging(
     memgraph_store,
 ):
@@ -55,6 +57,7 @@ async def test_memgraph_hybrid_alias_dry_run_returns_candidate_without_merging(
 
 
 @pytest.mark.integration
+@pytest.mark.database
 async def test_memgraph_hybrid_uses_real_embedder_and_llm_for_review(memgraph_store):
     require_integration_env(
         RUN_AI_FLAG,
@@ -74,6 +77,7 @@ async def test_memgraph_hybrid_uses_real_embedder_and_llm_for_review(memgraph_st
             embedder,
         )
     finally:
-        close = getattr(llm, "aclose", None)
-        if callable(close):
-            await close()
+        for resource in (llm, embedder):
+            close = getattr(resource, "aclose", None)
+            if callable(close):
+                await close()

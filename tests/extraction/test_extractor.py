@@ -116,9 +116,8 @@ async def test_gleaning_adds_missed_entities():
     schema = _make_schema()
     result = await extractor.extract("Alice and Bob acted in Inception.", schema, max_gleanings=2)
 
-    # 3 calls: initial + assessment + continuation (re-assessment not reached because
-    # we stop after max_gleanings iterations or when no new items)
-    assert llm.ainvoke.call_count >= 3
+    # 4 calls: initial + assessment + continuation + re-assessment (no)
+    assert llm.ainvoke.call_count == 4
     assert len(result.nodes) == 3  # p1, m1, p2
     assert len(result.relationships) == 2  # p1->m1, p2->m1
 
@@ -229,7 +228,7 @@ async def test_gleaning_malformed_continuation_does_not_discard_initial():
 
     # Malformed continuation should raise, but initial is already captured
     # The extractor lets the parse error propagate — the pipeline handles it
-    with pytest.raises(Exception):
+    with pytest.raises(json.JSONDecodeError):
         await extractor.extract("text", schema, max_gleanings=2)
 
 

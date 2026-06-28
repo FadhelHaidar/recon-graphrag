@@ -640,3 +640,26 @@ class TestSourceResolution:
             "citation resolution failed" in e
             for e in result.metadata["source_resolution_errors"]
         )
+
+
+class TestParseMapResponseEdgeCases:
+    def test_parse_missing_helpfulness_defaults_to_zero(self):
+        store = FakeGraphStore()
+        llm = FakeLLM()
+        search = GlobalSearchRetriever(store, llm)
+        data = search._parse_map_response(json.dumps({"answer": "some answer"}))
+        assert data["helpfulness"] == 0
+
+    def test_parse_non_numeric_helpfulness_defaults_to_zero(self):
+        store = FakeGraphStore()
+        llm = FakeLLM()
+        search = GlobalSearchRetriever(store, llm)
+        data = search._parse_map_response(json.dumps({"answer": "x", "helpfulness": "high"}))
+        assert data["helpfulness"] == 0
+
+    def test_parse_missing_answer_defaults_to_empty(self):
+        store = FakeGraphStore()
+        llm = FakeLLM()
+        search = GlobalSearchRetriever(store, llm)
+        data = search._parse_map_response(json.dumps({"helpfulness": 50}))
+        assert data.get("answer", "") == ""

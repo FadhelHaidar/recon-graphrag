@@ -142,6 +142,14 @@ class TestPackItems:
         with pytest.raises(ValueError):
             pack_items([], max_tokens=-1)
 
+    def test_pack_items_empty_input_returns_empty(self):
+        from recon_graphrag.utils.tokens import PackItem
+
+        result = pack_items([], max_tokens=100, counter=ApproximateTokenCounter())
+        assert result.included == []
+        assert result.excluded == []
+        assert result.truncated_item_ids == []
+
 
 class TestPipelineConfig:
     def test_default_config(self):

@@ -12,7 +12,7 @@ from tests.integration.database_scenarios import (
 from tests.integration.support import require_integration_env
 
 
-RUN_FLAG = "RUN_MEMGRAPH_COMMUNITY_INTEGRATION_TESTS"
+RUN_FLAG = "RUN_DATABASE_INTEGRATION_TESTS"
 GRAPH_NAME = "memgraph-community-weight-integration"
 REQUIRED_ENV = ["MEMGRAPH_URL"]
 
@@ -47,5 +47,6 @@ def memgraph_store():
 
 
 @pytest.mark.integration
+@pytest.mark.database
 def test_memgraph_leiden_uses_configured_relationship_weight_property(memgraph_store):
     assert_weighted_community_detection(memgraph_store, GRAPH_NAME)

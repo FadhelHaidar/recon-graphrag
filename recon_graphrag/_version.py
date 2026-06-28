@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import subprocess
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-__version__ = "0.3.0"
+try:
+    __version__ = version("recon-graphrag")
+except PackageNotFoundError:  # pragma: no cover - running from source without install
+    __version__ = "0.0.0"
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent

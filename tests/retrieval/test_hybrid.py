@@ -271,3 +271,44 @@ async def test_local_search_can_include_citation_metadata_in_prompt():
     assert '"record_id": "row-42"' in llm.prompts[0]
 
 
+class EmptyResultGraphStore:
+    def __init__(self):
+        self.calls = []
+
+    def vector_search(self, index_name, query_vector, k, label=None, filters=None):
+        self.calls.append(("vector_search", {}))
+        return []
+
+    def keyword_search(self, index_name, query_text, k, label=None, filters=None):
+        self.calls.append(("keyword_search", {}))
+        return []
+
+    def execute_query(self, query, parameters=None):
+        return []
+
+    def fetch_entity_context(self, matches, **kwargs):
+        return []
+
+
+class EmptyEmbedder:
+    async def async_embed_query(self, text):
+        return [0.1, 0.2, 0.3]
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_with_empty_vector_and_keyword_results():
+    store = EmptyResultGraphStore()
+    embedder = EmptyEmbedder()
+    retriever = HybridEntityRetriever(
+        store,
+        embedder,
+        retrieval_query=None,
+        vector_index_name="entity-vector",
+        fulltext_index_name="entity-names",
+    )
+
+    result = await retriever.search("test query", top_k=5)
+
+    assert result.items == []
+
+

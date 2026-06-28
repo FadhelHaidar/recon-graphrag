@@ -9,14 +9,7 @@ from recon_graphrag.extraction.types import (
     EvidenceLink,
     GraphDocument,
 )
-from tests.integration.movie_smoke_support import single_count
-
-
-def cleanup_graph(store, graph_name: str) -> None:
-    store.execute_query(
-        "MATCH (n {graph_name: $graph_name}) DETACH DELETE n",
-        {"graph_name": graph_name},
-    )
+from tests.integration.support import cleanup_graph, single_count
 
 
 def seed_entities(

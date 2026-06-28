@@ -15,7 +15,7 @@ from tests.integration.database_scenarios import (
 )
 from tests.integration.support import require_integration_env
 
-RUN_FLAG = "RUN_MEMGRAPH_INTEGRATION_TESTS"
+RUN_FLAG = "RUN_DATABASE_INTEGRATION_TESTS"
 REQUIRED_ENV = ["MEMGRAPH_URL"]
 GRAPH_NAME = "memgraph-store-smoke"
 
@@ -45,10 +45,12 @@ def memgraph_store():
 
 
 @pytest.mark.integration
+@pytest.mark.database
 def test_memgraph_writes_graph_document_and_reports_counts(memgraph_store):
     assert_graph_document_write(memgraph_store, GRAPH_NAME)
 
 
 @pytest.mark.integration
+@pytest.mark.database
 def test_memgraph_cross_document_rerun_is_idempotent(memgraph_store):
     assert_cross_document_rerun_idempotent(memgraph_store, GRAPH_NAME)
