@@ -1118,5 +1118,5 @@ community embeddings.
 
 ## Next Steps
 
-- Try the search examples in [Quick Start](quickstart.md).
-- See a full domain example in [Example](example.md).
+- Try the search examples in [Quick Start](02-quickstart.md).
+- See a full domain example in [Example](07-example.md).

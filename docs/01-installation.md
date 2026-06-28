@@ -269,6 +269,6 @@ If you need to manage multiple Python versions, consider using [`uv`](https://do
 
 ## Next steps
 
-- Follow the [Quick Start](quickstart.md) to build and query your first graph.
-- Read about the pipeline architecture in [Pipelines](pipelines.md).
-- Configure providers in [Providers](providers.md).
+- Follow the [Quick Start](02-quickstart.md) to build and query your first graph.
+- Read about the pipeline architecture in [Pipelines](05-pipelines.md).
+- Configure providers in [Providers](08-providers.md).

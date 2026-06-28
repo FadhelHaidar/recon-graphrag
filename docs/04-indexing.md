@@ -129,5 +129,5 @@ Both backends still have an internal `IndexManager` (`recon_graphrag.graphdb.neo
 
 ## Next steps
 
-- See the full indexing flow in [Quick Start](quickstart.md).
-- Learn about pipeline parameters in [Pipelines](pipelines.md).
+- See the full indexing flow in [Quick Start](02-quickstart.md).
+- Learn about pipeline parameters in [Pipelines](05-pipelines.md).

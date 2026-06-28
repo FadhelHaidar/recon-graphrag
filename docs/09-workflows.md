@@ -1,6 +1,6 @@
 # Advanced Workflows
 
-Recon-GraphRAG's high-level examples ([`GraphBuilderPipeline`](pipelines.md), [`GraphRAG.search()`](search.md)) cover the most common path, but the library is composed of smaller, interchangeable building blocks. This guide explains those primitives so you can assemble custom workflows, implement new backends, or inspect intermediate artifacts without running a full pipeline.
+Recon-GraphRAG's high-level examples ([`GraphBuilderPipeline`](05-pipelines.md), [`GraphRAG.search()`](06-search.md)) cover the most common path, but the library is composed of smaller, interchangeable building blocks. This guide explains those primitives so you can assemble custom workflows, implement new backends, or inspect intermediate artifacts without running a full pipeline.
 
 ## When to use the building blocks
 
@@ -827,5 +827,5 @@ async def extract_to_json(text: str, schema: GraphSchema, llm, out_path: Path):
 ## Next steps
 
 - Combine these primitives with custom `GraphWriter` for logging or caching.
-- See [`docs/pipelines.md`](pipelines.md) for the high-level pipeline that wraps these steps.
-- See [`docs/search.md`](search.md) for the high-level `GraphRAG.search()` API.
+- See [`docs/05-pipelines.md`](05-pipelines.md) for the high-level pipeline that wraps these steps.
+- See [`docs/06-search.md`](06-search.md) for the high-level `GraphRAG.search()` API.

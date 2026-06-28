@@ -198,6 +198,6 @@ from Recon's `id` property.
 
 ## Next steps
 
-- Run the schema through a pipeline in [Quick Start](quickstart.md).
-- Learn about indexing in [Indexing](indexing.md).
-- See a large real-world schema in [Example](example.md).
+- Run the schema through a pipeline in [Quick Start](02-quickstart.md).
+- Learn about indexing in [Indexing](04-indexing.md).
+- See a large real-world schema in [Example](07-example.md).

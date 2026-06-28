@@ -9,7 +9,7 @@ You need:
 1. A running Neo4j instance with APOC/GDS or Memgraph instance with MAGE.
 2. Recon-GraphRAG installed from GitHub.
 
-See [Installation](installation.md) if you have not set these up yet.
+See [Installation](01-installation.md) if you have not set these up yet.
 
 ---
 
@@ -97,7 +97,7 @@ schema = GraphSchema(
 )
 ```
 
-See [Schema](schema.md) for more ways to define schemas, including the `build_schema()` helper.
+See [Schema](03-schema.md) for more ways to define schemas, including the `build_schema()` helper.
 
 ---
 
@@ -121,7 +121,7 @@ embedder = create_embedder(
 )
 ```
 
-See [Providers](providers.md) for Azure OpenAI, Ollama, OpenRouter, and sentence-transformer examples.
+See [Providers](08-providers.md) for Azure OpenAI, Ollama, OpenRouter, and sentence-transformer examples.
 
 ---
 
@@ -219,7 +219,7 @@ for source in local_result.sources:
 ingestion, so it can carry page numbers, database row IDs, API object IDs,
 ticket IDs, list-item IDs, or other source-specific keys.
 
-> **Note on community levels:** In Recon-GraphRAG, `level=0` means the **finest / most local** communities. This is the opposite of some Microsoft GraphRAG descriptions. See [Search](search.md) for details.
+> **Note on community levels:** In Recon-GraphRAG, `level=0` means the **finest / most local** communities. This is the opposite of some Microsoft GraphRAG descriptions. See [Search](06-search.md) for details.
 
 ---
 
@@ -303,7 +303,7 @@ To run the complete example on Memgraph, replace the connection setup with the M
 
 ## Next steps
 
-- Learn more about the two-stage pipeline in [Pipelines](pipelines.md).
-- Explore schema options in [Schema](schema.md).
-- Compare search modes in [Search](search.md).
-- Run a complete domain example in [Example](example.md).
+- Learn more about the two-stage pipeline in [Pipelines](05-pipelines.md).
+- Explore schema options in [Schema](03-schema.md).
+- Compare search modes in [Search](06-search.md).
+- Run a complete domain example in [Example](07-example.md).

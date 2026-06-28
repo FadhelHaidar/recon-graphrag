@@ -152,6 +152,6 @@ To create your own example:
 
 ## Next steps
 
-- Read the [Quick Start](quickstart.md) for a minimal version of the same flow.
-- Learn about schema design in [Schema](schema.md).
-- Explore search modes in [Search](search.md).
+- Read the [Quick Start](02-quickstart.md) for a minimal version of the same flow.
+- Learn about schema design in [Schema](03-schema.md).
+- Explore search modes in [Search](06-search.md).

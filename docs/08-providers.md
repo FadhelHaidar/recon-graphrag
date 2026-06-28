@@ -185,7 +185,7 @@ Most providers have a fixed output dimension. Make sure the `embedding_dim` pass
 | Sentence-Transformers | Detect the dimension with `detect_embedding_dim(embedder)` and pass it to `store.create_indexes()`. |
 | Ollama | Pass `embedding_dim` explicitly. |
 
-See [Indexing](indexing.md) for more details.
+See [Indexing](04-indexing.md) for more details.
 
 ---
 
@@ -193,12 +193,12 @@ See [Indexing](indexing.md) for more details.
 
 The repository includes integration tests that call real provider endpoints. They are disabled by default so routine test runs do not incur cost.
 
-See [Testing](testing.md) for run commands and required environment variables.
+See [Testing](10-testing.md) for run commands and required environment variables.
 
 ---
 
 ## Next steps
 
-- Follow the full setup in [Quick Start](quickstart.md).
-- Configure indexes in [Indexing](indexing.md).
-- Learn about search modes in [Search](search.md).
+- Follow the full setup in [Quick Start](02-quickstart.md).
+- Configure indexes in [Indexing](04-indexing.md).
+- Learn about search modes in [Search](06-search.md).
