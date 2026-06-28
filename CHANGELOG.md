@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/FadhelHaidar/Recon-GraphRAG/compare/v0.6.0...v0.6.1) (2026-06-28)
+
+
+### Bug Fixes
+
+* add synthesize_response flag to skip LLM synthesis and expose retrieved context ([#55](https://github.com/FadhelHaidar/Recon-GraphRAG/issues/55)) ([a83982c](https://github.com/FadhelHaidar/Recon-GraphRAG/commit/a83982cf7089365c68cccaa33e2f898ea39757e2))
+
 ## [0.6.0](https://github.com/FadhelHaidar/Recon-GraphRAG/compare/v0.5.0...v0.6.0) (2026-06-28)
 
 
