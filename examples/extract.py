@@ -47,21 +47,26 @@ def parse_args():
 
 async def extract_to_artifact(output: Path, llm_provider: str):
     llm = get_llm(llm_provider)
-    graph_document = await extract_graph_document_from_pages(
-        MOVIE_EXAMPLE_PAGES,
-        llm=llm,
-        schema=MOVIE_SCHEMA,
-        metadata={"source": "example"},
-        window_size=2,
-        window_overlap=1,
-    )
-    save_graph_document_json(graph_document, output)
-    print(
-        f"Saved graph artifact to {output} "
-        f"({len(graph_document.entities)} entities, "
-        f"{len(graph_document.relationships)} relationships)"
-    )
-    return graph_document
+    try:
+        graph_document = await extract_graph_document_from_pages(
+            MOVIE_EXAMPLE_PAGES,
+            llm=llm,
+            schema=MOVIE_SCHEMA,
+            metadata={"source": "example"},
+            window_size=2,
+            window_overlap=1,
+        )
+        save_graph_document_json(graph_document, output)
+        print(
+            f"Saved graph artifact to {output} "
+            f"({len(graph_document.entities)} entities, "
+            f"{len(graph_document.relationships)} relationships)"
+        )
+        return graph_document
+    finally:
+        close = getattr(llm, "aclose", None)
+        if callable(close):
+            await close()
 
 
 if __name__ == "__main__":

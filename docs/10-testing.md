@@ -83,7 +83,6 @@ These tests may be slower, flaky if external services are unhealthy, and may inc
 | `tests/communities/test_pipeline.py` | No | Fake only | No | `CommunityPipeline` orchestration with fake store and LLM. |
 | `tests/communities/test_reports.py` | No | Fake only | No | Structured report rubric and output shape. |
 | `tests/models/test_artifacts.py` | No | No | No | `GraphDocument`, `Citation`, and `DocumentSource` models. |
-| `tests/examples/test_movie_common.py` | No | No | No | Shared movie example query suite and assertions. |
 | `tests/evaluation/test_schemas.py` | No | No | No | Evaluation runner schema definitions. |
 | `tests/evaluation/test_runner.py` | No | No | No | Evaluation runner orchestration. |
 
@@ -415,6 +414,7 @@ or with `pytest` directly if you installed into an activated virtual environment
 ## Notes
 
 - `pytest` uses `pythonpath = ["."]` from `pyproject.toml`, so the local package imports from the repository checkout.
+- Integration tests use test-owned factories (`tests/integration/factories.py`) for graph stores, LLMs, and embedders. They do not depend on `examples/`.
 - Integration tests should stay behind explicit run flags.
 - `pyproject.toml` also defines a `characterization` marker for tests that document current behavior, including known defects. Use it for tests that pin behavior without asserting ideal correctness.
 - New external-service tests should use `@pytest.mark.integration` and skip unless explicitly enabled.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from examples.config import get_memgraph_store
+from tests.integration.factories import get_memgraph_store
 from tests.integration.database_scenarios import (
     assert_weighted_community_detection,
     cleanup_graph,

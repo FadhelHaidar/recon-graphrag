@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from examples.config import get_neo4j_store
+from tests.integration.factories import get_neo4j_store
 from tests.integration.database_scenarios import (
     assert_cross_document_rerun_idempotent,
     assert_graph_document_write,

@@ -17,12 +17,20 @@ import os
 from recon_graphrag import GraphRAG
 
 try:
-    from .common import configure_movie_rag, run_movie_search_suite
-    from .config import get_embedder, get_llm, get_memgraph_store, get_neo4j_store
+    from .common import (
+        configure_movie_rag,
+        get_backend_targets,
+        run_movie_search_suite,
+    )
+    from .config import get_embedder, get_llm
     from .query_suite import MOVIE_QUERY_SUITE
 except ImportError:
-    from common import configure_movie_rag, run_movie_search_suite
-    from config import get_embedder, get_llm, get_memgraph_store, get_neo4j_store
+    from common import (
+        configure_movie_rag,
+        get_backend_targets,
+        run_movie_search_suite,
+    )
+    from config import get_embedder, get_llm
     from query_suite import MOVIE_QUERY_SUITE
 
 
@@ -64,14 +72,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def _get_store(backend: str):
-    if backend == "neo4j":
-        return get_neo4j_store()
-    if backend == "memgraph":
-        return get_memgraph_store()
-    raise ValueError(f"Unknown backend: {backend}")
-
-
 async def run_search_suite(
     backend: str,
     llm_provider: str,
@@ -79,7 +79,7 @@ async def run_search_suite(
     modes: list[str] | None = None,
     limit: int | None = None,
 ):
-    store = _get_store(backend)
+    _, store, _ = get_backend_targets(backend)[0]
     llm = get_llm(llm_provider)
     embedder = get_embedder(embedder_provider)
     graph_rag = configure_movie_rag(GraphRAG(store, llm, embedder))

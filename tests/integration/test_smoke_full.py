@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from examples.config import get_embedder, get_llm, get_memgraph_store, get_neo4j_store
+from tests.integration.factories import get_embedder, get_llm, get_memgraph_store, get_neo4j_store
 from recon_graphrag import CommunityPipeline, GraphBuilderPipeline, GraphRAG, IndexManager
 from tests.integration.support import (
     cleanup_graph,

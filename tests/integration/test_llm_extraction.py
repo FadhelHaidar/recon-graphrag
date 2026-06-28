@@ -23,7 +23,7 @@ import pytest
 from dotenv import load_dotenv
 
 from recon_graphrag import GraphBuilderPipeline
-from examples.config import get_llm
+from tests.integration.factories import get_llm
 from tests.integration.support import PROVIDER_REQUIREMENTS, require_integration_env
 from tests.integration.synthetic_e2e_support import (
     SYNTHETIC_PAGES,

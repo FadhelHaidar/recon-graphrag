@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from examples.config import get_memgraph_store, get_neo4j_store
+from tests.integration.factories import get_memgraph_store, get_neo4j_store
 from recon_graphrag import CommunityPipeline, GraphBuilderPipeline, GraphRAG, IndexManager
 from recon_graphrag.extraction.schema import (
     GraphSchema,

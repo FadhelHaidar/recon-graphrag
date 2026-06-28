@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from examples.config import get_embedder, get_llm, get_memgraph_store
+from tests.integration.factories import get_embedder, get_llm, get_memgraph_store
 from tests.integration.database_scenarios import (
     assert_hybrid_ai_review,
     assert_hybrid_alias_dry_run,

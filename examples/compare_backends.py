@@ -18,12 +18,12 @@ import traceback
 from recon_graphrag import GraphRAG
 
 try:
-    from .common import SEARCH_OPTIONS, configure_movie_rag
-    from .config import get_embedder, get_llm, get_memgraph_store, get_neo4j_store
+    from .common import SEARCH_OPTIONS, configure_movie_rag, get_backend_targets
+    from .config import get_embedder, get_llm
     from .query_suite import MOVIE_QUERY_SUITE
 except ImportError:
-    from common import SEARCH_OPTIONS, configure_movie_rag
-    from config import get_embedder, get_llm, get_memgraph_store, get_neo4j_store
+    from common import SEARCH_OPTIONS, configure_movie_rag, get_backend_targets
+    from config import get_embedder, get_llm
     from query_suite import MOVIE_QUERY_SUITE
 
 
@@ -173,8 +173,9 @@ async def main():
     llm = get_llm(args.llm_provider)
     embedder = get_embedder(args.embedder_provider)
 
-    neo4j_store = get_neo4j_store()
-    memgraph_store = get_memgraph_store()
+    targets = {name: store for name, store, _ in get_backend_targets("all")}
+    neo4j_store = targets["neo4j"]
+    memgraph_store = targets["memgraph"]
     neo4j_rag = configure_movie_rag(GraphRAG(neo4j_store, llm, embedder))
     memgraph_rag = configure_movie_rag(GraphRAG(memgraph_store, llm, embedder))
 

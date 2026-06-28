@@ -1,4 +1,8 @@
-"""Shared helpers for the movie-industry example scripts."""
+"""Shared helpers for the movie example scripts.
+
+Provides backend selection, extraction, ingestion, and search utilities
+used by extract.py, ingest.py, communities.py, search.py, and compare_backends.py.
+"""
 
 from __future__ import annotations
 
@@ -59,14 +63,13 @@ BACKEND_CHOICES = (*BACKEND_REGISTRY, ALL_BACKENDS)
 
 
 def get_backend_targets(backend: str) -> list[tuple[str, Any, type]]:
-    """Return backend name, store, and index manager targets for an example script."""
+    """Return (name, store, index_manager_cls) for the selected backend(s)."""
     if backend == ALL_BACKENDS:
         selected = BACKEND_REGISTRY.items()
     elif backend in BACKEND_REGISTRY:
         selected = [(backend, BACKEND_REGISTRY[backend])]
     else:
         raise ValueError(f"Unknown backend: {backend}")
-
     return [
         (name, store_factory(), index_manager_cls)
         for name, (store_factory, index_manager_cls) in selected
@@ -74,6 +77,7 @@ def get_backend_targets(backend: str) -> list[tuple[str, Any, type]]:
 
 
 def configure_movie_rag(graph_rag: GraphRAG) -> GraphRAG:
+    """Configure a GraphRAG instance with movie-domain prompts."""
     graph_rag.local.answer_prompt = LOCAL_ANSWER_PROMPT
     graph_rag.drift.answer_prompt = DRIFT_ANSWER_PROMPT
     graph_rag.global_.map_prompt = GLOBAL_MAP_PROMPT
@@ -81,16 +85,21 @@ def configure_movie_rag(graph_rag: GraphRAG) -> GraphRAG:
     return graph_rag
 
 
-def hash_text(text: str) -> str:
+# ---------------------------------------------------------------------------
+# Extraction helpers
+# ---------------------------------------------------------------------------
+
+
+def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def make_document_id(text: str, metadata: dict[str, Any]) -> str:
+def _make_document_id(text: str, metadata: dict[str, Any]) -> str:
     source = metadata.get("source") or metadata.get("title")
     if source:
         slug = re.sub(r"[^a-zA-Z0-9]+", "-", str(source).lower()).strip("-")
         return f"doc:{slug}"
-    return f"doc:{hash_text(text)[:16]}"
+    return f"doc:{_hash_text(text)[:16]}"
 
 
 async def extract_graph_document_from_pages(
@@ -102,11 +111,11 @@ async def extract_graph_document_from_pages(
     window_size: int = 2,
     window_overlap: int = 1,
 ) -> GraphDocument:
-    """Run extraction and return a neutral GraphDocument without writing a DB."""
+    """Run LLM extraction over pages and return a neutral GraphDocument."""
     metadata = metadata or {}
     text = "\n\n".join(pages)
-    document_id = make_document_id(text, metadata)
-    text_hash = hash_text(text)
+    document_id = _make_document_id(text, metadata)
+    text_hash = _hash_text(text)
     chunks = PageWindowBuilder(
         window_size=window_size,
         window_overlap=window_overlap,
@@ -150,6 +159,11 @@ async def extract_graph_document_from_pages(
     )
 
 
+# ---------------------------------------------------------------------------
+# Ingestion helpers
+# ---------------------------------------------------------------------------
+
+
 def write_graph_document_for_ingest(
     store,
     graph_document: GraphDocument,
@@ -159,7 +173,6 @@ def write_graph_document_for_ingest(
     """Write graph data for one backend without running post-write steps."""
     if create_indexes:
         index_manager_cls(store, embedding_dim=EMBEDDING_DIM).create_indexes()
-
     write_stats = store.write_graph_document(graph_document)
     print(f"Write complete: {write_stats}")
     return write_stats
@@ -175,7 +188,7 @@ async def finalize_graph_ingest(
     embed_entities: bool = True,
     allow_ai_auto_merge: bool = False,
 ) -> dict:
-    """Run post-write graph maintenance for one backend."""
+    """Run post-write maintenance: backfill, resolve, embed, validate."""
     store.backfill_descriptions()
     if resolve_entities:
         print("Resolving duplicate entities after all selected graph ingests")
@@ -202,12 +215,17 @@ async def finalize_graph_ingest(
     }
 
 
+# ---------------------------------------------------------------------------
+# Search helpers
+# ---------------------------------------------------------------------------
+
+
 async def run_movie_search_suite(
     graph_rag: GraphRAG,
     test_queries: list[dict[str, Any]],
     modes_filter: list[str] | None = None,
 ) -> None:
-    """Run the shared movie query suite for an already-configured GraphRAG."""
+    """Run the shared movie query suite against a configured GraphRAG."""
     for item in test_queries:
         modes = item.get("modes", ["local", "global", "drift"])
         if modes_filter:
