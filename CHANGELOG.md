@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/FadhelHaidar/Recon-GraphRAG/compare/v0.5.0...v0.6.0) (2026-06-28)
+
+
+### Features
+
+* global search source metadata ([#49](https://github.com/FadhelHaidar/Recon-GraphRAG/issues/49)) ([2795c7c](https://github.com/FadhelHaidar/Recon-GraphRAG/commit/2795c7c9a955487d91c042a4c88a2ad57702e70a))
+
 ## [0.5.0](https://github.com/FadhelHaidar/Recon-GraphRAG/compare/v0.4.1...v0.5.0) (2026-06-27)
 
 
