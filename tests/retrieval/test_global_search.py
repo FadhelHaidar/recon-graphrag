@@ -34,32 +34,85 @@ def _make_map_response(helpfulness: int = 75, answer: str = "Test answer.") -> s
     })
 
 
+def _make_report_with_json_ref(
+    rid: str, target_id: str, target_type: str = "entity"
+) -> dict:
+    return {
+        "id": rid,
+        "level": 0,
+        "summary": f"Summary for {rid}.",
+        "report_json": json.dumps({
+            "id": rid,
+            "community_id": rid.replace("report:", "c").replace(":0", ""),
+            "level": 0,
+            "findings": [
+                {
+                    "id": "f1",
+                    "description": "A finding",
+                    "rank": 1.0,
+                    "references": [
+                        {"target_id": target_id, "target_type": target_type}
+                    ],
+                }
+            ],
+        }),
+    }
+
+
+def _make_report_with_text_ref(
+    rid: str, target_id: str, target_type: str = "entity"
+) -> dict:
+    return {
+        "id": rid,
+        "level": 0,
+        "summary": f"Summary with [refs: {target_type}:{target_id}]",
+    }
+
+
 class FakeGraphStore:
     def __init__(self, reports: list[dict] | None = None):
         self._reports = _make_reports() if reports is None else reports
         self.resolve_calls: list[tuple[str, list[str]]] = []
 
     def execute_query(self, query, params=None):
+        params = params or {}
         if "FROM_CHUNK" in query:
             assert params["graph_name"] == "entity-graph"
             return [{"chunk_id": "chunk:1"}]
+        if "MATCH (c:Claim" in query:
+            return [{"chunk_id": "chunk:claim:1"}]
+        if "source_chunk_ids" in query or "relationship_key" in query:
+            return [{"chunk_id": "chunk:rel:1"}]
         level = params.get("level") if params else None
         if level is not None:
-            return [r for r in self._reports if r.get("level") == level]
+            rows = []
+            for r in self._reports:
+                if r.get("level") != level:
+                    continue
+                row = dict(r)
+                if "report_text" not in row and "summary" in row:
+                    row["report_text"] = row["summary"]
+                rows.append(row)
+            return rows
         return self._reports
 
     def resolve_chunk_citations(self, graph_name, chunk_ids):
         self.resolve_calls.append((graph_name, chunk_ids))
-        return [
-            {
-                "chunk_id": "chunk:1",
-                "document_id": "doc:1",
-                "document_name": "Doc 1",
+        seen = set()
+        rows = []
+        for cid in chunk_ids:
+            if cid in seen:
+                continue
+            seen.add(cid)
+            rows.append({
+                "chunk_id": cid,
+                "document_id": f"doc:{cid.split(':')[1]}" if ":" in cid else "doc:1",
+                "document_name": f"Doc {cid}",
                 "page_start": 1,
                 "page_end": 1,
-                "excerpt": "Evidence text.",
-            }
-        ]
+                "excerpt": f"Evidence text for {cid}.",
+            })
+        return rows
 
 
 class FakeLLM:
@@ -312,3 +365,278 @@ class TestParseMapResponse:
         assert data["references"] == [
             {"target_id": "person:alice", "target_type": "entity"}
         ]
+
+
+class TestResolveUsedReportIds:
+    def test_keeps_valid_returned_ids(self):
+        partials = [
+            PartialAnswer(
+                batch_id="0",
+                answer="a",
+                helpfulness=80,
+                report_ids=["report:0:0"],
+                batch_report_ids=["report:0:0", "report:1:0"],
+            ),
+        ]
+        used = GlobalSearchRetriever._resolve_used_report_ids(partials)
+        assert used == ["report:0:0"]
+
+    def test_ignores_invalid_returned_ids(self):
+        partials = [
+            PartialAnswer(
+                batch_id="0",
+                answer="a",
+                helpfulness=80,
+                report_ids=["report:2:0"],
+                batch_report_ids=["report:0:0", "report:1:0"],
+            ),
+        ]
+        used = GlobalSearchRetriever._resolve_used_report_ids(partials)
+        assert used == ["report:0:0", "report:1:0"]
+
+    def test_falls_back_to_batch_ids_when_empty(self):
+        partials = [
+            PartialAnswer(
+                batch_id="0",
+                answer="a",
+                helpfulness=80,
+                report_ids=[],
+                batch_report_ids=["report:0:0"],
+            ),
+        ]
+        used = GlobalSearchRetriever._resolve_used_report_ids(partials)
+        assert used == ["report:0:0"]
+
+    def test_falls_back_to_batch_ids_when_missing(self):
+        partials = [
+            PartialAnswer(
+                batch_id="0",
+                answer="a",
+                helpfulness=80,
+                report_ids=None,
+                batch_report_ids=["report:0:0"],
+            ),
+        ]
+        used = GlobalSearchRetriever._resolve_used_report_ids(partials)
+        assert used == ["report:0:0"]
+
+    def test_preserves_deterministic_order(self):
+        partials = [
+            PartialAnswer(
+                batch_id="1",
+                answer="b",
+                helpfulness=60,
+                report_ids=["report:1:0"],
+                batch_report_ids=["report:1:0"],
+            ),
+            PartialAnswer(
+                batch_id="0",
+                answer="a",
+                helpfulness=80,
+                report_ids=["report:0:0", "report:1:0"],
+                batch_report_ids=["report:0:0", "report:1:0"],
+            ),
+        ]
+        used = GlobalSearchRetriever._resolve_used_report_ids(partials)
+        assert used == ["report:1:0", "report:0:0"]
+
+
+class TestExtractReportJsonRefs:
+    def test_extracts_entity_refs(self):
+        report_json = json.dumps({
+            "findings": [
+                {
+                    "references": [
+                        {"target_id": "person:alice", "target_type": "entity"}
+                    ]
+                }
+            ]
+        })
+        refs = GlobalSearchRetriever._extract_report_json_refs(report_json)
+        assert refs == [{"target_id": "person:alice", "target_type": "entity"}]
+
+    def test_ignores_unsupported_types(self):
+        report_json = json.dumps({
+            "findings": [
+                {
+                    "references": [
+                        {"target_id": "person:alice", "target_type": "entity"},
+                        {"target_id": "bad", "target_type": "unsupported"},
+                    ]
+                }
+            ]
+        })
+        refs = GlobalSearchRetriever._extract_report_json_refs(report_json)
+        assert refs == [{"target_id": "person:alice", "target_type": "entity"}]
+
+    def test_raises_on_invalid_json(self):
+        with pytest.raises(ValueError):
+            GlobalSearchRetriever._extract_report_json_refs("not json")
+
+
+class TestExtractReportTextRefs:
+    def test_extracts_refs_with_colon_in_target_id(self):
+        text = "Summary [refs: entity:product:a, claim:claim:123]"
+        refs = GlobalSearchRetriever._extract_report_text_refs(text)
+        assert refs == [
+            {"target_id": "product:a", "target_type": "entity"},
+            {"target_id": "claim:123", "target_type": "claim"},
+        ]
+
+    def test_ignores_arbitrary_prose(self):
+        text = "This mentions entity:foo but has no [refs: ...] block."
+        refs = GlobalSearchRetriever._extract_report_text_refs(text)
+        assert refs == []
+
+    def test_ignores_unsupported_types(self):
+        text = "Summary [refs: entity:alice, unsupported:bad]"
+        refs = GlobalSearchRetriever._extract_report_text_refs(text)
+        assert refs == [{"target_id": "alice", "target_type": "entity"}]
+
+
+class TestSourceResolution:
+    @pytest.mark.asyncio
+    async def test_search_resolves_citations_from_report_json_refs(self):
+        reports = [_make_report_with_json_ref("report:0:0", "person:alice")]
+        store = FakeGraphStore(reports)
+        llm = FakeLLM(
+            map_responses=[
+                json.dumps({
+                    "answer": "Alice is relevant.",
+                    "helpfulness": 80,
+                    "report_ids": ["report:0:0"],
+                })
+            ],
+            reduce_response="Final answer.",
+        )
+        search = GlobalSearchRetriever(store, llm)
+        result = await search.search("test query", level=0, random_seed=42)
+
+        assert len(result.citations) == 1
+        assert result.citations[0].chunk_id == "chunk:1"
+        assert result.metadata["source_report_ids_used"] == 1
+        assert result.metadata["source_references_extracted"] == 1
+        assert result.metadata["source_citations_resolved"] == 1
+
+    @pytest.mark.asyncio
+    async def test_search_falls_back_to_rendered_refs(self):
+        reports = [_make_report_with_text_ref("report:0:0", "person:bob")]
+        store = FakeGraphStore(reports)
+        llm = FakeLLM(
+            map_responses=[
+                json.dumps({
+                    "answer": "Bob is relevant.",
+                    "helpfulness": 80,
+                    "report_ids": ["report:0:0"],
+                })
+            ],
+            reduce_response="Final answer.",
+        )
+        search = GlobalSearchRetriever(store, llm)
+        result = await search.search("test query", level=0, random_seed=42)
+
+        assert len(result.citations) == 1
+        assert result.citations[0].chunk_id == "chunk:1"
+        assert result.metadata["source_references_extracted"] == 1
+
+    @pytest.mark.asyncio
+    async def test_search_falls_back_to_batch_report_ids(self):
+        reports = [_make_report_with_json_ref("report:0:0", "person:alice")]
+        store = FakeGraphStore(reports)
+        llm = FakeLLM(
+            map_responses=[
+                json.dumps({
+                    "answer": "Alice is relevant.",
+                    "helpfulness": 80,
+                })
+            ],
+            reduce_response="Final answer.",
+        )
+        search = GlobalSearchRetriever(store, llm)
+        result = await search.search("test query", level=0, random_seed=42)
+
+        assert len(result.citations) == 1
+        assert result.metadata["source_report_ids_used"] == 1
+
+    @pytest.mark.asyncio
+    async def test_search_combines_and_dedupes_map_and_report_refs(self):
+        reports = [_make_report_with_json_ref("report:0:0", "person:alice")]
+        store = FakeGraphStore(reports)
+        llm = FakeLLM(
+            map_responses=[
+                json.dumps({
+                    "answer": "Alice is relevant.",
+                    "helpfulness": 80,
+                    "report_ids": ["report:0:0"],
+                    "references": [
+                        {"target_id": "person:alice", "target_type": "entity"}
+                    ],
+                })
+            ],
+            reduce_response="Final answer.",
+        )
+        search = GlobalSearchRetriever(store, llm)
+        result = await search.search("test query", level=0, random_seed=42)
+
+        assert len(result.citations) == 1
+        assert result.metadata["source_references_extracted"] == 1
+
+    @pytest.mark.asyncio
+    async def test_search_is_nonfatal_on_malformed_report_json(self):
+        reports = [
+            {
+                "id": "report:0:0",
+                "level": 0,
+                "summary": "Summary",
+                "report_json": "not valid json",
+            }
+        ]
+        store = FakeGraphStore(reports)
+        llm = FakeLLM(
+            map_responses=[
+                json.dumps({
+                    "answer": "Alice is relevant.",
+                    "helpfulness": 80,
+                    "report_ids": ["report:0:0"],
+                    "references": [
+                        {"target_id": "person:alice", "target_type": "entity"}
+                    ],
+                })
+            ],
+            reduce_response="Final answer.",
+        )
+        search = GlobalSearchRetriever(store, llm)
+        result = await search.search("test query", level=0, random_seed=42)
+
+        assert len(result.citations) == 1
+        assert any(
+            "reference extraction failed" in e
+            for e in result.metadata["source_resolution_errors"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_search_is_nonfatal_on_citation_lookup_error(self):
+        class RaisingGraphStore(FakeGraphStore):
+            def resolve_chunk_citations(self, graph_name, chunk_ids):
+                raise RuntimeError("lookup failed")
+
+        reports = [_make_report_with_json_ref("report:0:0", "person:alice")]
+        store = RaisingGraphStore(reports)
+        llm = FakeLLM(
+            map_responses=[
+                json.dumps({
+                    "answer": "Alice is relevant.",
+                    "helpfulness": 80,
+                    "report_ids": ["report:0:0"],
+                })
+            ],
+            reduce_response="Final answer.",
+        )
+        search = GlobalSearchRetriever(store, llm)
+        result = await search.search("test query", level=0, random_seed=42)
+
+        assert result.citations == []
+        assert any(
+            "citation resolution failed" in e
+            for e in result.metadata["source_resolution_errors"]
+        )

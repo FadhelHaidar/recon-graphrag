@@ -14,6 +14,8 @@ Recon-GraphRAG splits indexing into two pipelines: one that builds the entity gr
 
 After both pipelines run, the graph is ready for `GraphRAG.search()` in `local`, `global`, or `drift` mode.
 
+---
+
 ## GraphBuilderPipeline
 
 `GraphBuilderPipeline` turns raw text into a resolved and embedded entity graph.
@@ -154,7 +156,7 @@ counter or pass `token_encoding`.
 
 You can still pre-chunk text externally with `TextChunker` and pass each chunk
 as its own `"text"` envelope if you need full control over chunk boundaries
-(see [Workflows](workflows.md)).
+(see [Workflows](09-workflows.md)).
 
 ### `GraphBuilderPipeline` key parameters
 
@@ -294,6 +296,8 @@ layer of structured evidence when enabled.
 - Pass `metadata` to link extracted chunks and entities back to any source
   shape: documents, pages, database rows, tickets, API objects, or list items.
 
+---
+
 ## CommunityPipeline
 
 `CommunityPipeline` detects hierarchical communities using the backend store's Leiden implementation and summarizes each community with an LLM.
@@ -381,11 +385,13 @@ for level, community_id in enumerate(path):
     ...
 ```
 
-This is the opposite of some Microsoft GraphRAG descriptions, where level 0 is often interpreted as the root or coarsest level. For search examples, see [Search](search.md).
+This is the opposite of some Microsoft GraphRAG descriptions, where level 0 is often interpreted as the root or coarsest level. For search examples, see [Search](06-search.md).
+
+---
 
 ## Next steps
 
-- Explore the composable building blocks in [Workflows](workflows.md).
-- Define your domain model in [Schema](schema.md).
-- Create required indexes in [Indexing](indexing.md).
-- Search the graph in [Search](search.md).
+- Explore the composable building blocks in [Workflows](09-workflows.md).
+- Define your domain model in [Schema](03-schema.md).
+- Create required indexes in [Indexing](04-indexing.md).
+- Search the graph in [Search](06-search.md).

@@ -10,6 +10,7 @@ build/
 .pytest_cache/
 .mypy_cache/
 .claude/
+.kilo/
 plans/
 # Evaluation run outputs (fixtures and README are committed)
 evaluation/runs/*

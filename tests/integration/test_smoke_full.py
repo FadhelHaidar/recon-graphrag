@@ -235,6 +235,7 @@ async def _run_smoke_pipeline(store, graph_name: str):
             relationship_types=COMMUNITY_RELATIONSHIP_TYPES,
             graph_name=graph_name,
             summary_prompt=COMMUNITY_SUMMARY_PROMPT,
+            use_reports=True,
             summarize_concurrency=5,
         )
         community_result = await community.build()
@@ -314,7 +315,21 @@ async def _run_smoke_pipeline(store, graph_name: str):
         print(f"Build: {validation}")
         print(f"Communities: {community_result}")
         for r in results:
-            print(f"\n[{r.mode.upper()}] {r.answer[:200]}...")
+            print(f"\n{'-'*60}")
+            print(f"[{r.mode.upper()}] {r.answer}")
+            print(f"Citations: {len(r.citations)}")
+            for c in r.citations:
+                print(
+                    f"  - {c.chunk_id} | {c.document_id} | pages {c.page_start}-{c.page_end} | "
+                    f"metadata={dict(c.metadata)}"
+                )
+            print(f"Sources: {len(r.sources)}")
+            for s in r.sources:
+                print(
+                    f"  - {s.document_id} ({s.document_name}): "
+                    f"{[c.chunk_id for c in s.chunk_list]}"
+                )
+            print(f"Metadata: {dict(r.metadata)}")
 
     finally:
         await close_resources(store, llm)

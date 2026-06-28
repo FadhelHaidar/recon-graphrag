@@ -17,6 +17,7 @@ from typing import Optional
 
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM
+from recon_graphrag.models.artifacts import Citation
 from recon_graphrag.models.types import SearchResult
 from recon_graphrag.retrieval.base import BaseRetriever
 from recon_graphrag.retrieval.citations import resolve_reference_citations
@@ -109,6 +110,7 @@ class PartialAnswer:
     helpfulness: int
     report_ids: list[str]
     references: list[dict] = field(default_factory=list)
+    batch_report_ids: list[str] = field(default_factory=list)
     error: str | None = None
 
 
@@ -125,6 +127,10 @@ class GlobalSearchDiagnostics:
     map_failed: int = 0
     map_filtered_zero: int = 0
     reduce_partials_used: int = 0
+    source_report_ids_used: int = 0
+    source_references_extracted: int = 0
+    source_citations_resolved: int = 0
+    source_resolution_errors: list[str] = field(default_factory=list)
     elapsed_ms: int = 0
 
 
@@ -145,6 +151,10 @@ def _diag_to_dict(diag: GlobalSearchDiagnostics) -> dict:
         "map_failed": diag.map_failed,
         "map_filtered_zero": diag.map_filtered_zero,
         "reduce_partials_used": diag.reduce_partials_used,
+        "source_report_ids_used": diag.source_report_ids_used,
+        "source_references_extracted": diag.source_references_extracted,
+        "source_citations_resolved": diag.source_citations_resolved,
+        "source_resolution_errors": list(diag.source_resolution_errors),
         "elapsed_ms": diag.elapsed_ms,
     }
 
@@ -273,7 +283,6 @@ class GlobalSearchRetriever(BaseRetriever):
         # 8. Reduce phase
         answer = await self._reduce_phase(query, scored)
         diag.reduce_partials_used = len(scored)
-        diag.elapsed_ms = int((time.monotonic() - start) * 1000)
 
         # Build context from used reports
         context_parts = []
@@ -283,27 +292,10 @@ class GlobalSearchRetriever(BaseRetriever):
             )
         context = "\n\n---\n\n".join(context_parts)
 
-        # Resolve citations from validated references returned by map.
-        references = []
-        seen_refs: set[tuple[str, str]] = set()
-        for partial in scored:
-            for ref in partial.references:
-                key = (
-                    str(ref.get("target_type", "")),
-                    str(ref.get("target_id", "")),
-                )
-                if key in seen_refs:
-                    continue
-                seen_refs.add(key)
-                references.append(ref)
+        # Resolve citations from explicit map references and report-derived refs.
+        citations = self._resolve_source_citations(diag, scored, resolved_level)
 
-        citations = []
-        try:
-            citations = resolve_reference_citations(
-                self.graph_store, self.graph_name, references
-            )
-        except Exception:
-            pass  # Citations are non-fatal
+        diag.elapsed_ms = int((time.monotonic() - start) * 1000)
 
         return SearchResult(
             query=query,
@@ -332,6 +324,192 @@ class GlobalSearchRetriever(BaseRetriever):
         return self.graph_store.execute_query(
             query, {"graph_name": self.graph_name, "level": level}
         )
+
+    # ------------------------------------------------------------------
+    # Source citation resolution
+    # ------------------------------------------------------------------
+
+    def _resolve_source_citations(
+        self,
+        diag: GlobalSearchDiagnostics,
+        scored: list[PartialAnswer],
+        resolved_level: int,
+    ) -> list[Citation]:
+        """Resolve citations from explicit map refs and used community reports."""
+        allowed_types = {"entity", "relationship", "claim"}
+        references: list[dict] = []
+        seen_refs: set[tuple[str, str]] = set()
+        errors: list[str] = []
+
+        # 1. Collect explicit map references.
+        for partial in scored:
+            for ref in partial.references:
+                if not isinstance(ref, dict):
+                    continue
+                target_type = str(ref.get("target_type", "")).strip()
+                target_id = str(ref.get("target_id", "")).strip()
+                if target_type not in allowed_types or not target_id:
+                    continue
+                key = (target_type, target_id)
+                if key in seen_refs:
+                    continue
+                seen_refs.add(key)
+                references.append({"target_type": target_type, "target_id": target_id})
+
+        # 2. Resolve validated used report IDs.
+        used_report_ids: list[str] = []
+        try:
+            used_report_ids = self._resolve_used_report_ids(scored)
+        except Exception as e:
+            errors.append(f"report-id resolution failed: {e}")
+
+        diag.source_report_ids_used = len(used_report_ids)
+
+        # 3. Read used reports and extract references.
+        extracted_refs: list[dict] = []
+        try:
+            reports = self._read_report_references(resolved_level, used_report_ids)
+        except Exception as e:
+            errors.append(f"report reference lookup failed: {e}")
+            reports = []
+
+        for report in reports:
+            try:
+                json_refs = self._extract_report_json_refs(report.get("report_json"))
+                if json_refs:
+                    extracted_refs.extend(json_refs)
+                else:
+                    text_refs = self._extract_report_text_refs(
+                        report.get("report_text", "")
+                    )
+                    extracted_refs.extend(text_refs)
+            except Exception as e:
+                errors.append(
+                    f"reference extraction failed for {report.get('id')}: {e}"
+                )
+
+        # 4. Merge report-derived references with explicit references.
+        for ref in extracted_refs:
+            target_type = str(ref.get("target_type", "")).strip()
+            target_id = str(ref.get("target_id", "")).strip()
+            if target_type not in allowed_types or not target_id:
+                continue
+            key = (target_type, target_id)
+            if key in seen_refs:
+                continue
+            seen_refs.add(key)
+            references.append({"target_type": target_type, "target_id": target_id})
+
+        diag.source_references_extracted = len(references)
+
+        # 5. Resolve citations.
+        citations: list[Citation] = []
+        try:
+            citations = resolve_reference_citations(
+                self.graph_store, self.graph_name, references
+            )
+        except Exception as e:
+            errors.append(f"citation resolution failed: {e}")
+
+        diag.source_citations_resolved = len(citations)
+        diag.source_resolution_errors = errors
+        return citations
+
+    @staticmethod
+    def _resolve_used_report_ids(partials: list[PartialAnswer]) -> list[str]:
+        """Select validated community report IDs used by helpful partials."""
+        used: list[str] = []
+        seen: set[str] = set()
+        for partial in partials:
+            batch_ids = set(partial.batch_report_ids)
+            returned = [str(r) for r in (partial.report_ids or [])]
+            valid = [r for r in returned if r in batch_ids]
+            if not valid:
+                valid = list(partial.batch_report_ids)
+            for rid in valid:
+                if rid and rid not in seen:
+                    seen.add(rid)
+                    used.append(rid)
+        return used
+
+    def _read_report_references(
+        self, level: int, report_ids: list[str]
+    ) -> list[dict]:
+        """Fetch report JSON and rendered text for selected report IDs."""
+        if not report_ids:
+            return []
+        query = """
+        MATCH (c:Community {graph_name: $graph_name, level: $level})
+        WHERE c.id IN $report_ids
+        RETURN c.id AS id,
+               c.report_json AS report_json,
+               coalesce(c.report_text, c.summary) AS report_text
+        ORDER BY c.id
+        """
+        return self.graph_store.execute_query(
+            query,
+            {
+                "graph_name": self.graph_name,
+                "level": level,
+                "report_ids": report_ids,
+            },
+        )
+
+    @staticmethod
+    def _extract_report_json_refs(report_json: str | None) -> list[dict]:
+        """Extract typed references from structured report JSON.
+
+        Raises:
+            ValueError: If the report JSON is malformed or not a JSON object.
+        """
+        if not report_json:
+            return []
+        try:
+            data = json.loads(report_json)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"report JSON is not valid: {e}") from e
+        if not isinstance(data, dict):
+            raise ValueError("report JSON is not an object")
+        allowed_types = {"entity", "relationship", "claim"}
+        refs: list[dict] = []
+        findings = data.get("findings", [])
+        if not isinstance(findings, list):
+            return refs
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            references = finding.get("references", [])
+            if not isinstance(references, list):
+                continue
+            for ref in references:
+                if not isinstance(ref, dict):
+                    continue
+                target_id = str(ref.get("target_id", "")).strip()
+                target_type = str(ref.get("target_type", "")).strip()
+                if target_id and target_type in allowed_types:
+                    refs.append({"target_id": target_id, "target_type": target_type})
+        return refs
+
+    @staticmethod
+    def _extract_report_text_refs(report_text: str) -> list[dict]:
+        """Parse typed references from rendered report text [refs: ...] blocks."""
+        refs: list[dict] = []
+        if not report_text:
+            return refs
+        allowed_types = {"entity", "relationship", "claim"}
+        for match in re.finditer(r"\[refs:\s*([^\]]+)\]", report_text):
+            entries = match.group(1).split(",")
+            for entry in entries:
+                entry = entry.strip()
+                if ":" not in entry:
+                    continue
+                target_type, target_id = entry.split(":", 1)
+                target_type = target_type.strip()
+                target_id = target_id.strip()
+                if target_id and target_type in allowed_types:
+                    refs.append({"target_id": target_id, "target_type": target_type})
+        return refs
+
 
     # ------------------------------------------------------------------
     # Shuffling and batching
@@ -423,6 +601,7 @@ class GlobalSearchRetriever(BaseRetriever):
                         helpfulness=int(data.get("helpfulness", 0)),
                         report_ids=data.get("report_ids", batch.report_ids),
                         references=data.get("references", []),
+                        batch_report_ids=batch.report_ids,
                     )
                 except Exception as e:
                     return PartialAnswer(
@@ -430,6 +609,7 @@ class GlobalSearchRetriever(BaseRetriever):
                         answer="",
                         helpfulness=0,
                         report_ids=batch.report_ids,
+                        batch_report_ids=batch.report_ids,
                         error=str(e),
                     )
 

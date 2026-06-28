@@ -13,6 +13,8 @@ We recommend using [`uv`](https://docs.astral.sh/uv/) for fast, reliable Python 
 
 If you do not already have a configured database, use the Docker Compose setup below.
 
+---
+
 ## Graph databases with Docker Compose
 
 The repository includes Neo4j with APOC/GDS and Memgraph with MAGE. Memgraph Lab is also available for browser-based inspection.
@@ -70,6 +72,8 @@ If you prefer to use your own Neo4j instance:
 
 Install a current Memgraph release with MAGE and expose its Bolt endpoint. Set `MEMGRAPH_URL`, plus `MEMGRAPH_USERNAME`, `MEMGRAPH_PASSWORD`, and `MEMGRAPH_DATABASE` when your deployment requires them. The Python Neo4j driver is used for both backends because Memgraph supports the Bolt protocol.
 
+---
+
 ## Install with uv (recommended)
 
 If you are using `uv` to manage your project, add Recon-GraphRAG from GitHub and let `uv` resolve and lock the dependencies:
@@ -86,6 +90,8 @@ uv run python your_script.py
 ```
 
 `uv run` automatically creates or updates the virtual environment and installs dependencies from `uv.lock` before running your script.
+
+---
 
 ## Optional extras
 
@@ -132,6 +138,8 @@ With `pip`:
 pip install "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git@v0.4.0"
 ```
 
+---
+
 ## Install with pip
 
 If you do not use `uv`:
@@ -139,6 +147,8 @@ If you do not use `uv`:
 ```bash
 pip install git+https://github.com/FadhelHaidar/Recon-GraphRAG.git
 ```
+
+---
 
 ## Editable install for development
 
@@ -174,6 +184,8 @@ pip install -e ".[all,dev]"
 pip install python-dotenv
 ```
 
+---
+
 ## Clone without installing
 
 You can also clone the repository and import it directly without running `pip install`, as long as your script runs from the parent directory of the cloned folder:
@@ -190,6 +202,8 @@ from recon_graphrag import GraphRAG, GraphBuilderPipeline
 
 Python automatically adds the current working directory to `sys.path`, so the package is importable without installation.
 
+---
+
 ## Verify the installation
 
 ```python
@@ -203,6 +217,8 @@ You should see the installed version, for example:
 ```text
 0.4.0
 ```
+
+---
 
 ## Troubleshooting
 
@@ -249,8 +265,10 @@ python --version
 
 If you need to manage multiple Python versions, consider using [`uv`](https://docs.astral.sh/uv/) or a virtual environment.
 
+---
+
 ## Next steps
 
-- Follow the [Quick Start](quickstart.md) to build and query your first graph.
-- Read about the pipeline architecture in [Pipelines](pipelines.md).
-- Configure providers in [Providers](providers.md).
+- Follow the [Quick Start](02-quickstart.md) to build and query your first graph.
+- Read about the pipeline architecture in [Pipelines](05-pipelines.md).
+- Configure providers in [Providers](08-providers.md).

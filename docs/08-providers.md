@@ -68,6 +68,8 @@ llm = create_llm(
 )
 ```
 
+---
+
 ## Embedder providers
 
 Create an embedder with `create_embedder()`:
@@ -143,6 +145,8 @@ embedder = create_embedder("sentence-transformer", model="all-MiniLM-L6-v2")
 
 Sentence-Transformers runs locally and does not require an API key.
 
+---
+
 ## Passing `model_params`
 
 Use `model_params` to forward extra arguments on every LLM call:
@@ -169,6 +173,8 @@ embedder = create_embedder(
 
 This is useful for OpenAI's `dimensions` or `encoding_format` parameters, and for LLM parameters such as `temperature`.
 
+---
+
 ## Embedding dimensions
 
 Most providers have a fixed output dimension. Make sure the `embedding_dim` passed to `store.create_indexes()` matches your embedder.
@@ -179,16 +185,20 @@ Most providers have a fixed output dimension. Make sure the `embedding_dim` pass
 | Sentence-Transformers | Detect the dimension with `detect_embedding_dim(embedder)` and pass it to `store.create_indexes()`. |
 | Ollama | Pass `embedding_dim` explicitly. |
 
-See [Indexing](indexing.md) for more details.
+See [Indexing](04-indexing.md) for more details.
+
+---
 
 ## Provider integration tests
 
 The repository includes integration tests that call real provider endpoints. They are disabled by default so routine test runs do not incur cost.
 
-See [Testing](testing.md) for run commands and required environment variables.
+See [Testing](10-testing.md) for run commands and required environment variables.
+
+---
 
 ## Next steps
 
-- Follow the full setup in [Quick Start](quickstart.md).
-- Configure indexes in [Indexing](indexing.md).
-- Learn about search modes in [Search](search.md).
+- Follow the full setup in [Quick Start](02-quickstart.md).
+- Configure indexes in [Indexing](04-indexing.md).
+- Learn about search modes in [Search](06-search.md).

@@ -1,6 +1,6 @@
 # Advanced Workflows
 
-Recon-GraphRAG's high-level examples ([`GraphBuilderPipeline`](pipelines.md), [`GraphRAG.search()`](search.md)) cover the most common path, but the library is composed of smaller, interchangeable building blocks. This guide explains those primitives so you can assemble custom workflows, implement new backends, or inspect intermediate artifacts without running a full pipeline.
+Recon-GraphRAG's high-level examples ([`GraphBuilderPipeline`](05-pipelines.md), [`GraphRAG.search()`](06-search.md)) cover the most common path, but the library is composed of smaller, interchangeable building blocks. This guide explains those primitives so you can assemble custom workflows, implement new backends, or inspect intermediate artifacts without running a full pipeline.
 
 ## When to use the building blocks
 
@@ -11,6 +11,8 @@ Reach for these primitives when you want to:
 - Implement a custom `GraphStore` backend (Postgres, in-memory, etc.).
 - Add side effects (logging, caching, validation) by wrapping `GraphWriter`.
 - Swap in your own LLM or embedder that does not fit the factory functions.
+
+---
 
 ## Core data types
 
@@ -180,6 +182,8 @@ GraphDocument(
 )
 ```
 
+---
+
 ## Extraction primitives
 
 The full extraction path is split into three objects so you can stop at any point.
@@ -252,6 +256,8 @@ page_chunks = window_builder.build_windows(
     metadata={"source": "pages"},
 )
 ```
+
+---
 
 ## GraphStore / GraphWriter
 
@@ -440,6 +446,8 @@ class InMemoryGraphStore(GraphStore):
 
 See [`recon_graphrag/graphdb/base.py`](../recon_graphrag/graphdb/base.py) for the complete protocol.
 
+---
+
 ## Run entity resolution independently
 
 `GraphBuilderPipeline` calls entity resolution for you after writing extracted
@@ -607,6 +615,8 @@ Backend notes:
 - `graph_name` matters. Resolution only compares entities inside the requested
   graph.
 
+---
+
 ## Retrieval primitives
 
 Instead of `GraphRAG.search()`, you can instantiate retrievers directly. This is useful when you need fine-grained control over index names, prompts, or result formatting.
@@ -707,6 +717,8 @@ retriever = HybridEntityRetriever(
 result = await retriever.search("Who directed Inception?", top_k=10)
 ```
 
+---
+
 ## Community primitives
 
 [`recon_graphrag.communities.pipeline.CommunityPipeline`](../recon_graphrag/communities/pipeline.py) is a convenience wrapper around two steps:
@@ -722,6 +734,8 @@ from recon_graphrag.communities.summarization import CommunitySummarizer
 summarizer = CommunitySummarizer(store, llm, graph_name="entity-graph")
 summaries = await summarizer.summarize_all(level=0)
 ```
+
+---
 
 ## LLM / embedder base classes
 
@@ -757,6 +771,8 @@ class MyEmbedder(BaseEmbedder):
     async def async_embed_query(self, text: str, **kwargs) -> list[float]:
         return self.embed_query(text)
 ```
+
+---
 
 ## Manual extraction flow example
 
@@ -806,8 +822,10 @@ async def extract_to_json(text: str, schema: GraphSchema, llm, out_path: Path):
     return graph_doc
 ```
 
+---
+
 ## Next steps
 
 - Combine these primitives with custom `GraphWriter` for logging or caching.
-- See [`docs/pipelines.md`](pipelines.md) for the high-level pipeline that wraps these steps.
-- See [`docs/search.md`](search.md) for the high-level `GraphRAG.search()` API.
+- See [`docs/05-pipelines.md`](05-pipelines.md) for the high-level pipeline that wraps these steps.
+- See [`docs/06-search.md`](06-search.md) for the high-level `GraphRAG.search()` API.

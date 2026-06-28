@@ -39,6 +39,8 @@ They answer questions like:
 
 These tests may be slower, flaky if external services are unhealthy, and may incur provider cost.
 
+---
+
 ## Dependency classification
 
 | Test area | Real LLM | Real embeddings | Real graph DB | What it proves |
@@ -87,6 +89,8 @@ Meaning:
 - **Fake only**: the dependency is represented by a fake or mock.
 - **Optional**: some tests run without it; extra scenarios use it when a flag is enabled.
 - **Yes**: the test requires the real dependency when enabled.
+
+---
 
 ## Scenario dependency matrix
 
@@ -235,6 +239,8 @@ Focused coverage for the gaps-with-paper alignment:
 | Arbitrary source metadata on citations | `tests/models/test_artifacts.py`, `tests/retrieval/test_hybrid.py`, `tests/graphdb/neo4j/test_neo4j_store.py`, `tests/graphdb/memgraph/test_memgraph_store.py` |
 | Shared token packing API: `PackItem`, `PackResult`, `pack_items` | `tests/utils/test_tokens.py` |
 
+---
+
 ## What to run by change type
 
 | Change type | Recommended command |
@@ -259,6 +265,8 @@ Focused coverage for the gaps-with-paper alignment:
 | Real Memgraph end-to-end graph build/search | `RUN_MEMGRAPH_MOVIE_EXAMPLE_SMOKE_TESTS=1 pytest tests/integration/memgraph/test_memgraph_movie_smoke.py` |
 | Before normal commit | `pytest -m "not integration"` |
 | Before release or major workflow change | `pytest`, then enabled integration tests for configured providers/services |
+
+---
 
 ## Standard commands
 
@@ -321,6 +329,8 @@ pytest
 ```
 
 Only enable optional flags for services you have configured. Provider checks may incur API cost.
+
+---
 
 ## Provider integration tests
 
@@ -445,6 +455,8 @@ RUN_MEMGRAPH_MOVIE_EXAMPLE_SMOKE_TESTS=1 pytest tests/integration/memgraph/test_
 
 This requires `MEMGRAPH_URL` plus the selected LLM and embedder variables from the scenario matrix. The configured Memgraph instance must include MAGE.
 
+---
+
 ## Environment setup
 
 Install development dependencies. We recommend using `uv`:
@@ -471,6 +483,8 @@ uv run pytest -m "not integration"
 ```
 
 or with `pytest` directly if you installed into an activated virtual environment.
+
+---
 
 ## Notes
 

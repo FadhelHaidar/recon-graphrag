@@ -21,6 +21,8 @@ These indexes power:
 - Semantic search over chunks and entities.
 - Keyword search over entity names.
 
+---
+
 ## When to create indexes
 
 Create indexes once after setting up a new graph database, before running any pipeline:
@@ -30,6 +32,8 @@ store.create_indexes(embedding_dim=1536)
 ```
 
 You do not need to recreate them every time you ingest more text, unless you change the embedding dimension or want to drop and rebuild the graph from scratch.
+
+---
 
 ## Embedding dimensions
 
@@ -86,6 +90,8 @@ store.create_indexes(
 )
 ```
 
+---
+
 ## Verify indexes
 
 Each backend has an internal `IndexManager` with a `verify()` helper that prints the created indexes and node/relationship counts. You can access it through the backend-specific module:
@@ -101,6 +107,8 @@ This is useful during development to confirm that:
 - All required indexes exist.
 - The expected nodes and relationships were created.
 
+---
+
 ## Rebuilding indexes
 
 If you change the embedding dimension, recreate the managed indexes:
@@ -111,11 +119,15 @@ store.create_indexes(embedding_dim=1536)
 
 `create_indexes()` replaces its managed indexes. This does not delete graph data, but queries may briefly run without those indexes while they are recreated.
 
+---
+
 ## Backend-specific `IndexManager`
 
 Both backends still have an internal `IndexManager` (`recon_graphrag.graphdb.neo4j.index_manager` and `recon_graphrag.graphdb.memgraph.index_manager`) that `create_indexes()` delegates to. You do not need to use it directly unless you are extending a backend.
 
+---
+
 ## Next steps
 
-- See the full indexing flow in [Quick Start](quickstart.md).
-- Learn about pipeline parameters in [Pipelines](pipelines.md).
+- See the full indexing flow in [Quick Start](02-quickstart.md).
+- Learn about pipeline parameters in [Pipelines](05-pipelines.md).

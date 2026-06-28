@@ -11,6 +11,8 @@ The LLM extractor uses the schema to:
 - Validate extracted nodes and relationships.
 - Filter out entities that do not match your domain.
 
+---
+
 ## Using `GraphSchema` directly
 
 The most explicit way to define a schema is with the `GraphSchema` class:
@@ -80,6 +82,8 @@ Supported property types:
 
 Use `STRING` for dates, years, or any value that you do not need to compare numerically.
 
+---
+
 ## Using `build_schema()`
 
 For a more compact definition, use the `build_schema()` helper:
@@ -118,6 +122,8 @@ schema = build_schema(
 
 `build_schema()` returns a `GraphSchema` object and is useful when loading schema definitions from JSON or YAML.
 
+---
+
 ## Patterns
 
 `patterns` constrains which relationships are allowed between node labels. Each pattern is a tuple:
@@ -137,6 +143,8 @@ patterns=[
 
 During extraction, relationships that do not match a pattern are dropped. This prevents the graph from accumulating low-quality or off-schema edges.
 
+---
+
 ## GraphSchema helpers
 
 `GraphSchema` provides helper methods for inspecting and validating the schema:
@@ -150,6 +158,8 @@ During extraction, relationships that do not match a pattern are dropped. This p
 | `get_relationship_type(label)` | Return the `RelationshipType` for a label, or `None`. |
 | `is_valid_pattern(source, relationship, target)` | Check whether a triple is allowed by the patterns (or by the relationship labels when no patterns are defined). |
 | `validate()` | Raise `ValueError` for duplicate labels, unknown pattern labels, or invalid patterns. Called automatically on construction. |
+
+---
 
 ## Entity Identity
 
@@ -173,6 +183,8 @@ references debuggable.
 In Neo4j Browser, `<id>` is Neo4j's internal element identity. It is separate
 from Recon's `id` property.
 
+---
+
 ## Best practices
 
 1. **Keep labels concise.** Short, clear labels are easier for the LLM to produce consistently.
@@ -182,8 +194,10 @@ from Recon's `id` property.
 5. **Define patterns for every relationship.** Patterns are the main guard against invalid edges.
 6. **Reuse relationship types.** If multiple node pairs connect the same way, use one relationship type with patterns rather than many relationship types.
 
+---
+
 ## Next steps
 
-- Run the schema through a pipeline in [Quick Start](quickstart.md).
-- Learn about indexing in [Indexing](indexing.md).
-- See a large real-world schema in [Example](example.md).
+- Run the schema through a pipeline in [Quick Start](02-quickstart.md).
+- Learn about indexing in [Indexing](04-indexing.md).
+- See a large real-world schema in [Example](07-example.md).
