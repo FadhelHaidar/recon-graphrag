@@ -6,12 +6,11 @@ on:
     branches:
       - master
 
-permissions:
-  contents: read
-
 jobs:
   tests:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Check out repository
@@ -32,3 +31,20 @@ jobs:
 
       - name: Run mandatory tests
         run: uv run pytest -m "not integration"
+
+  release-please:
+    needs: tests
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Create or update release PR
+        uses: googleapis/release-please-action@v4
+        with:
+          target-branch: master
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
