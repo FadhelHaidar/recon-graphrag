@@ -82,8 +82,24 @@ class LocalSearchRetriever(BaseRetriever):
         alpha: float | None = None,
         synthesize_citation_metadata: bool = False,
         synthesis_metadata_keys: list[str] | None = None,
+        synthesize_response: bool = True,
     ) -> SearchResult:
-        """Run local search: vector search on entities → subgraph traversal → LLM answer."""
+        """Run local search: vector search on entities → subgraph traversal → LLM answer.
+
+        Args:
+            query: User question.
+            top_k: Number of top entities to retrieve.
+            query_vector: Optional precomputed query vector.
+            effective_search_ratio: Over-fetch multiplier before post-filtering.
+            query_params: Optional dict forwarded to the underlying hybrid entity retriever.
+            ranker: Hybrid ranker: "naive" or "linear".
+            alpha: Required for the "linear" ranker.
+            synthesize_citation_metadata: Include citation metadata in LLM context.
+            synthesis_metadata_keys: Keys to include in citation metadata.
+            synthesize_response: If False, skip LLM answer generation and return
+                the retrieved context and citations without a final answer.
+                Useful when an outer agent wants to synthesize the response itself.
+        """
         retriever_result = await self._retriever.search(
             query_text=query,
             query_vector=query_vector,
@@ -99,6 +115,18 @@ class LocalSearchRetriever(BaseRetriever):
             citations=citations if synthesize_citation_metadata else None,
             citation_metadata_keys=synthesis_metadata_keys,
         )
+        if not synthesize_response:
+            return SearchResult(
+                query=query,
+                mode="local",
+                answer="",
+                context=context,
+                citations=citations,
+                metadata={
+                    "synthesize_response": False,
+                    "response_synthesis_skipped": True,
+                },
+            )
         answer = await self._generate_answer(query, context)
         return SearchResult(
             query=query,

@@ -191,6 +191,52 @@ answer synthesis context.
 
 ---
 
+## Agent Context Mode (`synthesize_response`)
+
+All search modes accept `synthesize_response=False` to skip final LLM answer
+synthesis and return the raw retrieved context and citations instead. This is
+useful when an outer agent or orchestration layer wants to consume the context
+directly.
+
+```python
+result = await graph_rag.search(
+    "What evidence is relevant?",
+    mode="local",
+    synthesize_response=False,
+)
+agent_context = result.context
+sources = result.citations
+```
+
+When `synthesize_response=False`:
+
+- `result.answer` is `""` (empty string, not a synthesized answer).
+- `result.context` contains the full retrieved context that would normally be
+  sent to the LLM.
+- `result.citations` are resolved as usual.
+- `result.metadata` includes `"synthesize_response": False` and
+  `"response_synthesis_skipped": True`.
+
+Mode-specific behavior:
+
+| Mode | What still runs | What is skipped |
+| --- | --- | --- |
+| **Local** | Entity retrieval, context formatting, citation resolution | LLM answer generation |
+| **DRIFT** | Entity retrieval, community expansion, context formatting, citation resolution | LLM answer generation |
+| **Global** | Level resolution, report reading, batching, map phase, citation resolution | Final reduce synthesis |
+
+> **Note:** For global search, `synthesize_response=False` skips the final
+> reduce LLM call but still runs map-phase LLM calls for relevance scoring and
+> reference extraction. This is by design — map calls provide the scored
+> partial answers that form the context.
+
+> **Note:** Do not confuse `synthesize_response` with
+> `synthesize_citation_metadata`. The former controls whether the LLM generates
+> a final answer. The latter controls whether citation metadata is included in
+> the LLM prompt context during answer synthesis.
+
+---
+
 ## Citations And Sources
 
 `SearchResult` includes structured citation fields in addition to answer text:

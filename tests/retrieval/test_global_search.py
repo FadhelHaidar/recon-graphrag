@@ -663,3 +663,78 @@ class TestParseMapResponseEdgeCases:
         search = GlobalSearchRetriever(store, llm)
         data = search._parse_map_response(json.dumps({"helpfulness": 50}))
         assert data.get("answer", "") == ""
+
+
+class TestSynthesizeResponse:
+    @pytest.mark.asyncio
+    async def test_synthesize_false_skips_reduce_returns_context(self):
+        reports = _make_reports(3)
+        store = FakeGraphStore(reports)
+        llm = FakeLLM(
+            map_responses=[
+                _make_map_response(helpfulness=80, answer="Part 1."),
+                _make_map_response(helpfulness=60, answer="Part 2."),
+                _make_map_response(helpfulness=0, answer="No info."),
+            ],
+            reduce_response="Final synthesized answer.",
+        )
+        search = GlobalSearchRetriever(store, llm)
+        result = await search.search(
+            "test query", level=0, random_seed=42, synthesize_response=False
+        )
+
+        assert result.mode == "global"
+        assert result.answer == ""
+        assert "Part 1." in result.context
+        assert "Final synthesized" not in result.context
+        assert result.metadata["synthesize_response"] is False
+        assert result.metadata["response_synthesis_skipped"] is True
+        assert result.metadata["reduce_partials_used"] == 0
+        # Map calls still ran
+        assert result.metadata["map_succeeded"] >= 1
+        # Reduce LLM was never called
+        assert llm._map_call_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_synthesize_false_preserves_citations(self):
+        reports = [_make_report_with_json_ref("report:0:0", "person:alice")]
+        store = FakeGraphStore(reports)
+        llm = FakeLLM(
+            map_responses=[
+                json.dumps({
+                    "answer": "Alice is relevant.",
+                    "helpfulness": 80,
+                    "report_ids": ["report:0:0"],
+                    "references": [
+                        {"target_id": "person:alice", "target_type": "entity"}
+                    ],
+                })
+            ],
+            reduce_response="Final answer.",
+        )
+        search = GlobalSearchRetriever(store, llm)
+        result = await search.search(
+            "test query", level=0, random_seed=42, synthesize_response=False
+        )
+
+        assert result.answer == ""
+        assert len(result.citations) == 1
+        assert result.citations[0].chunk_id == "chunk:1"
+        assert result.metadata["synthesize_response"] is False
+
+    @pytest.mark.asyncio
+    async def test_synthesize_false_all_score_zero(self):
+        reports = _make_reports(2)
+        store = FakeGraphStore(reports)
+        llm = FakeLLM(
+            map_responses=[
+                _make_map_response(helpfulness=0),
+                _make_map_response(helpfulness=0),
+            ]
+        )
+        search = GlobalSearchRetriever(store, llm)
+        result = await search.search(
+            "query", level=0, synthesize_response=False
+        )
+        # All zero still returns early with "No relevant" message
+        assert "No relevant" in result.answer

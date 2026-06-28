@@ -198,6 +198,7 @@ class GlobalSearchRetriever(BaseRetriever):
         level: CommunityLevelSelector = None,
         community_level: CommunityLevelSelector = None,
         random_seed: int | None = 42,
+        synthesize_response: bool = True,
     ) -> SearchResult:
         """Run global search over community reports.
 
@@ -205,6 +206,10 @@ class GlobalSearchRetriever(BaseRetriever):
             query: User question.
             level/community_level: Community hierarchy level.
             random_seed: Seed for reproducible report shuffling.
+            synthesize_response: If False, skip the final reduce synthesis and
+                return scored partial answers in context with ``answer=""``.
+                Map LLM calls still run for relevance scoring and reference
+                extraction.
         """
         start = time.monotonic()
         diag = GlobalSearchDiagnostics(random_seed=random_seed)
@@ -280,11 +285,7 @@ class GlobalSearchRetriever(BaseRetriever):
         # 7. Sort by helpfulness DESC
         scored.sort(key=lambda p: (-p.helpfulness, p.batch_id))
 
-        # 8. Reduce phase
-        answer = await self._reduce_phase(query, scored)
-        diag.reduce_partials_used = len(scored)
-
-        # Build context from used reports
+        # Build context from scored reports
         context_parts = []
         for p in scored:
             context_parts.append(
@@ -294,6 +295,25 @@ class GlobalSearchRetriever(BaseRetriever):
 
         # Resolve citations from explicit map references and report-derived refs.
         citations = self._resolve_source_citations(diag, scored, resolved_level)
+
+        # 8. Reduce phase (skip when synthesize_response=False)
+        if not synthesize_response:
+            diag.reduce_partials_used = 0
+            diag.elapsed_ms = int((time.monotonic() - start) * 1000)
+            metadata = _diag_to_dict(diag)
+            metadata["synthesize_response"] = False
+            metadata["response_synthesis_skipped"] = True
+            return SearchResult(
+                query=query,
+                mode="global",
+                answer="",
+                context=context,
+                metadata=metadata,
+                citations=citations,
+            )
+
+        answer = await self._reduce_phase(query, scored)
+        diag.reduce_partials_used = len(scored)
 
         diag.elapsed_ms = int((time.monotonic() - start) * 1000)
 

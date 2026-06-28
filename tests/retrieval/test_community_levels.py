@@ -218,3 +218,42 @@ async def test_drift_search_can_include_citation_metadata_in_prompt():
     assert '"collection": "movies"' in result.context
     assert "row-source" not in result.context
     assert "Citation metadata:" in llm.prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_drift_search_with_synthesize_false_skips_llm():
+    store = FakeGraphStore()
+    llm = FakeLLM()
+    retriever = object.__new__(DriftSearchRetriever)
+    retriever.graph_store = store
+    retriever.llm = llm
+    retriever.graph_name = "entity-graph"
+    retriever.community_level = "coarsest"
+    retriever.answer_prompt = "{query}\n{entity_context}\n{community_context}\n{bridging_context}"
+    retriever._retriever = FakeHybridRetriever()
+
+    result = await retriever.search(
+        "themes",
+        top_k=1,
+        synthesize_response=False,
+    )
+
+    assert result.mode == "drift"
+    assert result.answer == ""
+    assert result.context
+    assert result.citations == [
+        Citation(
+            document_id="doc:1",
+            chunk_id="chunk:1",
+            metadata={
+                "collection": "movies",
+                "record_id": "row-42",
+                "source": "row-source",
+                "document_id": "doc:1",
+                "chunk_id": "chunk:1",
+            },
+        )
+    ]
+    assert llm.prompts == []
+    assert result.metadata["synthesize_response"] is False
+    assert result.metadata["response_synthesis_skipped"] is True

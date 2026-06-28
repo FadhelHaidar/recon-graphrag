@@ -62,6 +62,11 @@ class GraphRAG:
                   (int | "all" | "finest" | "coarsest")
                 - drift: top_k (int), community_top_k (int), community_level
                   (int | "all" | "finest" | "coarsest")
+                - synthesize_response (bool): Applies to all modes. When
+                  False, skip final LLM answer synthesis and return
+                  ``answer=""`` with the retrieved context and citations.
+                  For global search, map LLM calls still run for relevance
+                  scoring. Default is True.
         """
         modes = {
             "local": self.local,

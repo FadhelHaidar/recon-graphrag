@@ -271,6 +271,43 @@ async def test_local_search_can_include_citation_metadata_in_prompt():
     assert '"record_id": "row-42"' in llm.prompts[0]
 
 
+@pytest.mark.asyncio
+async def test_local_search_with_synthesize_false_skips_llm():
+    store = FakeGraphStore()
+    embedder = FakeEmbedder()
+    llm = FakeLLM()
+    retriever = LocalSearchRetriever(store, llm, embedder)
+
+    result = await retriever.search(
+        "Who directed Inception?",
+        top_k=2,
+        synthesize_response=False,
+    )
+
+    assert result.mode == "local"
+    assert result.answer == ""
+    assert "Finding: Alice (Person)" in result.context
+    assert llm.prompts == []
+    assert result.citations == [
+        Citation(
+            document_id="doc:1",
+            chunk_id="chunk:1",
+            document_name="Doc 1",
+            excerpt="Alice directed Inception.",
+            metadata={
+                "collection": "movies",
+                "source": "row-source",
+                "record_id": "row-42",
+                "document_id": "doc:1",
+                "chunk_id": "chunk:1",
+                "document_name": "Doc 1",
+            },
+        )
+    ]
+    assert result.metadata["synthesize_response"] is False
+    assert result.metadata["response_synthesis_skipped"] is True
+
+
 class EmptyResultGraphStore:
     def __init__(self):
         self.calls = []

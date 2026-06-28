@@ -101,6 +101,7 @@ class DriftSearchRetriever(BaseRetriever):
         alpha: float | None = None,
         synthesize_citation_metadata: bool = False,
         synthesis_metadata_keys: list[str] | None = None,
+        synthesize_response: bool = True,
     ) -> SearchResult:
         """Run DRIFT search.
 
@@ -109,6 +110,21 @@ class DriftSearchRetriever(BaseRetriever):
         3. Fetch community summaries
         4. Fetch other entities in those communities (bridging)
         5. Combine all context → LLM answer
+
+        Args:
+            query: User question.
+            top_k: Number of entities to retrieve.
+            community_top_k: Number of communities to expand into.
+            community_level: Which community level to use.
+            query_vector: Optional precomputed query vector.
+            effective_search_ratio: Over-fetch multiplier before post-filtering.
+            query_params: Optional dict forwarded to the underlying hybrid entity retriever.
+            ranker: Hybrid ranker: "naive" or "linear".
+            alpha: Required for the "linear" ranker.
+            synthesize_citation_metadata: Include citation metadata in LLM context.
+            synthesis_metadata_keys: Keys to include in citation metadata.
+            synthesize_response: If False, skip LLM answer generation and return
+                the retrieved context and citations without a final answer.
         """
         retriever_result = await self._retriever.search(
             query_text=query,
@@ -143,13 +159,26 @@ class DriftSearchRetriever(BaseRetriever):
             bridging_entities = self._fetch_community_entities(community_keys)
             bridging_context = self._format_bridging_entities(bridging_entities)
 
-        answer = await self._generate_answer(
-            query, entity_context, community_context, bridging_context
-        )
-
         full_context = f"{entity_context}\n\n{community_context}\n\n{bridging_context}"
         if not synthesize_citation_metadata:
             citations = self._resolve_citations(retriever_result)
+
+        if not synthesize_response:
+            return SearchResult(
+                query=query,
+                mode="drift",
+                answer="",
+                context=full_context,
+                citations=citations,
+                metadata={
+                    "synthesize_response": False,
+                    "response_synthesis_skipped": True,
+                },
+            )
+
+        answer = await self._generate_answer(
+            query, entity_context, community_context, bridging_context
+        )
         return SearchResult(
             query=query,
             mode="drift",
