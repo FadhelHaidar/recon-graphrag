@@ -5,7 +5,7 @@ from recon_graphrag import create_embedder, create_llm
 from tests.integration.support import require_integration_env
 
 
-RUN_FLAG = "RUN_AZURE_OPENAI_INTEGRATION_TESTS"
+RUN_FLAG = "RUN_PROVIDER_INTEGRATION_TESTS"
 REQUIRED_ENV = [
     "AZURE_OPENAI_ENDPOINT",
     "AZURE_OPENAI_API_KEY",
@@ -29,7 +29,7 @@ def _azure_env_or_skip():
 
 
 @pytest.mark.integration
-@pytest.mark.asyncio
+@pytest.mark.provider
 async def test_azure_openai_llm_env_endpoint():
     env = _azure_env_or_skip()
     llm = create_llm(
@@ -51,7 +51,7 @@ async def test_azure_openai_llm_env_endpoint():
 
 
 @pytest.mark.integration
-@pytest.mark.asyncio
+@pytest.mark.provider
 async def test_azure_openai_embedding_env_endpoint():
     env = _azure_env_or_skip()
     embedder = create_embedder(
@@ -61,7 +61,12 @@ async def test_azure_openai_embedding_env_endpoint():
         base_url=env["base_url"],
     )
 
-    embedding = await embedder.async_embed_query("Azure OpenAI endpoint check")
+    try:
+        embedding = await embedder.async_embed_query("Azure OpenAI endpoint check")
+    finally:
+        close = getattr(embedder, "aclose", None)
+        if callable(close):
+            await close()
 
     assert embedding
     assert all(math.isfinite(value) for value in embedding)

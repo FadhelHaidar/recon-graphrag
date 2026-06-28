@@ -59,6 +59,25 @@ class FakeReportLLM:
         )
 
 
+class FakeSummaryLLM:
+    def __init__(self, response: str = "Alice and Acme are key entities in this community."):
+        self.calls = 0
+        self._response = response
+
+    async def ainvoke(self, prompt):
+        self.calls += 1
+        return LLMResponse(content=self._response)
+
+
+class FakeSuccessGraphStore(FakeReportGraphStore):
+    def __init__(self):
+        super().__init__()
+        self.summaries: list[tuple] = []
+
+    def store_community_summary(self, community_id, level, summary, graph_name):
+        self.summaries.append((graph_name, community_id, level, summary))
+
+
 @pytest.mark.asyncio
 async def test_report_generation_failure_is_marked_not_stored():
     store = FakeReportGraphStore()
@@ -73,3 +92,20 @@ async def test_report_generation_failure_is_marked_not_stored():
     assert store.stored_reports == []
     assert len(store.failed_reports) == 1
     assert store.failed_reports[0][:3] == ("entity-graph", "community:1", 0)
+
+
+@pytest.mark.asyncio
+async def test_plain_text_summary_success_is_stored():
+    store = FakeSuccessGraphStore()
+    llm = FakeSummaryLLM()
+    summarizer = CommunitySummarizer(store, llm=llm, use_reports=False)
+
+    results, stats = await summarizer.summarize_all(level=0)
+
+    assert stats.succeeded == 1
+    assert stats.failed == 0
+    assert len(results) == 1
+    assert results[0]["summary"] == "Alice and Acme are key entities in this community."
+    assert len(store.summaries) == 1
+    assert store.summaries[0][:3] == ("entity-graph", "community:1", 0)
+    assert llm.calls == 1

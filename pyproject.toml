@@ -45,6 +45,10 @@ pythonpath = ["."]
 markers = [
     "integration: tests that call external services and require explicit opt-in",
     "characterization: tests that document current behavior, including known defects",
+    "provider: real LLM/embedder endpoint checks",
+    "database: real graph database checks without real AI",
+    "workflow: real graph database workflow using deterministic fake AI",
+    "e2e: full real LLM/embedder/database workflow",
 ]
 
 [dependency-groups]

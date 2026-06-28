@@ -246,7 +246,7 @@ async def test_neo4j_resolver_fuzzy_produces_review_candidate():
     )
     # "john smith" vs "jon smith" fuzzy ratio is typically ~91
     assert result["merged_groups"] == 0
-    assert len(result["review_groups"]) >= 1
+    assert len(result["review_groups"]) == 1
     assert result["review_groups"][0]["decision"] == "review"
 
 

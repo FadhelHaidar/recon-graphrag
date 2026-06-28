@@ -121,6 +121,23 @@ def test_resolve_community_level_rejects_negative_level():
         resolve_community_level(FakeGraphStore(), "entity-graph", -1)
 
 
+class EmptyGraphStore:
+    def execute_query(self, query, parameters=None):
+        if "RETURN max(c.level) AS level" in query:
+            return [{"level": None}]
+        return []
+
+
+def test_resolve_finest_on_empty_graph_returns_zero():
+    store = EmptyGraphStore()
+    assert resolve_community_level(store, "entity-graph", "finest") == 0
+
+
+def test_resolve_coarsest_on_empty_graph_returns_none():
+    store = EmptyGraphStore()
+    assert resolve_community_level(store, "entity-graph", "coarsest") is None
+
+
 @pytest.mark.asyncio
 async def test_global_search_accepts_coarsest_alias():
     store = FakeGraphStore()

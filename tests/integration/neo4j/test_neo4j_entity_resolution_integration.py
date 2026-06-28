@@ -17,8 +17,8 @@ from tests.integration.support import (
 )
 
 
-RUN_FLAG = "RUN_NEO4J_ENTITY_RESOLUTION_INTEGRATION_TESTS"
-RUN_AI_FLAG = "RUN_NEO4J_ENTITY_RESOLUTION_AI_TESTS"
+RUN_FLAG = "RUN_DATABASE_INTEGRATION_TESTS"
+RUN_AI_FLAG = "RUN_ENTITY_RESOLUTION_AI_TESTS"
 GRAPH_NAME = "neo4j-entity-resolution-integration"
 REQUIRED_ENV = ["NEO4J_URL", "NEO4J_USERNAME", "NEO4J_PASSWORD"]
 
@@ -51,11 +51,13 @@ def neo4j_store():
 
 
 @pytest.mark.integration
+@pytest.mark.database
 async def test_neo4j_normalized_entity_resolution_merges_real_nodes(neo4j_store):
     await assert_normalized_entity_resolution(neo4j_store, GRAPH_NAME)
 
 
 @pytest.mark.integration
+@pytest.mark.database
 async def test_neo4j_hybrid_alias_dry_run_returns_candidate_without_merging(
     neo4j_store,
 ):
@@ -63,6 +65,7 @@ async def test_neo4j_hybrid_alias_dry_run_returns_candidate_without_merging(
 
 
 @pytest.mark.integration
+@pytest.mark.database
 async def test_neo4j_hybrid_uses_real_embedder_and_llm_for_review(neo4j_store):
     require_integration_env(
         RUN_AI_FLAG,
@@ -82,6 +85,7 @@ async def test_neo4j_hybrid_uses_real_embedder_and_llm_for_review(neo4j_store):
             embedder,
         )
     finally:
-        close = getattr(llm, "aclose", None)
-        if callable(close):
-            await close()
+        for resource in (llm, embedder):
+            close = getattr(resource, "aclose", None)
+            if callable(close):
+                await close()

@@ -55,7 +55,7 @@ def test_claim_prompt_includes_entity_ids():
     assert "Alice runs Acme Corp." in prompt
     assert "subject_entity_id" in prompt
     assert "claim_type" in prompt
-    assert "valid JSON only" in prompt.lower() or "Return valid JSON only" in prompt
+    assert "valid json only" in prompt.lower()
 
 
 def test_claim_prompt_lists_all_entity_ids():

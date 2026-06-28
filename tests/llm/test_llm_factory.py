@@ -88,3 +88,8 @@ def test_openai_chat_response_with_provider_error_has_clear_error():
 
     with pytest.raises(RuntimeError, match="provider returned error"):
         _openai_chat_response_to_llm_response(response)
+
+
+def test_create_llm_unknown_provider_raises():
+    with pytest.raises(ValueError, match="Unknown LLM provider"):
+        create_llm("unknown_provider")

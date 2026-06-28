@@ -5,7 +5,7 @@ from recon_graphrag import create_embedder, create_llm
 from tests.integration.support import require_integration_env
 
 
-RUN_FLAG = "RUN_OPENROUTER_INTEGRATION_TESTS"
+RUN_FLAG = "RUN_PROVIDER_INTEGRATION_TESTS"
 REQUIRED_ENV = [
     "OPENROUTER_API_KEY",
     "OPENROUTER_LLM_MODEL",
@@ -26,7 +26,7 @@ def _openrouter_env_or_skip():
 
 
 @pytest.mark.integration
-@pytest.mark.asyncio
+@pytest.mark.provider
 async def test_openrouter_llm_env_endpoint():
     env = _openrouter_env_or_skip()
     llm = create_llm(
@@ -37,17 +37,17 @@ async def test_openrouter_llm_env_endpoint():
 
     try:
         response = await llm.ainvoke(
-            "Reply with exactly: openrouter ok",
+            "Reply with one short sentence confirming the endpoint works.",
             max_tokens=128,
         )
     finally:
         await llm.aclose()
 
-    assert response.content.strip().lower() == "openrouter ok"
+    assert response.content.strip()
 
 
 @pytest.mark.integration
-@pytest.mark.asyncio
+@pytest.mark.provider
 async def test_openrouter_embedding_env_endpoint():
     env = _openrouter_env_or_skip()
     embedder = create_embedder(
@@ -56,7 +56,12 @@ async def test_openrouter_embedding_env_endpoint():
         api_key=env["api_key"],
     )
 
-    embedding = await embedder.async_embed_query("OpenRouter embedding check")
+    try:
+        embedding = await embedder.async_embed_query("OpenRouter embedding check")
+    finally:
+        close = getattr(embedder, "aclose", None)
+        if callable(close):
+            await close()
 
     assert embedding
     assert all(math.isfinite(value) for value in embedding)

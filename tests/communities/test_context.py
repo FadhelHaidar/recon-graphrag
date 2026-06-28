@@ -233,18 +233,19 @@ class TestPackCommunityContext:
         ctx = _make_large_context(5)
         counter = ApproximateTokenCounter(ratio=4.0)
 
-        # Budget fits first 2 edges
+        # Render full context, then measure the first edge block precisely
         full_text = render_community_context(ctx)
-        # Estimate tokens for first 2 edges
         lines = full_text.split("\n")
-        first_two = "\n".join(lines[:6])  # approx first 2 edge blocks
-        budget = counter.count(first_two)
+        # Each edge produces 3 lines (source, target, relationship)
+        first_edge_text = "\n".join(lines[:3])
+        budget = counter.count(first_edge_text)
 
         packed = pack_community_context(ctx, max_tokens=budget, counter=counter)
 
         # First edge (highest degree) should be included
         assert "Entity0" in packed.text
         assert "RELATES_TO" in packed.text
+        assert packed.included_edges == 1
 
     def test_zero_budget_returns_empty(self):
         ctx = _make_large_context(3)

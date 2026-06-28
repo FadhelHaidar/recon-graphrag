@@ -347,3 +347,88 @@ class TestVersionConstants:
 
     def test_prompt_version_string(self):
         assert isinstance(ARTIFACT_PROMPT_VERSION, str)
+
+
+class TestCitationExcerpt:
+    def test_short_text_returned_unchanged(self):
+        assert citation_excerpt("short", max_chars=200) == "short"
+
+    def test_long_text_truncated_with_ellipsis(self):
+        result = citation_excerpt("a" * 300, max_chars=200)
+        assert result == "a" * 200 + "..."
+
+    def test_zero_max_chars_returns_ellipsis_only(self):
+        result = citation_excerpt("any text", max_chars=0)
+        assert result == "..."
+
+    def test_exact_boundary_text_returned_unchanged(self):
+        text = "x" * 200
+        assert citation_excerpt(text, max_chars=200) == text
+
+
+class TestReportToText:
+    def test_rating_without_explanation(self):
+        report = CommunityReport(
+            id="r1",
+            community_id="c1",
+            level=0,
+            title="Test",
+            summary="Summary.",
+            rating=7.5,
+            rating_explanation=None,
+            findings=[],
+        )
+        text = report_to_text(report)
+        assert "Rating: 7.5" in text
+        assert text.count("\n") >= 2
+
+    def test_rating_with_explanation(self):
+        report = CommunityReport(
+            id="r1",
+            community_id="c1",
+            level=0,
+            title="Test",
+            summary="Summary.",
+            rating=8.0,
+            rating_explanation="High impact.",
+            findings=[],
+        )
+        text = report_to_text(report)
+        assert "Rating: 8.0" in text
+        assert "High impact." in text
+
+    def test_findings_sorted_by_rank_descending(self):
+        findings = [
+            CommunityFinding(id="f1", description="low", rank=1.0),
+            CommunityFinding(id="f2", description="high", rank=9.0),
+        ]
+        report = CommunityReport(
+            id="r1",
+            community_id="c1",
+            level=0,
+            title="T",
+            summary="S",
+            findings=findings,
+        )
+        text = report_to_text(report)
+        lines = [line for line in text.split("\n") if line.startswith("- ")]
+        assert lines[0] == "- high"
+        assert lines[1] == "- low"
+
+
+class TestFrozenMutation:
+    def test_citation_is_frozen(self):
+        c = Citation(document_id="d1", chunk_id="c1")
+        try:
+            c.document_id = "d2"
+            assert False, "Should have raised"
+        except AttributeError:
+            pass
+
+    def test_source_reference_is_frozen(self):
+        ref = SourceReference(document_id="d1", chunk_id="c1")
+        try:
+            ref.document_id = "d2"
+            assert False, "Should have raised"
+        except AttributeError:
+            pass

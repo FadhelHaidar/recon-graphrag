@@ -166,6 +166,9 @@ async def test_build_from_text_orchestration(
     assert "validation" in result
     assert result["extraction"]["chunks"] > 0
     fake_writer.write_graph_document.assert_called_once()
+    written_doc = fake_writer.write_graph_document.call_args[0][0]
+    assert len(written_doc.entities) > 0
+    assert len(written_doc.relationships) > 0
 
 
 @pytest.mark.asyncio

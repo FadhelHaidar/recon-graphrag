@@ -13,7 +13,7 @@ from tests.integration.database_scenarios import (
 from tests.integration.support import require_integration_env
 
 
-RUN_FLAG = "RUN_NEO4J_INTEGRATION_TESTS"
+RUN_FLAG = "RUN_DATABASE_INTEGRATION_TESTS"
 GRAPH_NAME = "neo4j-store-smoke"
 REQUIRED_ENV = ["NEO4J_URL", "NEO4J_USERNAME", "NEO4J_PASSWORD"]
 
@@ -38,10 +38,12 @@ def neo4j_store():
 
 
 @pytest.mark.integration
+@pytest.mark.database
 def test_neo4j_writes_graph_document_and_reports_counts(neo4j_store):
     assert_graph_document_write(neo4j_store, GRAPH_NAME)
 
 
 @pytest.mark.integration
+@pytest.mark.database
 def test_neo4j_cross_document_rerun_is_idempotent(neo4j_store):
     assert_cross_document_rerun_idempotent(neo4j_store, GRAPH_NAME)

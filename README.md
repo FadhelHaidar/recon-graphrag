@@ -10,7 +10,7 @@ Like Microsoft GraphRAG, Recon-GraphRAG uses **community detection with multi-le
 
 Recon-GraphRAG is a Python library for building knowledge graphs from unstructured text and querying them with retrieval-augmented generation. It extracts entities and relationships with an LLM, resolves duplicates, detects hierarchical communities, and supports semantic search over entities, chunks, and community summaries.
 
-Learn more about the two-stage pipeline in [docs/pipelines.md](docs/pipelines.md).
+Learn more about the two-stage pipeline in [docs/05-pipelines.md](docs/05-pipelines.md).
 
 ## Requirements
 
@@ -19,7 +19,7 @@ Learn more about the two-stage pipeline in [docs/pipelines.md](docs/pipelines.md
   - **Neo4j** with **APOC** for merge helpers and **GDS** for Leiden community detection
   - **Memgraph** with **MAGE** for Leiden community detection
 
-See [docs/installation.md](docs/installation.md) for detailed setup instructions. The included Docker Compose file configures both databases.
+See [docs/01-installation.md](docs/01-installation.md) for detailed setup instructions. The included Docker Compose file configures both databases.
 
 ### Backend requirements
 
@@ -59,7 +59,7 @@ uv add git+https://github.com/FadhelHaidar/Recon-GraphRAG.git@v0.4.0
 uv sync
 ```
 
-See [docs/installation.md](docs/installation.md) for more install options (`pip`, editable install, clone-without-install, extras, version pinning, troubleshooting).
+See [docs/01-installation.md](docs/01-installation.md) for more install options (`pip`, editable install, clone-without-install, extras, version pinning, troubleshooting).
 
 ## Quick start
 
@@ -136,22 +136,22 @@ for citation in result.citations:
     print(citation.metadata)  # arbitrary source metadata, e.g. record_id/table/page
 ```
 
-For a step-by-step walkthrough, see [docs/quickstart.md](docs/quickstart.md).
+For a step-by-step walkthrough, see [docs/02-quickstart.md](docs/02-quickstart.md).
 
 ## Documentation
 
 | Document | Description |
 | --- | --- |
-| [docs/installation.md](docs/installation.md) | Full installation guide, Docker setup, extras, and troubleshooting |
-| [docs/quickstart.md](docs/quickstart.md) | Step-by-step quick start |
-| [docs/pipelines.md](docs/pipelines.md) | `GraphBuilderPipeline` and `CommunityPipeline` architecture |
-| [docs/workflows.md](docs/workflows.md) | Composable building blocks below the high-level pipelines |
-| [docs/schema.md](docs/schema.md) | Defining schemas with `GraphSchema` and `build_schema()` |
-| [docs/indexing.md](docs/indexing.md) | Creating and managing Neo4j and Memgraph indexes |
-| [docs/providers.md](docs/providers.md) | LLM and embedder providers |
-| [docs/search.md](docs/search.md) | Local, global, and DRIFT search modes, citations, and source metadata |
-| [docs/example.md](docs/example.md) | Movie industry example walkthrough |
-| [docs/testing.md](docs/testing.md) | Running tests and integration test flags |
+| [docs/installation.md](docs/01-installation.md) | Full installation guide, Docker setup, extras, and troubleshooting |
+| [docs/quickstart.md](docs/02-quickstart.md) | Step-by-step quick start |
+| [docs/schema.md](docs/03-schema.md) | Defining schemas with `GraphSchema` and `build_schema()` |
+| [docs/indexing.md](docs/04-indexing.md) | Creating and managing Neo4j and Memgraph indexes |
+| [docs/pipelines.md](docs/05-pipelines.md) | `GraphBuilderPipeline` and `CommunityPipeline` architecture |
+| [docs/search.md](docs/06-search.md) | Local, global, and DRIFT search modes, citations, and source metadata |
+| [docs/example.md](docs/07-example.md) | Movie industry example walkthrough |
+| [docs/providers.md](docs/08-providers.md) | LLM and embedder providers |
+| [docs/workflows.md](docs/09-workflows.md) | Composable building blocks below the high-level pipelines |
+| [docs/testing.md](docs/10-testing.md) | Running tests and integration test flags |
 
 ## Example
 
@@ -166,7 +166,7 @@ python search.py --backend neo4j
 python search.py --backend memgraph
 ```
 
-See [docs/example.md](docs/example.md) for a full walkthrough.
+See [docs/07-example.md](docs/07-example.md) for a full walkthrough.
 
 ## Contributing
 
