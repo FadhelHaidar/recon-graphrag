@@ -32,9 +32,12 @@ class GraphRAG:
         token_counter: TokenCounter | None = None,
         map_budget_tokens: int = 12000,
         reduce_budget_tokens: int = 12000,
+        use_mixed_context: bool = False,
     ):
         self.local = LocalSearchRetriever(
-            graph_store, llm, embedder, graph_name=graph_name
+            graph_store, llm, embedder,
+            graph_name=graph_name,
+            use_mixed_context=use_mixed_context,
         )
         self.global_ = GlobalSearchRetriever(
             graph_store,

@@ -20,7 +20,9 @@ from recon_graphrag.models.artifacts import Citation
 from recon_graphrag.models.types import SearchResult
 from recon_graphrag.retrieval.base import BaseRetriever
 from recon_graphrag.retrieval.citations import resolve_chunk_citations
+from recon_graphrag.retrieval.community_levels import CommunityLevelSelector
 from recon_graphrag.retrieval.hybrid import HybridEntityRetriever, HybridRanker
+from recon_graphrag.retrieval.mixed_context import MixedContextBuilder
 
 
 DEFAULT_ANSWER_PROMPT = """Based on the findings below, answer the query.
@@ -50,6 +52,7 @@ class LocalSearchRetriever(BaseRetriever):
         vector_index_name: str = "entity-embeddings",
         fulltext_index_name: str = "entity-names",
         graph_name: str = "entity-graph",
+        use_mixed_context: bool = False,
     ):
         self.graph_store = graph_store
         self.llm = llm
@@ -59,7 +62,9 @@ class LocalSearchRetriever(BaseRetriever):
         self.vector_index_name = vector_index_name
         self.fulltext_index_name = fulltext_index_name
         self.graph_name = graph_name
+        self.use_mixed_context = use_mixed_context
         self._retriever = self._build_retriever()
+        self._mixed_context_builder: MixedContextBuilder | None = None
 
     def _build_retriever(self) -> HybridEntityRetriever:
         return HybridEntityRetriever(
@@ -83,6 +88,8 @@ class LocalSearchRetriever(BaseRetriever):
         synthesize_citation_metadata: bool = False,
         synthesis_metadata_keys: list[str] | None = None,
         synthesize_response: bool = True,
+        community_level: CommunityLevelSelector = "coarsest",
+        token_budget: int = 12000,
     ) -> SearchResult:
         """Run local search: vector search on entities → subgraph traversal → LLM answer.
 
@@ -99,6 +106,9 @@ class LocalSearchRetriever(BaseRetriever):
             synthesize_response: If False, skip LLM answer generation and return
                 the retrieved context and citations without a final answer.
                 Useful when an outer agent wants to synthesize the response itself.
+            community_level: Community level for mixed context reports.
+            token_budget: Total token budget for mixed context (only used
+                when use_mixed_context=True).
         """
         retriever_result = await self._retriever.search(
             query_text=query,
@@ -109,6 +119,16 @@ class LocalSearchRetriever(BaseRetriever):
             ranker=ranker,
             alpha=alpha,
         )
+
+        if self.use_mixed_context:
+            return await self._search_mixed(
+                query=query,
+                retriever_result=retriever_result,
+                synthesize_response=synthesize_response,
+                community_level=community_level,
+                token_budget=token_budget,
+            )
+
         citations = self._resolve_citations(retriever_result)
         context = self._format_context(
             retriever_result,
@@ -134,6 +154,69 @@ class LocalSearchRetriever(BaseRetriever):
             answer=answer,
             context=context,
             citations=citations,
+        )
+
+    async def _search_mixed(
+        self,
+        query: str,
+        retriever_result,
+        synthesize_response: bool,
+        community_level: CommunityLevelSelector,
+        token_budget: int,
+    ) -> SearchResult:
+        """Run local search with mixed-context builder."""
+        if self._mixed_context_builder is None:
+            self._mixed_context_builder = MixedContextBuilder(
+                graph_store=self.graph_store,
+                graph_name=self.graph_name,
+            )
+
+        entity_matches = []
+        entity_context_rows = []
+        for item in retriever_result.items:
+            content = item.content
+            if not isinstance(content, dict):
+                continue
+            entity_context_rows.append(content)
+            score = content.get("score", 0.0)
+            title = content.get("title", "")
+            entity_matches.append({"id": title, "score": score})
+
+        mixed = self._mixed_context_builder.build_context(
+            entity_matches=entity_matches,
+            entity_context_rows=entity_context_rows,
+            token_budget=token_budget,
+            community_level=community_level,
+        )
+
+        if not synthesize_response:
+            return SearchResult(
+                query=query,
+                mode="local",
+                answer="",
+                context=mixed.context,
+                citations=mixed.citations,
+                metadata={
+                    "synthesize_response": False,
+                    "response_synthesis_skipped": True,
+                    "mixed_context": True,
+                    "used_tokens": mixed.used_tokens,
+                    "max_tokens": mixed.max_tokens,
+                },
+            )
+
+        answer = await self._generate_answer(query, mixed.context)
+        return SearchResult(
+            query=query,
+            mode="local",
+            answer=answer,
+            context=mixed.context,
+            citations=mixed.citations,
+            metadata={
+                "mixed_context": True,
+                "used_tokens": mixed.used_tokens,
+                "max_tokens": mixed.max_tokens,
+            },
         )
 
     def _format_context(
