@@ -57,7 +57,7 @@ def test_index_manager_create_indexes_uses_graph_store_methods():
 
     manager.create_indexes()
 
-    assert len(store.vector_indexes) == 2
+    assert len(store.vector_indexes) == 3
     assert store.vector_indexes[0]["dimensions"] == 42
     assert store.fulltext_indexes == [
         {

@@ -281,6 +281,42 @@ class GraphStore(Protocol):
         ...
 
     # ------------------------------------------------------------------
+    # Community report embeddings
+    # ------------------------------------------------------------------
+    def get_unembedded_community_reports(
+        self,
+        graph_name: str,
+        limit: int = 500,
+    ) -> list[dict]:
+        """Get community reports without embeddings.
+
+        Returns rows with keys: id, level, report_text, summary, title.
+        """
+        ...
+
+    def upsert_community_report_vectors(
+        self,
+        node_ids: list[str],
+        vectors: list[list[float]],
+    ) -> None:
+        """Batch upsert vector embeddings onto community report nodes."""
+        ...
+
+    def vector_search_community_reports(
+        self,
+        query_vector: list[float],
+        graph_name: str,
+        top_k: int = 3,
+        level: int | None = None,
+    ) -> list[dict]:
+        """Vector search over community report embeddings.
+
+        Returns rows with keys: id, level, summary, report_text,
+        report_json, rating, score.
+        """
+        ...
+
+    # ------------------------------------------------------------------
     # Stats / validation
     # ------------------------------------------------------------------
     def get_entity_count(self) -> int:

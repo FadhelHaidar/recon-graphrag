@@ -146,7 +146,7 @@ class ArtifactVersion:
 
 @dataclass
 class CommunityReport:
-    """Structured community report (Phase 5 scope)."""
+    """Structured community report."""
 
     id: str
     community_id: str
@@ -157,6 +157,8 @@ class CommunityReport:
     rating: float | None = None
     rating_explanation: str | None = None
     version: ArtifactVersion = field(default_factory=ArtifactVersion)
+    context_tokens_used: int | None = None
+    context_truncated: bool = False
 
 
 

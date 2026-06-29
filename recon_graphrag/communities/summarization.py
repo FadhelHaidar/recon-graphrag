@@ -231,6 +231,8 @@ class CommunitySummarizer:
         valid_ids = set(reference_ids)
 
         # Render context text (packed if budget is set)
+        context_tokens_used: int | None = None
+        context_truncated = False
         if self.max_context_tokens is not None:
             packed = pack_community_context(
                 context,
@@ -238,6 +240,8 @@ class CommunitySummarizer:
                 counter=self.token_counter,
             )
             context_text = packed.text
+            context_tokens_used = packed.used_tokens
+            context_truncated = packed.truncated
             # Use allowlist from packed context so findings can only
             # reference items the LLM actually saw.
             reference_ids = build_packed_reference_ids(context, packed)
@@ -257,12 +261,15 @@ class CommunitySummarizer:
         # First attempt
         response: LLMResponse = await self.llm.ainvoke(prompt)
         try:
-            return self._report_parser.parse(
+            report = self._report_parser.parse(
                 response.content,
                 community_id=community_id,
                 level=level,
                 valid_ids=valid_ids,
             )
+            report.context_tokens_used = context_tokens_used
+            report.context_truncated = context_truncated
+            return report
         except ReportValidationError as e:
             # One repair attempt
             print(f"  Report validation failed for {community_id}, attempting repair...")
@@ -274,12 +281,15 @@ class CommunitySummarizer:
             )
             repair_response = await self.llm.ainvoke(repair_prompt)
             try:
-                return self._report_parser.parse(
+                report = self._report_parser.parse(
                     repair_response.content,
                     community_id=community_id,
                     level=level,
                     valid_ids=valid_ids,
                 )
+                report.context_tokens_used = context_tokens_used
+                report.context_truncated = context_truncated
+                return report
             except ReportValidationError as e2:
                 print(f"  Repair failed for {community_id}: {e2}")
                 raise e2

@@ -63,6 +63,12 @@ class IndexManager:
             label=self.config.entity_label,
             node_properties=["name"],
         )
+        self.graph_store.create_vector_index(
+            name=self.config.community_vector_index,
+            label=self.config.community_label,
+            embedding_property=self.config.community_report_embedding_property,
+            dimensions=self.embedding_dim,
+        )
         self._create_constraints()
 
     def _drop_indexes(self):
@@ -71,6 +77,7 @@ class IndexManager:
             self.config.chunk_vector_index,
             self.config.entity_vector_index,
             self.config.entity_fulltext_index,
+            self.config.community_vector_index,
         ]:
             try:
                 self.graph_store.execute_query(

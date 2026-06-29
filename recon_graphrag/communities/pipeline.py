@@ -11,6 +11,7 @@ from typing import Optional
 
 from recon_graphrag.communities.reports import ReportRubric
 from recon_graphrag.communities.summarization import CommunitySummarizer
+from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.utils.tokens import TokenCounter
@@ -38,6 +39,8 @@ class CommunityPipeline:
         skip_existing: bool = False,
         max_context_tokens: int = 8000,
         token_counter: TokenCounter | None = None,
+        embedder: BaseEmbedder | None = None,
+        embed_community_reports: bool = True,
     ):
         """Initialize the community pipeline.
 
@@ -64,6 +67,11 @@ class CommunityPipeline:
                 this budget. When None, all context is included.
             token_counter: Token counter for context packing. Defaults to
                 ApproximateTokenCounter when max_context_tokens is set.
+            embedder: Embedder for community report vector embeddings.
+                When provided and embed_community_reports=True, generates
+                report embeddings after summarization.
+            embed_community_reports: Whether to embed community reports
+                after summarization. Requires embedder to be set.
         """
         self.graph_store = graph_store
         self.llm = llm
@@ -82,6 +90,8 @@ class CommunityPipeline:
         self.skip_existing = skip_existing
         self.max_context_tokens = max_context_tokens
         self.token_counter = token_counter
+        self.embedder = embedder
+        self.embed_community_reports = embed_community_reports
 
     async def build(self, level: Optional[int] = None) -> dict:
         """Run steps 4-5: detect communities and summarize.
@@ -153,9 +163,26 @@ class CommunityPipeline:
                 "elapsed_seconds": round(stats.elapsed_seconds, 2),
             })
 
+        # Step 6: Embed community reports
+        embedded_count = 0
+        if self.embedder and self.embed_community_reports:
+            print("Step 6: Embedding community reports...")
+            from recon_graphrag.embeddings.community_reports import (
+                CommunityReportEmbedder,
+            )
+
+            report_embedder = CommunityReportEmbedder(
+                graph_store=self.graph_store,
+                embedder=self.embedder,
+                graph_name=self.graph_name,
+            )
+            embedded_count = await report_embedder.embed_reports()
+            print(f"  Embedded {embedded_count} community reports")
+
         return {
             "communities": len(community_stats),
             "summaries": total_summaries,
             "levels": levels,
             "level_stats": level_stats,
+            "embedded_reports": embedded_count,
         }

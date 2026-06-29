@@ -159,8 +159,14 @@ class BaseGraphStore:
             c.report_error = NULL,
             c.schema_version = $schema_version,
             c.prompt_version = $prompt_version,
-            c.input_fingerprint = $input_fingerprint,
+            c.context_tokens_used = $context_tokens_used,
+            c.context_truncated = $context_truncated,
             c.updated = timestamp()
+        WITH c
+        WHERE c.input_fingerprint <> $input_fingerprint
+           OR c.input_fingerprint IS NULL
+        SET c.input_fingerprint = $input_fingerprint,
+            c.report_embedding = NULL
         """
         self.execute_query(
             query,
@@ -176,6 +182,8 @@ class BaseGraphStore:
                 "schema_version": report.version.schema_version,
                 "prompt_version": report.version.prompt_version,
                 "input_fingerprint": report.version.input_fingerprint,
+                "context_tokens_used": report.context_tokens_used,
+                "context_truncated": report.context_truncated,
             },
         )
 
@@ -256,3 +264,94 @@ class BaseGraphStore:
             query,
             {"graph_name": graph_name, "chunk_ids": chunk_ids},
         )
+
+    def get_unembedded_community_reports(
+        self,
+        graph_name: str,
+        limit: int = 500,
+    ) -> list[dict]:
+        query = """
+        MATCH (c:Community {graph_name: $graph_name})
+        WHERE c.report_embedding IS NULL
+          AND coalesce(c.report_text, c.summary, '') <> ''
+        RETURN c.id AS id,
+               c.level AS level,
+               coalesce(c.report_text, c.summary) AS report_text,
+               coalesce(c.report_text, c.summary) AS summary,
+               coalesce(c.title, '') AS title
+        LIMIT $limit
+        """
+        return self.execute_query(
+            query, {"graph_name": graph_name, "limit": limit}
+        )
+
+    def upsert_community_report_vectors(
+        self,
+        node_ids: list[str],
+        vectors: list[list[float]],
+    ) -> None:
+        if not node_ids:
+            return
+        query = """
+        UNWIND $pairs AS pair
+        MATCH (c:Community)
+        WHERE c.id = pair.node_id
+        SET c.report_embedding = pair.vector
+        """
+        pairs = [
+            {"node_id": nid, "vector": vec}
+            for nid, vec in zip(node_ids, vectors)
+        ]
+        self.execute_query(query, {"pairs": pairs})
+
+    def vector_search_community_reports(
+        self,
+        query_vector: list[float],
+        graph_name: str,
+        top_k: int = 3,
+        level: int | None = None,
+    ) -> list[dict]:
+        if level is not None:
+            query = """
+            CALL db.index.vector.queryNodes(
+                $index_name, $top_k, $query_vector
+            ) YIELD node AS c, score
+            WHERE c.graph_name = $graph_name AND c.level = $level
+            RETURN c.id AS id,
+                   c.level AS level,
+                   coalesce(c.report_text, c.summary) AS summary,
+                   coalesce(c.report_text, '') AS report_text,
+                   coalesce(c.report_json, '') AS report_json,
+                   c.rating AS rating,
+                   score
+            ORDER BY score DESC
+            """
+            params = {
+                "index_name": "community-report-embeddings",
+                "top_k": top_k,
+                "query_vector": query_vector,
+                "graph_name": graph_name,
+                "level": level,
+            }
+        else:
+            query = """
+            CALL db.index.vector.queryNodes(
+                $index_name, $top_k, $query_vector
+            ) YIELD node AS c, score
+            WHERE c.graph_name = $graph_name
+            RETURN c.id AS id,
+                   c.level AS level,
+                   coalesce(c.report_text, c.summary) AS summary,
+                   coalesce(c.report_text, '') AS report_text,
+                   coalesce(c.report_json, '') AS report_json,
+                   c.rating AS rating,
+                   score
+            ORDER BY score DESC
+            """
+            params = {
+                "index_name": "community-report-embeddings",
+                "top_k": top_k,
+                "query_vector": query_vector,
+                "graph_name": graph_name,
+            }
+        return self.execute_query(query, params)
