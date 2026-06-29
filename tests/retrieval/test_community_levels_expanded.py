@@ -35,14 +35,16 @@ def _communities(levels: list[int], graph_name: str = "entity-graph") -> list[di
     ]
 
 
-def test_finest_resolves_to_zero():
+def test_finest_resolves_to_max_stored():
+    """After reversal: finest = highest level number."""
     store = FakeGraphStore(_communities([0, 1, 2]))
-    assert resolve_community_level(store, "entity-graph", "finest") == 0
+    assert resolve_community_level(store, "entity-graph", "finest") == 2
 
 
-def test_coarsest_resolves_to_max_stored():
+def test_coarsest_resolves_to_zero():
+    """After reversal: coarsest = level 0."""
     store = FakeGraphStore(_communities([0, 1, 2]))
-    assert resolve_community_level(store, "entity-graph", "coarsest") == 2
+    assert resolve_community_level(store, "entity-graph", "coarsest") == 0
 
 
 def test_explicit_level_passes_through():
@@ -66,9 +68,16 @@ def test_invalid_string_raises():
         resolve_community_level(FakeGraphStore(), "entity-graph", "middle")
 
 
-def test_no_community_graph_returns_none_for_coarsest():
+def test_no_community_graph_returns_zero_for_coarsest():
+    """After reversal: coarsest is always level 0."""
     store = FakeGraphStore([])
-    assert resolve_community_level(store, "entity-graph", "coarsest") is None
+    assert resolve_community_level(store, "entity-graph", "coarsest") == 0
+
+
+def test_no_community_graph_returns_none_for_finest():
+    """After reversal: finest requires querying max level."""
+    store = FakeGraphStore([])
+    assert resolve_community_level(store, "entity-graph", "finest") is None
 
 
 def test_single_level_graph_returns_zero_for_coarsest():
@@ -83,14 +92,17 @@ def test_level_ordering_ascending():
 
 
 def test_parent_child_direction():
-    """Hierarchy edges point from child (lower level) to parent (higher level)."""
+    """After reversal: hierarchy edges point from child (higher level) to parent (lower level).
+
+    Level 0 = coarsest (top-level parent), higher levels = finer sub-communities.
+    """
     store = FakeGraphStore(
         [
-            {"id": "c0", "level": 0, "graph_name": "entity-graph", "parent": "c1"},
-            {"id": "c1", "level": 1, "graph_name": "entity-graph", "parent": None},
+            {"id": "c0", "level": 0, "graph_name": "entity-graph", "parent": None},
+            {"id": "c1", "level": 1, "graph_name": "entity-graph", "parent": "c0"},
         ]
     )
-    child = store.get_communities("entity-graph", level=0)[0]
-    parent = store.get_communities("entity-graph", level=1)[0]
-    assert child["level"] + 1 == parent["level"]
+    child = store.get_communities("entity-graph", level=1)[0]
+    parent = store.get_communities("entity-graph", level=0)[0]
+    assert child["level"] - 1 == parent["level"]
     assert child["parent"] == parent["id"]

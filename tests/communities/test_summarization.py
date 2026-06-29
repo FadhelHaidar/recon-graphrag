@@ -77,6 +77,9 @@ class FakeSuccessGraphStore(FakeReportGraphStore):
     def store_community_summary(self, community_id, level, summary, graph_name):
         self.summaries.append((graph_name, community_id, level, summary))
 
+    def get_community_child_summary_context(self, graph_name, community_id, level, child_level):
+        return []
+
 
 @pytest.mark.asyncio
 async def test_report_generation_failure_is_marked_not_stored():

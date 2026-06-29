@@ -19,14 +19,15 @@ def resolve_community_level(
 ) -> Optional[int]:
     """Resolve semantic community-level aliases to stored integer levels.
 
-    Recon-GraphRAG stores level 0 as the finest community level. Higher
-    integer levels are broader/coarser parent communities.
+    After the hierarchy reversal, level 0 is the coarsest (top-level)
+    community and higher integer levels are finer-grained sub-communities.
+    This matches Microsoft GraphRAG semantics.
     """
     if selector is None or selector == "all":
         return None
-    if selector == "finest":
-        return 0
     if selector == "coarsest":
+        return 0
+    if selector == "finest":
         result = graph_store.execute_query(
             """
             MATCH (c:Community {graph_name: $graph_name})

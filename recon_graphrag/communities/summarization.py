@@ -287,12 +287,12 @@ class CommunitySummarizer:
     def _fetch_community_context(self, community_id: str, level: int = 0) -> str:
         """Fetch context for a community as rendered text.
 
-        Level 0: degree-ranked entities and intra-community relationships.
-        Level > 0: child community summaries first, then entity context fallback.
+        After hierarchy reversal (level 0 = coarsest):
+        Finest communities (highest level): degree-ranked entities and
+        intra-community relationships.
+        Coarser communities (lower levels): child community summaries first,
+        then entity context fallback.
         """
-        if level == 0:
-            return self._fetch_ranked_entity_context(community_id, level)
-
         child_context = self._fetch_child_summary_context(community_id, level)
         if child_context.strip():
             return child_context
@@ -352,12 +352,16 @@ class CommunitySummarizer:
         return render_community_context(context)
 
     def _fetch_child_summary_context(self, community_id: str, level: int) -> str:
-        """Fetch child community summaries for higher-level communities."""
+        """Fetch child community summaries for coarser communities.
+
+        After hierarchy reversal (level 0 = coarsest), children are at
+        level + 1 (finer-grained sub-communities).
+        """
         results = self.graph_store.get_community_child_summary_context(
             graph_name=self.graph_name,
             community_id=community_id,
             level=level,
-            child_level=level - 1,
+            child_level=level + 1,
         )
         if not results:
             return ""

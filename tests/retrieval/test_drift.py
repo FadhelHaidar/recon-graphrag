@@ -431,7 +431,7 @@ class TestDriftCommunityLevelAliases:
 
     @pytest.mark.asyncio
     async def test_coarsest_alias_resolves(self):
-        """community_level='coarsest' resolves to max level."""
+        """community_level='coarsest' resolves to level 0 after reversal."""
         store = FakeGraphStore()
         retriever = DriftSearchRetriever(
             store, FakeLLM(), FakeEmbedder(), community_level="coarsest"
@@ -442,11 +442,11 @@ class TestDriftCommunityLevelAliases:
         summary_call = [
             c for c in store.calls if c[0] == "get_community_summaries_by_keys"
         ][0]
-        assert summary_call[1]["keys"] == [{"id": "c2", "level": 2}]
+        assert summary_call[1]["keys"] == [{"id": "c0", "level": 0}]
 
     @pytest.mark.asyncio
     async def test_finest_alias_resolves(self):
-        """community_level='finest' resolves to 0 (current semantics)."""
+        """community_level='finest' resolves to max level after reversal."""
         store = FakeGraphStore()
         retriever = DriftSearchRetriever(
             store, FakeLLM(), FakeEmbedder(), community_level="finest"
@@ -458,7 +458,7 @@ class TestDriftCommunityLevelAliases:
             c for c in store.calls if c[0] == "get_community_summaries_by_keys"
         ][0]
         for key in summary_call[1]["keys"]:
-            assert key["level"] == 0
+            assert key["level"] == 2
 
     @pytest.mark.asyncio
     async def test_explicit_level_override(self):

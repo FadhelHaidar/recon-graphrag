@@ -50,8 +50,17 @@ class FakeGraphStoreWithCommunities:
     def get_claims_for_entities(self, graph_name, entity_ids):
         return []
 
+    def get_community_child_summary_context(self, graph_name, community_id, level, child_level):
+        return []
+
     def store_community_summary(self, community_id, level, summary, graph_name):
         self.summaries.append((graph_name, community_id, level, summary))
+
+    def store_community_report(self, report, graph_name):
+        self.summaries.append((graph_name, report.community_id, report.level, report.summary))
+
+    def mark_community_report_failed(self, graph_name, community_id, level, error):
+        pass
 
 
 @pytest.mark.asyncio
@@ -105,11 +114,14 @@ async def test_build_filters_levels():
         llm=FakeLLM(),
         relationship_types=["ACTED_IN"],
         graph_name="test-graph",
+        use_reports=False,
     )
 
     result = await pipeline.build(level=0)
 
-    assert result["levels"] == [0]
+    # After reversal: levels processed descending, filtered by lvl >= level
+    assert result["levels"] == [1, 0]
     assert result["communities"] == 2
-    assert result["summaries"] == 1
-    assert result["level_stats"][0]["level"] == 0
+    assert result["summaries"] == 2
+    assert result["level_stats"][0]["level"] == 1
+    assert result["level_stats"][1]["level"] == 0

@@ -229,7 +229,12 @@ class CommunityDetector:
         return self.graph_store.execute_query(query, params)
 
     def _normalize_community_path(self, rec: dict[str, Any]) -> list[str]:
-        """Return community IDs from finest level to coarsest level."""
+        """Return community IDs from finest level to coarsest level.
+
+        The path is ordered finest-first internally; level assignment in
+        _write_community_hierarchy reverses it so level 0 = coarsest
+        (Microsoft-compatible).
+        """
         ids = rec.get("intermediateCommunityIds")
         if ids:
             path = [str(x) for x in ids]
@@ -253,8 +258,10 @@ class CommunityDetector:
         for rec in leiden_results:
             path = self._normalize_community_path(rec)
             entity_element_id = rec["entity_element_id"]
+            max_level = len(path) - 1
 
-            for level, community_id in enumerate(path):
+            for index, community_id in enumerate(path):
+                level = max_level - index
                 membership_rows.append(
                     {
                         "entity_element_id": entity_element_id,
@@ -263,8 +270,10 @@ class CommunityDetector:
                     }
                 )
 
-            for level in range(len(path) - 1):
-                parent_edges.add((path[level], level, path[level + 1], level + 1))
+            for index in range(len(path) - 1):
+                child_level = max_level - index
+                parent_level = max_level - (index + 1)
+                parent_edges.add((path[index], child_level, path[index + 1], parent_level))
 
         if not membership_rows:
             raise RuntimeError("Leiden returned no community assignments.")

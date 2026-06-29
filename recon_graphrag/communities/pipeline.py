@@ -29,14 +29,14 @@ class CommunityPipeline:
         theta: float = 0.01,
         tolerance: float = 1e-4,
         graph_name: str = "entity-graph",
-        relationship_weight_property: Optional[str] = None,
+        relationship_weight_property: str = "weight",
         random_seed: Optional[int] = 42,
         summary_prompt: Optional[str] = None,
-        use_reports: bool = False,
+        use_reports: bool = True,
         report_rubric: ReportRubric | None = None,
         summarize_concurrency: int = 1,
         skip_existing: bool = False,
-        max_context_tokens: int | None = None,
+        max_context_tokens: int = 8000,
         token_counter: TokenCounter | None = None,
     ):
         """Initialize the community pipeline.
@@ -111,9 +111,9 @@ class CommunityPipeline:
         )
         print(f"  Found {len(community_stats)} communities")
 
-        detected_levels = sorted({s["level"] for s in community_stats})
+        detected_levels = sorted({s["level"] for s in community_stats}, reverse=True)
         levels = (
-            [lvl for lvl in detected_levels if lvl <= level]
+            [lvl for lvl in detected_levels if lvl >= level]
             if level is not None
             else detected_levels
         )

@@ -110,10 +110,11 @@ def test_resolve_community_level_aliases():
 
     assert resolve_community_level(store, "entity-graph", None) is None
     assert resolve_community_level(store, "entity-graph", "all") is None
-    assert resolve_community_level(store, "entity-graph", "finest") == 0
+    # After reversal: level 0 = coarsest, highest = finest
+    assert resolve_community_level(store, "entity-graph", "coarsest") == 0
     assert resolve_community_level(store, "entity-graph", 0) == 0
     assert resolve_community_level(store, "entity-graph", 1) == 1
-    assert resolve_community_level(store, "entity-graph", "coarsest") == 2
+    assert resolve_community_level(store, "entity-graph", "finest") == 2
 
 
 def test_resolve_community_level_rejects_negative_level():
@@ -128,14 +129,14 @@ class EmptyGraphStore:
         return []
 
 
-def test_resolve_finest_on_empty_graph_returns_zero():
+def test_resolve_finest_on_empty_graph_returns_none():
     store = EmptyGraphStore()
-    assert resolve_community_level(store, "entity-graph", "finest") == 0
+    assert resolve_community_level(store, "entity-graph", "finest") is None
 
 
-def test_resolve_coarsest_on_empty_graph_returns_none():
+def test_resolve_coarsest_on_empty_graph_returns_zero():
     store = EmptyGraphStore()
-    assert resolve_community_level(store, "entity-graph", "coarsest") is None
+    assert resolve_community_level(store, "entity-graph", "coarsest") == 0
 
 
 @pytest.mark.asyncio
@@ -146,13 +147,13 @@ async def test_global_search_accepts_coarsest_alias():
     result = await retriever.search("themes", community_level="coarsest")
 
     assert result.answer.strip()
-    # Verify the resolved level was 2 (coarsest)
+    # After reversal: "coarsest" → level 0
     report_call = [
         c for c in store.calls
         if c[0] == "execute_query" and "report_text" in c[1]["query"]
     ]
     assert len(report_call) == 1
-    assert report_call[0][1]["params"]["level"] == 2
+    assert report_call[0][1]["params"]["level"] == 0
 
 
 @pytest.mark.asyncio
@@ -186,7 +187,8 @@ async def test_drift_search_accepts_coarsest_alias():
     summary_call = [
         c for c in store.calls if c[0] == "get_community_summaries_by_keys"
     ][0]
-    assert summary_call[1]["keys"] == [{"id": "c2", "level": 2}]
+    # After reversal: "coarsest" → level 0
+    assert summary_call[1]["keys"] == [{"id": "c0", "level": 0}]
     citation_call = [c for c in store.calls if c[0] == "resolve_chunk_citations"][0]
     assert citation_call[1] == {
         "graph_name": "entity-graph",
