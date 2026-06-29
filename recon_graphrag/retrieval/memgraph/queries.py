@@ -6,20 +6,38 @@ from __future__ import annotations
 # Local search
 # ------------------------------------------------------------------
 DEFAULT_LOCAL_RETRIEVAL_QUERY = """
-OPTIONAL MATCH (node)-[r]-(neighbor)
-WHERE NOT neighbor:Chunk AND NOT neighbor:Document AND NOT neighbor:Community
-WITH node, score, collect(DISTINCT {
-    entity: labels(node)[-1] + ': ' + coalesce(node.name, node.description, ''),
-    rel: type(r),
-    neighbor: labels(neighbor)[-1] + ': ' + coalesce(neighbor.name, neighbor.description, '')
-}) AS connections
+CALL (node) {
+    OPTIONAL MATCH (node)-[r]->(neighbor)
+    WHERE NOT neighbor:Chunk AND NOT neighbor:Document AND NOT neighbor:Community
+    WITH node, r, neighbor
+    RETURN collect(DISTINCT {
+        entity: labels(node)[-1] + ': ' + coalesce(node.name, node.description, ''),
+        rel: type(r),
+        neighbor: labels(neighbor)[-1] + ': ' + coalesce(neighbor.name, neighbor.description, ''),
+        dir: 'out'
+    }) AS out_connections
+    UNION
+    OPTIONAL MATCH (node)<-[r]-(neighbor)
+    WHERE NOT neighbor:Chunk AND NOT neighbor:Document AND NOT neighbor:Community
+    WITH node, r, neighbor
+    RETURN collect(DISTINCT {
+        entity: labels(node)[-1] + ': ' + coalesce(node.name, node.description, ''),
+        rel: type(r),
+        neighbor: labels(neighbor)[-1] + ': ' + coalesce(neighbor.name, neighbor.description, ''),
+        dir: 'in'
+    }) AS in_connections
+}
+WITH node, score, out_connections + in_connections AS connections
 OPTIONAL MATCH (node)<-[:FROM_CHUNK]-(chunk:Chunk)
 WITH node, score, connections,
      collect(DISTINCT chunk.text) AS source_texts,
      collect(DISTINCT chunk.id) AS source_chunk_ids
 RETURN node.name + ' (' + labels(node)[-1] + ')' AS title,
        [c IN connections WHERE c.rel IS NOT NULL |
-           c.entity + ' -[' + c.rel + ']-> ' + c.neighbor] AS relationships,
+           CASE c.dir
+             WHEN 'out' THEN c.entity + ' -[' + c.rel + ']-> ' + c.neighbor
+             ELSE c.neighbor + ' -[' + c.rel + ']-> ' + c.entity
+           END] AS relationships,
        source_texts AS source_text,
        source_chunk_ids AS source_chunk_ids,
        score
@@ -30,13 +48,28 @@ ORDER BY score DESC, title
 # DRIFT search
 # ------------------------------------------------------------------
 DEFAULT_DRIFT_RETRIEVAL_QUERY = """
-OPTIONAL MATCH (node)-[r]-(neighbor)
-WHERE NOT neighbor:Chunk AND NOT neighbor:Document AND NOT neighbor:Community
-WITH node, score, collect(DISTINCT {
-    entity: labels(node)[-1] + ': ' + coalesce(node.name, node.description, ''),
-    rel: type(r),
-    neighbor: labels(neighbor)[-1] + ': ' + coalesce(neighbor.name, neighbor.description, '')
-}) AS connections
+CALL (node) {
+    OPTIONAL MATCH (node)-[r]->(neighbor)
+    WHERE NOT neighbor:Chunk AND NOT neighbor:Document AND NOT neighbor:Community
+    WITH node, r, neighbor
+    RETURN collect(DISTINCT {
+        entity: labels(node)[-1] + ': ' + coalesce(node.name, node.description, ''),
+        rel: type(r),
+        neighbor: labels(neighbor)[-1] + ': ' + coalesce(neighbor.name, neighbor.description, ''),
+        dir: 'out'
+    }) AS out_connections
+    UNION
+    OPTIONAL MATCH (node)<-[r]-(neighbor)
+    WHERE NOT neighbor:Chunk AND NOT neighbor:Document AND NOT neighbor:Community
+    WITH node, r, neighbor
+    RETURN collect(DISTINCT {
+        entity: labels(node)[-1] + ': ' + coalesce(node.name, node.description, ''),
+        rel: type(r),
+        neighbor: labels(neighbor)[-1] + ': ' + coalesce(neighbor.name, neighbor.description, ''),
+        dir: 'in'
+    }) AS in_connections
+}
+WITH node, score, out_connections + in_connections AS connections
 OPTIONAL MATCH (node)<-[:FROM_CHUNK]-(chunk:Chunk)
 WITH node, score, connections,
      collect(DISTINCT chunk.text) AS source_texts,
@@ -51,7 +84,10 @@ WITH node, score, connections, source_texts, source_chunk_ids,
      }) AS communities
 RETURN node.name + ' (' + labels(node)[-1] + ')' AS title,
        [c IN connections WHERE c.rel IS NOT NULL |
-           c.entity + ' -[' + c.rel + ']-> ' + c.neighbor] AS relationships,
+           CASE c.dir
+             WHEN 'out' THEN c.entity + ' -[' + c.rel + ']-> ' + c.neighbor
+             ELSE c.neighbor + ' -[' + c.rel + ']-> ' + c.entity
+           END] AS relationships,
        source_texts AS source_text,
        source_chunk_ids AS source_chunk_ids,
        communities,

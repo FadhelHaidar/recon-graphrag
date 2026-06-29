@@ -22,6 +22,7 @@ from recon_graphrag.communities.context import (
     CommunityContext,
     enrich_context_with_claims,
     build_reference_ids,
+    build_packed_reference_ids,
     pack_community_context,
     parse_community_context,
     render_community_context,
@@ -237,6 +238,10 @@ class CommunitySummarizer:
                 counter=self.token_counter,
             )
             context_text = packed.text
+            # Use allowlist from packed context so findings can only
+            # reference items the LLM actually saw.
+            reference_ids = build_packed_reference_ids(context, packed)
+            valid_ids = set(reference_ids)
         else:
             context_text = render_community_context(context)
 

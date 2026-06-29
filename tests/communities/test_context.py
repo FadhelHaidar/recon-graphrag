@@ -6,6 +6,9 @@ from recon_graphrag.communities.context import (
     CommunityContext,
     EdgeContext,
     EntityContext,
+    ClaimContext,
+    build_packed_reference_ids,
+    build_reference_ids,
     pack_community_context,
     parse_community_context,
     render_community_context,
@@ -133,6 +136,43 @@ class TestRenderCommunityContext:
         assert "[Person] Alice: CEO" in text
         assert "[Organization] Acme: Tech company" in text
         assert "Alice --[WORKS_AT]--> Acme" in text
+
+    def test_renders_relationship_description(self):
+        ctx = CommunityContext(
+            community_id="c1",
+            level=0,
+            edges=[
+                EdgeContext(
+                    source=EntityContext(id="e1", name="Alice", description="CEO", labels=["Person"], degree=5),
+                    target=EntityContext(id="e2", name="Acme", description="Tech", labels=["Organization"], degree=3),
+                    relationship_type="WORKS_AT",
+                    description="Alice has been CEO of Acme since 2020",
+                    combined_degree=8,
+                ),
+            ],
+        )
+        text = render_community_context(ctx)
+
+        assert "Alice --[WORKS_AT]--> Acme: Alice has been CEO of Acme since 2020" in text
+
+    def test_omits_empty_relationship_description(self):
+        ctx = CommunityContext(
+            community_id="c1",
+            level=0,
+            edges=[
+                EdgeContext(
+                    source=EntityContext(id="e1", name="Alice", description="CEO", labels=["Person"], degree=5),
+                    target=EntityContext(id="e2", name="Acme", description="Tech", labels=["Organization"], degree=3),
+                    relationship_type="WORKS_AT",
+                    description="",
+                    combined_degree=8,
+                ),
+            ],
+        )
+        text = render_community_context(ctx)
+
+        assert "Alice --[WORKS_AT]--> Acme" in text
+        assert "Alice --[WORKS_AT]--> Acme:" not in text
 
     def test_does_not_repeat_entity_descriptions(self):
         ctx = CommunityContext(
@@ -318,3 +358,84 @@ class TestPackCommunityContext:
         # Recount from actual text — allow ±1 token rounding difference
         actual_tokens = counter.count(packed.text)
         assert abs(packed.used_tokens - actual_tokens) <= 1
+
+
+class TestBuildPackedReferenceIds:
+    def test_full_budget_returns_all_ids(self):
+        ctx = CommunityContext(
+            community_id="c1",
+            level=0,
+            edges=[
+                EdgeContext(
+                    source=EntityContext(id="e1", name="Alice", description="CEO", labels=["Person"], degree=5),
+                    target=EntityContext(id="e2", name="Acme", description="Tech", labels=["Org"], degree=3),
+                    relationship_type="WORKS_AT",
+                    combined_degree=8,
+                ),
+            ],
+            entities=[
+                EntityContext(id="e3", name="Charlie", description="Intern", labels=["Person"], degree=0),
+            ],
+            claims=[
+                ClaimContext(id="claim:1", entity_id="e1", claim_type="role", description="Alice is CEO"),
+            ],
+        )
+        counter = ApproximateTokenCounter(ratio=4.0)
+        full_text = render_community_context(ctx)
+        full_tokens = counter.count(full_text)
+
+        packed = pack_community_context(ctx, max_tokens=full_tokens + 100, counter=counter)
+        ref_ids = build_packed_reference_ids(ctx, packed)
+
+        assert "e1" in ref_ids
+        assert "e2" in ref_ids
+        assert "e3" in ref_ids
+        assert "e1:WORKS_AT:e2" in ref_ids
+        assert "claim:1" in ref_ids
+
+    def test_small_budget_excludes_truncated_ids(self):
+        ctx = CommunityContext(
+            community_id="c1",
+            level=0,
+            edges=[
+                EdgeContext(
+                    source=EntityContext(id="e1", name="Alice", description="CEO", labels=["Person"], degree=5),
+                    target=EntityContext(id="e2", name="Acme", description="Tech", labels=["Org"], degree=3),
+                    relationship_type="WORKS_AT",
+                    combined_degree=8,
+                ),
+                EdgeContext(
+                    source=EntityContext(id="e3", name="Bob", description="Engineer", labels=["Person"], degree=2),
+                    target=EntityContext(id="e4", name="Beta", description="Startup", labels=["Org"], degree=1),
+                    relationship_type="WORKS_AT",
+                    combined_degree=3,
+                ),
+            ],
+        )
+        counter = ApproximateTokenCounter(ratio=4.0)
+        # Budget only fits the first edge
+        first_edge_text = "- [Person] Alice: CEO\n- [Org] Acme: Tech\n  Alice --[WORKS_AT]--> Acme"
+        budget = counter.count(first_edge_text)
+
+        packed = pack_community_context(ctx, max_tokens=budget, counter=counter)
+        ref_ids = build_packed_reference_ids(ctx, packed)
+
+        assert "e1" in ref_ids
+        assert "e2" in ref_ids
+        assert "e1:WORKS_AT:e2" in ref_ids
+        # Second edge should be excluded
+        assert "e3" not in ref_ids
+        assert "e4" not in ref_ids
+        assert "e3:WORKS_AT:e4" not in ref_ids
+
+    def test_packed_refs_subset_of_full_refs(self):
+        ctx = _make_large_context(10)
+        counter = ApproximateTokenCounter(ratio=4.0)
+
+        full_ids = set(build_reference_ids(ctx))
+
+        packed = pack_community_context(ctx, max_tokens=100, counter=counter)
+        packed_ids = set(build_packed_reference_ids(ctx, packed))
+
+        assert packed_ids <= full_ids
+        assert len(packed_ids) < len(full_ids)
