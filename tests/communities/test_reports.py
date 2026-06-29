@@ -22,13 +22,6 @@ from recon_graphrag.communities.reports import (
     build_report_prompt,
     extract_reference_ids,
 )
-from recon_graphrag.models.artifacts import (
-    CommunityFinding,
-    CommunityReport,
-    FindingReference,
-    report_to_json,
-    report_to_text,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -264,62 +257,6 @@ class TestRepair:
         assert "Empty findings" in prompt
         assert "e1" in prompt
         assert "bad json" in prompt
-
-
-# ---------------------------------------------------------------------------
-# Canonical text rendering tests
-# ---------------------------------------------------------------------------
-
-
-class TestReportRendering:
-    def test_report_to_json_includes_new_fields(self):
-        report = CommunityReport(
-            id="r1",
-            community_id="1",
-            level=0,
-            title="Test Title",
-            summary="Test summary.",
-            rating=7.5,
-            rating_explanation="Because.",
-            findings=[
-                CommunityFinding(
-                    id="f1",
-                    description="A finding.",
-                    references=[FindingReference(target_id="e1", target_type="entity")],
-                ),
-            ],
-        )
-        json_str = report_to_json(report)
-        data = json.loads(json_str)
-        assert data["title"] == "Test Title"
-        assert data["rating"] == 7.5
-        assert data["findings"][0]["references"][0]["target_id"] == "e1"
-
-    def test_report_to_text_includes_title_and_rating(self):
-        report = CommunityReport(
-            id="r1",
-            community_id="1",
-            level=0,
-            title="Test Title",
-            summary="Summary text.",
-            rating=5.0,
-            findings=[],
-        )
-        text = report_to_text(report)
-        assert "Test Title" in text
-        assert "Rating: 5.0" in text
-        assert "Summary text." in text
-
-    def test_report_to_text_omits_rating_when_none(self):
-        report = CommunityReport(
-            id="r1",
-            community_id="1",
-            level=0,
-            title="Title",
-            summary="Summary.",
-        )
-        text = report_to_text(report)
-        assert "Rating" not in text
 
 
 # ---------------------------------------------------------------------------

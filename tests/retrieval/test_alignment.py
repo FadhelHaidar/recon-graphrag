@@ -453,3 +453,19 @@ class TestDriftActionMixedContext:
 
         # If any actions ran with mixed context, builder should exist
         # (it's created lazily in _build_action_mixed_context)
+
+
+# ---------------------------------------------------------------------------
+# GraphRAG orchestrator
+# ---------------------------------------------------------------------------
+
+
+class TestGraphRAGOrchestrator:
+    @pytest.mark.asyncio
+    async def test_search_rejects_invalid_mode(self):
+        """GraphRAG.search raises ValueError for unknown mode."""
+        from recon_graphrag.retrieval.search import GraphRAG
+
+        grag = GraphRAG(FakeGraphStore(), FakeLLM(), FakeEmbedder())
+        with pytest.raises(ValueError, match="Unknown search mode"):
+            await grag.search("query", mode="invalid")

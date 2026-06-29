@@ -415,6 +415,39 @@ class TestReportToText:
         assert lines[0] == "- high"
         assert lines[1] == "- low"
 
+    def test_report_to_json_includes_title_rating_and_references(self):
+        report = CommunityReport(
+            id="r1",
+            community_id="c1",
+            level=0,
+            title="Test Title",
+            summary="Test summary.",
+            rating=7.5,
+            rating_explanation="Because.",
+            findings=[
+                CommunityFinding(
+                    id="f1",
+                    description="A finding.",
+                    references=[FindingReference(target_id="e1", target_type="entity")],
+                ),
+            ],
+        )
+        data = json.loads(report_to_json(report))
+        assert data["title"] == "Test Title"
+        assert data["rating"] == 7.5
+        assert data["findings"][0]["references"][0]["target_id"] == "e1"
+
+    def test_report_to_text_omits_rating_when_none(self):
+        report = CommunityReport(
+            id="r1",
+            community_id="c1",
+            level=0,
+            title="Title",
+            summary="Summary.",
+        )
+        text = report_to_text(report)
+        assert "Rating" not in text
+
 
 class TestFrozenMutation:
     def test_citation_is_frozen(self):

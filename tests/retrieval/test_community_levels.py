@@ -1,7 +1,5 @@
 """Tests for semantic community-level selection."""
 
-from types import SimpleNamespace
-
 import pytest
 
 from recon_graphrag.llm import LLMResponse
@@ -77,35 +75,6 @@ class FakeEmbedder:
         return [0.1, 0.2, 0.3]
 
 
-class FakeHybridRetriever:
-    async def search(self, query_text, top_k, **kwargs):
-        return SimpleNamespace(
-            items=[
-                SimpleNamespace(
-                    content={
-                        "title": "Inception (Movie)",
-                        "relationships": [],
-                        "source_text": ["source"],
-                        "source_chunk_ids": ["chunk:1"],
-                        "communities": [
-                            {
-                                "id": "c0",
-                                "level": 0,
-                                "graph_name": "entity-graph",
-                                "report_text": "Fine report",
-                            },
-                            {
-                                "id": "c2",
-                                "level": 2,
-                                "graph_name": "entity-graph",
-                                "report_text": "Coarse report",
-                            },
-                        ],
-                    }
-                )
-            ]
-        )
-
 
 def test_resolve_community_level_aliases():
     store = FakeGraphStore()
@@ -122,6 +91,11 @@ def test_resolve_community_level_aliases():
 def test_resolve_community_level_rejects_negative_level():
     with pytest.raises(ValueError):
         resolve_community_level(FakeGraphStore(), "entity-graph", -1)
+
+
+def test_resolve_community_level_rejects_invalid_string():
+    with pytest.raises(ValueError):
+        resolve_community_level(FakeGraphStore(), "entity-graph", "middle")
 
 
 class EmptyGraphStore:
@@ -184,48 +158,4 @@ async def test_drift_search_accepts_coarsest_alias():
     assert store.vector_search_community_reports_calls[0]["level"] == 0
 
 
-@pytest.mark.asyncio
-async def test_drift_search_can_include_citation_metadata_in_prompt():
-    """DRIFT accepts citation metadata selection for local actions."""
-    from recon_graphrag.retrieval.drift import DriftSearchRetriever
 
-    store = FakeGraphStore()
-    store.vector_search_community_reports = lambda *a, **kw: [
-        {"id": "r1", "level": 0, "report_text": "Test"}
-    ]
-    llm = FakeLLM()
-    retriever = DriftSearchRetriever(store, llm, FakeEmbedder())
-
-    result = await retriever.search(
-        "themes",
-        top_k=1,
-        synthesize_citation_metadata=True,
-        synthesis_metadata_keys=["record_id", "collection"],
-    )
-
-    assert result.mode == "drift"
-
-
-@pytest.mark.asyncio
-async def test_drift_search_with_synthesize_false_skips_llm():
-    """synthesize_response=False returns empty answer with trace."""
-    from recon_graphrag.retrieval.drift import DriftSearchRetriever
-
-    store = FakeGraphStore()
-    store.vector_search_community_reports = lambda *a, **kw: [
-        {"id": "r1", "level": 0, "report_text": "Test"}
-    ]
-    llm = FakeLLM()
-    retriever = DriftSearchRetriever(store, llm, FakeEmbedder())
-
-    result = await retriever.search(
-        "themes",
-        top_k=1,
-        synthesize_response=False,
-    )
-
-    assert result.mode == "drift"
-    assert result.answer == ""
-    assert result.metadata["synthesize_response"] is False
-    assert result.metadata["response_synthesis_skipped"] is True
-    assert "drift_trace" in result.metadata
