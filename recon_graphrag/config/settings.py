@@ -22,11 +22,11 @@ class PipelineConfig:
             When absent, callers fall back to ``ApproximateTokenCounter``.
     """
 
-    chunk_size: int = 1000
-    chunk_overlap: int = 200
+    chunk_size: int = 1200
+    chunk_overlap: int = 100
     embedding_dim: int | None = None
     extraction_concurrency: int = 5
-    max_gleanings: int = 0
+    max_gleanings: int = 1
     extract_claims: bool = False
     token_counter: TokenCounter | None = None
 
