@@ -195,3 +195,98 @@ class TestTopKRelationships:
         store = FakeGraphStore()
         grag = GraphRAG(store, FakeLLM(), FakeEmbedder(), top_k_relationships=5)
         assert grag.local.top_k_relationships == 5
+
+
+# ---------------------------------------------------------------------------
+# P2: allow_general_knowledge
+# ---------------------------------------------------------------------------
+
+
+def _make_gk_reports(n: int = 2) -> list[dict]:
+    return [
+        {"id": f"report:{i}:0", "level": 0, "report_text": f"Summary {i}."}
+        for i in range(n)
+    ]
+
+
+def _make_gk_map_response(helpfulness: int = 0) -> str:
+    import json as _json
+    return _json.dumps({
+        "answer": "No relevant information found." if helpfulness == 0 else "Some answer.",
+        "helpfulness": helpfulness,
+        "report_ids": ["report:0:0"],
+    })
+
+
+class GKFakeGraphStore:
+    def __init__(self, reports):
+        self._reports = reports
+
+    def execute_query(self, query, params=None):
+        params = params or {}
+        level = params.get("level")
+        if level is not None:
+            return [r for r in self._reports if r.get("level") == level]
+        return self._reports
+
+    def resolve_chunk_citations(self, graph_name, chunk_ids):
+        return []
+
+
+class TestAllowGeneralKnowledge:
+    @pytest.mark.asyncio
+    async def test_default_returns_no_info_when_all_zero(self):
+        reports = _make_gk_reports(2)
+        store = GKFakeGraphStore(reports)
+
+        class ZeroLLM:
+            async def ainvoke(self, prompt):
+                from unittest.mock import MagicMock
+                return MagicMock(content=_make_gk_map_response(0))
+
+        search = GlobalSearchRetriever(store, ZeroLLM())
+        result = await search.search("query", community_level=0)
+        assert "No relevant" in result.answer
+
+    @pytest.mark.asyncio
+    async def test_allow_general_knowledge_runs_reduce_on_all_zero(self):
+        reports = _make_gk_reports(2)
+        store = GKFakeGraphStore(reports)
+
+        class GKLLM:
+            def __init__(self):
+                self.prompts = []
+            async def ainvoke(self, prompt):
+                self.prompts.append(prompt)
+                if "Synthesize" in prompt or "Partial Answers" in prompt:
+                    from unittest.mock import MagicMock
+                    return MagicMock(content="General knowledge answer.")
+                return MagicMock(content=_make_gk_map_response(0))
+
+        llm = GKLLM()
+        search = GlobalSearchRetriever(store, llm, allow_general_knowledge=True)
+        result = await search.search("query", community_level=0)
+
+        assert result.answer == "General knowledge answer."
+        assert any("general knowledge" in p.lower() for p in llm.prompts)
+
+    @pytest.mark.asyncio
+    async def test_allow_general_knowledge_false_skips_reduce(self):
+        reports = _make_gk_reports(2)
+        store = GKFakeGraphStore(reports)
+
+        class ZeroLLM:
+            def __init__(self):
+                self.call_count = 0
+            async def ainvoke(self, prompt):
+                self.call_count += 1
+                from unittest.mock import MagicMock
+                return MagicMock(content=_make_gk_map_response(0))
+
+        llm = ZeroLLM()
+        search = GlobalSearchRetriever(store, llm, allow_general_knowledge=False)
+        result = await search.search("query", community_level=0)
+
+        assert "No relevant" in result.answer
+        # Only map calls ran, no reduce call
+        assert llm.call_count == 1

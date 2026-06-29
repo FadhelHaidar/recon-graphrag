@@ -85,6 +85,13 @@ You are synthesizing partial answers into a comprehensive final answer.
 
 Final Answer:"""
 
+GENERAL_KNOWLEDGE_INSTRUCTION = (
+    "\n\nNote: The available data does not contain enough information to "
+    "answer this question. You are allowed to supplement the answer with "
+    "general knowledge, but clearly indicate which parts come from general "
+    "knowledge versus the provided data."
+)
+
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -180,6 +187,7 @@ class GlobalSearchRetriever(BaseRetriever):
         reduce_budget_tokens: int = 12000,
         map_concurrency: int = 5,
         max_map_calls: int | None = None,
+        allow_general_knowledge: bool = False,
     ):
         self.graph_store = graph_store
         self.llm = llm
@@ -191,6 +199,7 @@ class GlobalSearchRetriever(BaseRetriever):
         self.reduce_budget_tokens = reduce_budget_tokens
         self.map_concurrency = map_concurrency
         self.max_map_calls = max_map_calls
+        self.allow_general_knowledge = allow_general_knowledge
 
     async def search(
         self,
@@ -271,14 +280,18 @@ class GlobalSearchRetriever(BaseRetriever):
         scored = [p for p in partials if p.error is None and p.helpfulness > 0]
         diag.map_filtered_zero = diag.map_succeeded - len(scored)
 
+        use_general_knowledge = False
         if not scored:
-            diag.elapsed_ms = int((time.monotonic() - start) * 1000)
-            return SearchResult(
-                query=query,
-                mode="global",
-                answer="No relevant information found in community reports.",
-                metadata=_diag_to_dict(diag),
-            )
+            if not self.allow_general_knowledge:
+                diag.elapsed_ms = int((time.monotonic() - start) * 1000)
+                return SearchResult(
+                    query=query,
+                    mode="global",
+                    answer="No relevant information found in community reports.",
+                    metadata=_diag_to_dict(diag),
+                )
+            use_general_knowledge = True
+            scored = [p for p in partials if p.error is None]
 
         # 7. Sort by helpfulness DESC
         scored.sort(key=lambda p: (-p.helpfulness, p.batch_id))
@@ -310,7 +323,7 @@ class GlobalSearchRetriever(BaseRetriever):
                 citations=citations,
             )
 
-        answer = await self._reduce_phase(query, scored)
+        answer = await self._reduce_phase(query, scored, use_general_knowledge=use_general_knowledge)
         diag.reduce_partials_used = len(scored)
 
         diag.elapsed_ms = int((time.monotonic() - start) * 1000)
@@ -695,7 +708,7 @@ class GlobalSearchRetriever(BaseRetriever):
     # ------------------------------------------------------------------
 
     async def _reduce_phase(
-        self, query: str, partials: list[PartialAnswer]
+        self, query: str, partials: list[PartialAnswer], *, use_general_knowledge: bool = False,
     ) -> str:
         """Synthesize partial answers into final answer."""
         counter = self.token_counter
@@ -722,7 +735,10 @@ class GlobalSearchRetriever(BaseRetriever):
             used_tokens += tokens
 
         partial_text = "\n\n".join(parts)
-        prompt = self.reduce_prompt.format(
+        reduce_prompt = self.reduce_prompt
+        if use_general_knowledge:
+            reduce_prompt = reduce_prompt + GENERAL_KNOWLEDGE_INSTRUCTION
+        prompt = reduce_prompt.format(
             query=query, partial_text=partial_text
         )
         response = await self.llm.ainvoke(prompt)
