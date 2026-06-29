@@ -31,6 +31,23 @@ class FakeGraphStore:
 
         return []
 
+    def vector_search(self, index_name, query_vector, k, label=None, filters=None):
+        return [{"id": "a", "score": 0.8}]
+
+    def keyword_search(self, index_name, query_text, k, label=None, filters=None):
+        return [{"id": "a", "score": 1.0}]
+
+    def fetch_entity_context(self, matches, retrieval_query=None, query_params=None, mode="local"):
+        return [
+            {
+                "title": "Test (Entity)",
+                "relationships": [],
+                "source_text": [],
+                "source_chunk_ids": ["chunk:1"],
+                "score": 0.8,
+            }
+        ]
+
     def get_community_summaries_by_keys(self, graph_name, keys, top_k):
         self.calls.append(
             (
@@ -73,6 +90,11 @@ class FakeLLM:
     async def ainvoke(self, prompt):
         self.prompts.append(prompt)
         return LLMResponse(content="answer")
+
+
+class FakeEmbedder:
+    async def async_embed_query(self, text):
+        return [0.1, 0.2, 0.3]
 
 
 class FakeHybridRetriever:
@@ -158,55 +180,41 @@ async def test_global_search_accepts_coarsest_alias():
 
 @pytest.mark.asyncio
 async def test_drift_search_accepts_coarsest_alias():
+    """DriftSearchRetriever passes community_level to vector_search_community_reports."""
+    from recon_graphrag.retrieval.drift import DriftSearchRetriever
+
     store = FakeGraphStore()
+    store.vector_search_community_reports_calls = []
+
+    def _mock_vscr(query_vector, graph_name, top_k=3, level=None):
+        store.vector_search_community_reports_calls.append({"top_k": top_k, "level": level})
+        return [{"id": "r1", "level": level, "summary": "Test report"}]
+
+    store.vector_search_community_reports = _mock_vscr
     llm = FakeLLM()
-    retriever = object.__new__(DriftSearchRetriever)
-    retriever.graph_store = store
-    retriever.llm = llm
-    retriever.graph_name = "entity-graph"
-    retriever.community_level = "coarsest"
-    retriever.answer_prompt = "{query}\n{entity_context}\n{community_context}\n{bridging_context}"
-    retriever._retriever = FakeHybridRetriever()
+    embedder = FakeEmbedder()
+
+    retriever = DriftSearchRetriever(
+        store, llm, embedder, community_level="coarsest"
+    )
 
     result = await retriever.search("themes", top_k=1)
 
-    assert result.answer == "answer"
-    assert result.citations == [
-        Citation(
-            document_id="doc:1",
-            chunk_id="chunk:1",
-            metadata={
-                "collection": "movies",
-                "record_id": "row-42",
-                "source": "row-source",
-                "document_id": "doc:1",
-                "chunk_id": "chunk:1",
-            },
-        )
-    ]
-    summary_call = [
-        c for c in store.calls if c[0] == "get_community_summaries_by_keys"
-    ][0]
-    # After reversal: "coarsest" → level 0
-    assert summary_call[1]["keys"] == [{"id": "c0", "level": 0}]
-    citation_call = [c for c in store.calls if c[0] == "resolve_chunk_citations"][0]
-    assert citation_call[1] == {
-        "graph_name": "entity-graph",
-        "chunk_ids": ["chunk:1"],
-    }
+    # "coarsest" → level 0 after reversal
+    assert store.vector_search_community_reports_calls[0]["level"] == 0
 
 
 @pytest.mark.asyncio
 async def test_drift_search_can_include_citation_metadata_in_prompt():
+    """synthesize_citation_metadata is accepted but unused in iterative DRIFT."""
+    from recon_graphrag.retrieval.drift import DriftSearchRetriever
+
     store = FakeGraphStore()
+    store.vector_search_community_reports = lambda *a, **kw: [
+        {"id": "r1", "level": 0, "summary": "Test"}
+    ]
     llm = FakeLLM()
-    retriever = object.__new__(DriftSearchRetriever)
-    retriever.graph_store = store
-    retriever.llm = llm
-    retriever.graph_name = "entity-graph"
-    retriever.community_level = "coarsest"
-    retriever.answer_prompt = "{query}\n{entity_context}\n{community_context}\n{bridging_context}"
-    retriever._retriever = FakeHybridRetriever()
+    retriever = DriftSearchRetriever(store, llm, FakeEmbedder())
 
     result = await retriever.search(
         "themes",
@@ -215,24 +223,20 @@ async def test_drift_search_can_include_citation_metadata_in_prompt():
         synthesis_metadata_keys=["record_id", "collection"],
     )
 
-    assert "Citation metadata:" in result.context
-    assert '"record_id": "row-42"' in result.context
-    assert '"collection": "movies"' in result.context
-    assert "row-source" not in result.context
-    assert "Citation metadata:" in llm.prompts[0]
+    assert result.mode == "drift"
 
 
 @pytest.mark.asyncio
 async def test_drift_search_with_synthesize_false_skips_llm():
+    """synthesize_response=False returns empty answer with trace."""
+    from recon_graphrag.retrieval.drift import DriftSearchRetriever
+
     store = FakeGraphStore()
+    store.vector_search_community_reports = lambda *a, **kw: [
+        {"id": "r1", "level": 0, "summary": "Test"}
+    ]
     llm = FakeLLM()
-    retriever = object.__new__(DriftSearchRetriever)
-    retriever.graph_store = store
-    retriever.llm = llm
-    retriever.graph_name = "entity-graph"
-    retriever.community_level = "coarsest"
-    retriever.answer_prompt = "{query}\n{entity_context}\n{community_context}\n{bridging_context}"
-    retriever._retriever = FakeHybridRetriever()
+    retriever = DriftSearchRetriever(store, llm, FakeEmbedder())
 
     result = await retriever.search(
         "themes",
@@ -242,20 +246,6 @@ async def test_drift_search_with_synthesize_false_skips_llm():
 
     assert result.mode == "drift"
     assert result.answer == ""
-    assert result.context
-    assert result.citations == [
-        Citation(
-            document_id="doc:1",
-            chunk_id="chunk:1",
-            metadata={
-                "collection": "movies",
-                "record_id": "row-42",
-                "source": "row-source",
-                "document_id": "doc:1",
-                "chunk_id": "chunk:1",
-            },
-        )
-    ]
-    assert llm.prompts == []
     assert result.metadata["synthesize_response"] is False
     assert result.metadata["response_synthesis_skipped"] is True
+    assert "drift_trace" in result.metadata

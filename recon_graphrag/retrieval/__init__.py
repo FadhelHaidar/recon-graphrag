@@ -5,6 +5,11 @@ from recon_graphrag.retrieval.search import GraphRAG
 from recon_graphrag.retrieval.local import LocalSearchRetriever
 from recon_graphrag.retrieval.global_search import GlobalSearchRetriever
 from recon_graphrag.retrieval.drift import DriftSearchRetriever
+from recon_graphrag.retrieval.drift_types import (
+    DriftAction,
+    DriftQueryState,
+    DriftSearchConfig,
+)
 from recon_graphrag.retrieval.community_levels import CommunityLevelSelector
 
 __all__ = [
@@ -13,5 +18,8 @@ __all__ = [
     "LocalSearchRetriever",
     "GlobalSearchRetriever",
     "DriftSearchRetriever",
+    "DriftAction",
+    "DriftQueryState",
+    "DriftSearchConfig",
     "CommunityLevelSelector",
 ]
