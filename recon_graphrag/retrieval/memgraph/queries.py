@@ -1,7 +1,5 @@
 """Memgraph-specific Cypher query templates used by the Memgraph graph store."""
 
-from __future__ import annotations
-
 # ------------------------------------------------------------------
 # Local search
 # ------------------------------------------------------------------
@@ -175,9 +173,6 @@ ORDER BY c.level ASC
 LIMIT $top_k
 """
 
-# ------------------------------------------------------------------
-# DRIFT — bridging entities in communities
-# ------------------------------------------------------------------
 # ------------------------------------------------------------------
 # Community summarization — degree-ranked context (Phase 4A)
 # ------------------------------------------------------------------

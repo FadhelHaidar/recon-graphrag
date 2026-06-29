@@ -13,10 +13,7 @@ import pytest
 from recon_graphrag.llm import LLMResponse
 from recon_graphrag.retrieval.drift import DriftSearchRetriever
 from recon_graphrag.retrieval.drift_types import DriftSearchConfig
-from recon_graphrag.retrieval.global_search import (
-    GlobalSearchRetriever,
-    PartialAnswer,
-)
+from recon_graphrag.retrieval.global_search import GlobalSearchRetriever
 from recon_graphrag.retrieval.hybrid import RetrievalItem, RetrievalResult
 from recon_graphrag.retrieval.local import (
     LocalSearchRetriever,

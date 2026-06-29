@@ -13,7 +13,6 @@ from recon_graphrag.llm import LLMResponse
 from recon_graphrag.models.artifacts import Citation
 from recon_graphrag.retrieval.drift import DriftSearchRetriever
 from recon_graphrag.retrieval.drift_types import DriftSearchConfig
-from recon_graphrag.retrieval.community_levels import resolve_community_level
 
 
 # ---------------------------------------------------------------------------
