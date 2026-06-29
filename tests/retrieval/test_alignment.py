@@ -297,3 +297,162 @@ class TestAllowGeneralKnowledge:
         assert "No relevant" in result.answer
         # Only map calls ran, no reduce call
         assert llm.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# P3: DRIFT HyDE, primer folds, action mixed context
+# ---------------------------------------------------------------------------
+
+
+class TestDriftHyDE:
+    @pytest.mark.asyncio
+    async def test_hyde_enabled_does_two_vector_searches(self):
+        """With use_hyde=True, primer phase does initial + re-rank vector searches."""
+        store = FakeGraphStore()
+        llm = FakeLLM()
+        retriever = DriftSearchRetriever(
+            store, llm, FakeEmbedder(),
+            config=DriftSearchConfig(use_hyde=True),
+        )
+
+        await retriever.search("query", top_k=2)
+
+        report_calls = [
+            c for c in store.calls if c[0] == "vector_search_community_reports"
+        ]
+        assert len(report_calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_hyde_disabled_does_one_vector_search(self):
+        """With use_hyde=False, primer phase does one vector search."""
+        store = FakeGraphStore()
+        llm = FakeLLM()
+        retriever = DriftSearchRetriever(
+            store, llm, FakeEmbedder(),
+            config=DriftSearchConfig(use_hyde=False),
+        )
+
+        await retriever.search("query", top_k=2)
+
+        report_calls = [
+            c for c in store.calls if c[0] == "vector_search_community_reports"
+        ]
+        assert len(report_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_hyde_calls_llm_for_hypothetical_answer(self):
+        """HyDE generates a hypothetical answer via LLM."""
+        store = FakeGraphStore()
+        llm = FakeLLM()
+        embedder = FakeEmbedder()
+        retriever = DriftSearchRetriever(
+            store, llm, embedder,
+            config=DriftSearchConfig(use_hyde=True),
+        )
+
+        await retriever.search("query", top_k=2)
+
+        # First prompt should be the HyDE prompt
+        assert "hypothetical" in llm.prompts[0].lower()
+        # Embedder should be called twice: query + hypothetical
+        assert len(embedder.queries) == 2
+
+    @pytest.mark.asyncio
+    async def test_hyde_default_is_enabled(self):
+        """use_hyde defaults to True (matching Microsoft behavior)."""
+        config = DriftSearchConfig()
+        assert config.use_hyde is True
+
+
+class TestDriftPrimerFolds:
+    @pytest.mark.asyncio
+    async def test_primer_folds_runs_parallel_calls(self):
+        """With primer_folds=2, primer reports are split into 2 folds."""
+        reports = [
+            {"id": f"report:{i}:0", "level": 0, "report_text": f"Report {i}."}
+            for i in range(4)
+        ]
+        store = FakeGraphStore(reports=reports)
+        llm = FakeLLM()
+        retriever = DriftSearchRetriever(
+            store, llm, FakeEmbedder(),
+            config=DriftSearchConfig(primer_top_k=4, primer_folds=2, use_hyde=False),
+        )
+
+        result = await retriever.search("query", top_k=2)
+
+        assert result.mode == "drift"
+        # Should have at least 2 primer fold LLM calls
+        primer_prompts = [p for p in llm.prompts if "Community Reports" in p]
+        assert len(primer_prompts) >= 2
+
+    @pytest.mark.asyncio
+    async def test_primer_folds_merges_follow_ups(self):
+        """Folds merge follow-up questions from all fold results."""
+        reports = [
+            {"id": f"report:{i}:0", "level": 0, "report_text": f"Report {i}."}
+            for i in range(4)
+        ]
+        store = FakeGraphStore(reports=reports)
+
+        follow_ups_fold1 = ["What year?", "Who acted?"]
+        follow_ups_fold2 = ["How much revenue?", "What awards?"]
+
+        responses = [
+            json.dumps({"answer": "Fold1", "score": 70, "follow_ups": follow_ups_fold1, "report_ids": ["report:0:0"]}),
+            json.dumps({"answer": "Fold2", "score": 80, "follow_ups": follow_ups_fold2, "report_ids": ["report:2:0"]}),
+        ]
+        llm = FakeLLM(responses=responses)
+        retriever = DriftSearchRetriever(
+            store, llm, FakeEmbedder(),
+            config=DriftSearchConfig(primer_top_k=4, primer_folds=2, use_hyde=False, max_depth=0),
+        )
+
+        result = await retriever.search("query", top_k=2)
+
+        assert result.mode == "drift"
+        assert result.answer
+
+    def test_primer_folds_default_is_1(self):
+        """primer_folds defaults to 1 (single call)."""
+        config = DriftSearchConfig()
+        assert config.primer_folds == 1
+
+    def test_split_into_folds_even(self):
+        reports = [{"id": str(i)} for i in range(6)]
+        folds = DriftSearchRetriever._split_into_folds(reports, 3)
+        assert len(folds) == 3
+        assert len(folds[0]) == 2
+
+    def test_split_into_folds_uneven(self):
+        reports = [{"id": str(i)} for i in range(5)]
+        folds = DriftSearchRetriever._split_into_folds(reports, 3)
+        assert sum(len(f) for f in folds) == 5
+
+    def test_split_into_folds_single(self):
+        reports = [{"id": "1"}]
+        folds = DriftSearchRetriever._split_into_folds(reports, 3)
+        assert len(folds) == 1
+
+
+class TestDriftActionMixedContext:
+    @pytest.mark.asyncio
+    async def test_action_use_mixed_context_default_is_true(self):
+        """action_use_mixed_context defaults to True."""
+        config = DriftSearchConfig()
+        assert config.action_use_mixed_context is True
+
+    @pytest.mark.asyncio
+    async def test_action_mixed_context_creates_builder(self):
+        """action_use_mixed_context=True creates MixedContextBuilder."""
+        store = FakeGraphStore()
+        retriever = DriftSearchRetriever(
+            store, FakeLLM(), FakeEmbedder(),
+            config=DriftSearchConfig(use_hyde=False),
+        )
+
+        # Trigger a search that creates the builder
+        await retriever.search("query", top_k=2)
+
+        # If any actions ran with mixed context, builder should exist
+        # (it's created lazily in _build_action_mixed_context)

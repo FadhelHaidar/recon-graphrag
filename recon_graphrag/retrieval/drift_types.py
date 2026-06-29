@@ -50,6 +50,10 @@ class DriftSearchConfig:
     action_concurrency: int = 3
     community_level: CommunityLevelSelector = "coarsest"
     reduce_budget_tokens: int = 12000
+    use_hyde: bool = True
+    primer_folds: int = 1
+    action_use_mixed_context: bool = True
+    action_mixed_context_tokens: int = 12000
 
     def __post_init__(self) -> None:
         if self.primer_top_k < 1:
@@ -62,3 +66,7 @@ class DriftSearchConfig:
             raise ValueError("max_llm_calls and action_concurrency must be positive")
         if self.reduce_budget_tokens < 0:
             raise ValueError("reduce_budget_tokens must be non-negative")
+        if self.primer_folds < 1:
+            raise ValueError("primer_folds must be positive")
+        if self.action_mixed_context_tokens < 0:
+            raise ValueError("action_mixed_context_tokens must be non-negative")

@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random as _random
 import re
 import time
 from typing import Optional
@@ -43,6 +44,7 @@ from recon_graphrag.retrieval.drift_types import (
 )
 from recon_graphrag.retrieval.hybrid import HybridEntityRetriever, HybridRanker
 from recon_graphrag.retrieval.local import _source_chunk_ids_from_result
+from recon_graphrag.retrieval.mixed_context import MixedContextBuilder
 from recon_graphrag.utils.tokens import (
     ApproximateTokenCounter,
     TokenCounter,
@@ -157,6 +159,21 @@ Your previous response had invalid JSON. Fix it and return valid JSON.
 Return ONLY valid JSON. Do not include markdown fences.
 """
 
+HYDE_PROMPT = """\
+You are writing a hypothetical community report that answers the following question.
+Write the report in the same style as the example report below.
+
+## Question
+{query}
+
+## Example Report Style
+{template_report}
+
+Write a hypothetical report that answers the question above. Be specific and detailed.
+Return only the report text, no JSON formatting.
+
+Hypothetical Report:"""
+
 
 # ---------------------------------------------------------------------------
 # Local fallback prompt
@@ -204,6 +221,7 @@ class DriftSearchRetriever(BaseRetriever):
         self.config = config or DriftSearchConfig()
         self.counter = token_counter or ApproximateTokenCounter()
         self._retriever = self._build_retriever()
+        self._mixed_context_builder: MixedContextBuilder | None = None
 
     def _build_retriever(self) -> HybridEntityRetriever:
         return HybridEntityRetriever(
@@ -348,29 +366,40 @@ class DriftSearchRetriever(BaseRetriever):
         if not reports:
             return {"fallback": True, "fallback_reason": "no_report_results"}
 
+        if config.use_hyde:
+            reports = await self._hyde_rerank(
+                query, reports, query_vector, state, config, call_lock, resolved_level, primer_top_k,
+            )
+            if not reports:
+                return {"fallback": True, "fallback_reason": "hyde_rerank_failed"}
+
         state.primer_reports = reports
 
-        report_context = self._format_primer_reports(reports)
-        prompt = PRIMER_PROMPT.format(
-            query=query,
-            report_context=report_context,
-            conversation_history=self._format_history(conversation_history),
-        )
-
-        try:
-            response = await self._invoke_llm(
-                prompt, state, config.max_llm_calls, call_lock, "primer"
+        if config.primer_folds > 1:
+            data = await self._primer_with_folds(
+                query, reports, state, config, conversation_history, call_lock,
             )
-            data = await self._parse_json_strict(
-                response.content,
-                state,
-                phase="primer",
-                max_llm_calls=config.max_llm_calls,
-                call_lock=call_lock,
+        else:
+            report_context = self._format_primer_reports(reports)
+            prompt = PRIMER_PROMPT.format(
+                query=query,
+                report_context=report_context,
+                conversation_history=self._format_history(conversation_history),
             )
-        except Exception as e:
-            state.failures.append(f"primer LLM failed: {e}")
-            return {"fallback": True, "fallback_reason": "primer_llm_failed"}
+            try:
+                response = await self._invoke_llm(
+                    prompt, state, config.max_llm_calls, call_lock, "primer"
+                )
+                data = await self._parse_json_strict(
+                    response.content,
+                    state,
+                    phase="primer",
+                    max_llm_calls=config.max_llm_calls,
+                    call_lock=call_lock,
+                )
+            except Exception as e:
+                state.failures.append(f"primer LLM failed: {e}")
+                return {"fallback": True, "fallback_reason": "primer_llm_failed"}
 
         primer_action = DriftAction(
             id="primer",
@@ -380,7 +409,7 @@ class DriftSearchRetriever(BaseRetriever):
             answer=data.get("answer", ""),
             score=float(data.get("score", 0)),
             status="completed",
-            context=report_context,
+            context=self._format_primer_reports(reports),
             follow_ups=data.get("follow_ups", [])[:3],
             references=data.get("references", []),
             report_ids=data.get("report_ids", []),
@@ -388,6 +417,129 @@ class DriftSearchRetriever(BaseRetriever):
         state.actions.append(primer_action)
 
         return {"fallback": False}
+
+    async def _hyde_rerank(
+        self,
+        query: str,
+        reports: list[dict],
+        query_vector: list[float],
+        state: DriftQueryState,
+        config: DriftSearchConfig,
+        call_lock: asyncio.Lock,
+        resolved_level: int,
+        primer_top_k: int,
+    ) -> list[dict]:
+        """Generate hypothetical answer, re-embed, re-search reports."""
+        rng = _random.Random(hash(query))
+        template = rng.choice(reports)
+        template_text = template.get("report_text", "")
+
+        hyde_prompt = HYDE_PROMPT.format(query=query, template_report=template_text)
+        try:
+            response = await self._invoke_llm(
+                hyde_prompt, state, config.max_llm_calls, call_lock, "hyde"
+            )
+            hypothetical = response.content
+        except Exception as e:
+            state.failures.append(f"HyDE LLM failed: {e}")
+            return reports
+
+        try:
+            hyde_vector = await self.embedder.async_embed_query(hypothetical)
+        except Exception as e:
+            state.failures.append(f"HyDE embedding failed: {e}")
+            return reports
+
+        try:
+            reranked = self.graph_store.vector_search_community_reports(
+                query_vector=hyde_vector,
+                graph_name=self.graph_name,
+                top_k=primer_top_k,
+                level=resolved_level,
+            )
+        except Exception as e:
+            state.failures.append(f"HyDE re-search failed: {e}")
+            return reports
+
+        return reranked if reranked else reports
+
+    async def _primer_with_folds(
+        self,
+        query: str,
+        reports: list[dict],
+        state: DriftQueryState,
+        config: DriftSearchConfig,
+        conversation_history: str,
+        call_lock: asyncio.Lock,
+    ) -> dict:
+        """Split reports into folds, run primer LLM calls in parallel, merge follow-ups."""
+        folds = self._split_into_folds(reports, config.primer_folds)
+
+        async def _process_fold(fold_reports: list[dict]) -> dict | None:
+            report_context = self._format_primer_reports(fold_reports)
+            prompt = PRIMER_PROMPT.format(
+                query=query,
+                report_context=report_context,
+                conversation_history=self._format_history(conversation_history),
+            )
+            try:
+                response = await self._invoke_llm(
+                    prompt, state, config.max_llm_calls, call_lock, "primer_fold"
+                )
+                return await self._parse_json_strict(
+                    response.content,
+                    state,
+                    phase="primer",
+                    max_llm_calls=config.max_llm_calls,
+                    call_lock=call_lock,
+                )
+            except Exception as e:
+                state.failures.append(f"primer fold LLM failed: {e}")
+                return None
+
+        results = await asyncio.gather(*[_process_fold(f) for f in folds])
+
+        best_data = None
+        best_score = -1.0
+        all_follow_ups: list[str] = []
+        all_report_ids: list[str] = []
+        all_references: list[dict] = []
+
+        for data in results:
+            if data is None:
+                continue
+            score = float(data.get("score", 0))
+            if score > best_score:
+                best_score = score
+                best_data = data
+            all_follow_ups.extend(data.get("follow_ups", []))
+            all_report_ids.extend(data.get("report_ids", []))
+            all_references.extend(data.get("references", []))
+
+        if best_data is None:
+            return {
+                "answer": "No relevant information found.",
+                "score": 0,
+                "follow_ups": [],
+                "report_ids": [],
+                "references": [],
+            }
+
+        best_data["follow_ups"] = list(dict.fromkeys(all_follow_ups))
+        best_data["report_ids"] = list(dict.fromkeys(all_report_ids))
+        best_data["references"] = all_references
+        return best_data
+
+    @staticmethod
+    def _split_into_folds(reports: list[dict], n_folds: int) -> list[list[dict]]:
+        """Split reports into n roughly equal folds."""
+        if n_folds <= 1 or len(reports) <= 1:
+            return [reports]
+        fold_size = max(1, len(reports) // n_folds)
+        folds = []
+        for i in range(0, len(reports), fold_size):
+            folds.append(reports[i : i + fold_size])
+        return folds
 
     # ------------------------------------------------------------------
     # Phase 2: Traversal
@@ -526,24 +678,35 @@ class DriftSearchRetriever(BaseRetriever):
             state.failures.append(f"retrieval failed for {action.id}: {e}")
             return
 
-        # Resolve chunk citations
-        chunk_ids = _source_chunk_ids_from_result(retriever_result)
-        if chunk_ids:
-            try:
-                action.citations = resolve_chunk_citations(
-                    self.graph_store, self.graph_name, chunk_ids
-                )
-            except Exception:
-                pass
+        # Build context
+        if config.action_use_mixed_context:
+            local_context = self._build_action_mixed_context(retriever_result)
+            chunk_ids = _source_chunk_ids_from_result(retriever_result)
+            if chunk_ids:
+                try:
+                    action.citations = resolve_chunk_citations(
+                        self.graph_store, self.graph_name, chunk_ids
+                    )
+                except Exception:
+                    pass
+        else:
+            chunk_ids = _source_chunk_ids_from_result(retriever_result)
+            if chunk_ids:
+                try:
+                    action.citations = resolve_chunk_citations(
+                        self.graph_store, self.graph_name, chunk_ids
+                    )
+                except Exception:
+                    pass
 
-        from recon_graphrag.retrieval.local import _format_entity_context
+            from recon_graphrag.retrieval.local import _format_entity_context
 
-        local_context = _format_entity_context(
-            retriever_result,
-            citations=(action.citations if synthesize_citation_metadata else None),
-            citation_metadata_keys=synthesis_metadata_keys,
-            drift=True,
-        )
+            local_context = _format_entity_context(
+                retriever_result,
+                citations=(action.citations if synthesize_citation_metadata else None),
+                citation_metadata_keys=synthesis_metadata_keys,
+                drift=True,
+            )
         action.context = local_context
 
         # Get parent answer for context
@@ -595,6 +758,33 @@ class DriftSearchRetriever(BaseRetriever):
         except Exception as e:
             action.status = "failed"
             state.failures.append(f"action LLM failed for {action.id}: {e}")
+
+    def _build_action_mixed_context(self, retriever_result) -> str:
+        """Build mixed context for a DRIFT action using MixedContextBuilder."""
+        if self._mixed_context_builder is None:
+            self._mixed_context_builder = MixedContextBuilder(
+                graph_store=self.graph_store,
+                embedder=self.embedder,
+                graph_name=self.graph_name,
+            )
+
+        entity_matches = []
+        entity_context_rows = []
+        for item in retriever_result.items:
+            content = item.content
+            if not isinstance(content, dict):
+                continue
+            entity_context_rows.append(content)
+            score = content.get("score", 0.0)
+            entity_id = content.get("entity_id") or content.get("title", "")
+            entity_matches.append({"id": entity_id, "score": score})
+
+        mixed = self._mixed_context_builder.build_context(
+            entity_matches=entity_matches,
+            entity_context_rows=entity_context_rows,
+            token_budget=self.config.action_mixed_context_tokens,
+        )
+        return mixed.context
 
     # ------------------------------------------------------------------
     # Phase 3: Reduction

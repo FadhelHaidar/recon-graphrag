@@ -175,7 +175,7 @@ class TestDriftSearch:
             store,
             FakeLLM(),
             FakeEmbedder(),
-            config=DriftSearchConfig(primer_top_k=4),
+            config=DriftSearchConfig(primer_top_k=4, use_hyde=False),
         )
 
         await retriever.search("query", top_k=2)
@@ -265,7 +265,7 @@ class TestDriftCommunityLevelAliases:
         report_call = [
             c for c in store.calls if c[0] == "vector_search_community_reports"
         ]
-        assert len(report_call) == 1
+        assert len(report_call) >= 1
         assert report_call[0][1]["level"] == 0
 
     @pytest.mark.asyncio
@@ -278,7 +278,7 @@ class TestDriftCommunityLevelAliases:
         report_call = [
             c for c in store.calls if c[0] == "vector_search_community_reports"
         ]
-        assert len(report_call) == 1
+        assert len(report_call) >= 1
         assert report_call[0][1]["level"] == 2
 
     @pytest.mark.asyncio
@@ -365,7 +365,10 @@ class TestDriftPrimerJsonParsing:
                 })
             ]
         )
-        retriever = DriftSearchRetriever(store, llm, FakeEmbedder())
+        retriever = DriftSearchRetriever(
+            store, llm, FakeEmbedder(),
+            config=DriftSearchConfig(use_hyde=False),
+        )
 
         result = await retriever.search("query", top_k=2)
 
@@ -385,7 +388,10 @@ class TestDriftPrimerJsonParsing:
                 + "\n```"
             ]
         )
-        retriever = DriftSearchRetriever(store, llm, FakeEmbedder())
+        retriever = DriftSearchRetriever(
+            store, llm, FakeEmbedder(),
+            config=DriftSearchConfig(use_hyde=False),
+        )
 
         result = await retriever.search("query", top_k=2)
 
@@ -401,7 +407,10 @@ class TestDriftPrimerJsonParsing:
                 + "\nHope that helps!"
             ]
         )
-        retriever = DriftSearchRetriever(store, llm, FakeEmbedder())
+        retriever = DriftSearchRetriever(
+            store, llm, FakeEmbedder(),
+            config=DriftSearchConfig(use_hyde=False),
+        )
 
         result = await retriever.search("query", top_k=2)
 
@@ -426,7 +435,10 @@ class TestDriftTraversal:
                 }),
             ]
         )
-        retriever = DriftSearchRetriever(store, llm, FakeEmbedder())
+        retriever = DriftSearchRetriever(
+            store, llm, FakeEmbedder(),
+            config=DriftSearchConfig(use_hyde=False),
+        )
 
         result = await retriever.search("query", top_k=2)
 
@@ -452,7 +464,7 @@ class TestDriftTraversal:
                 }),
             ]
         )
-        config = DriftSearchConfig(min_expand_score=20.0)
+        config = DriftSearchConfig(min_expand_score=20.0, use_hyde=False)
         retriever = DriftSearchRetriever(store, llm, FakeEmbedder(), config=config)
 
         result = await retriever.search("query", top_k=2)
@@ -467,7 +479,10 @@ class TestDriftConversationHistory:
     async def test_conversation_history_in_prompt(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        retriever = DriftSearchRetriever(store, llm, FakeEmbedder())
+        retriever = DriftSearchRetriever(
+            store, llm, FakeEmbedder(),
+            config=DriftSearchConfig(use_hyde=False),
+        )
 
         await retriever.search("query", top_k=2, conversation_history="User: Hi\nAssistant: Hello")
 
@@ -489,7 +504,8 @@ class TestDriftPromptCustomization:
         )
         custom_prompt = "CUSTOM REDUCE: {query}\n{action_context}\n{conversation_history}"
         retriever = DriftSearchRetriever(
-            store, llm, FakeEmbedder(), reduce_prompt=custom_prompt
+            store, llm, FakeEmbedder(), reduce_prompt=custom_prompt,
+            config=DriftSearchConfig(use_hyde=False),
         )
 
         result = await retriever.search("query", top_k=2)
@@ -512,7 +528,8 @@ class TestDriftLimitsAndRepair:
             ]
         )
         result = await DriftSearchRetriever(
-            FakeGraphStore(), llm, FakeEmbedder()
+            FakeGraphStore(), llm, FakeEmbedder(),
+            config=DriftSearchConfig(use_hyde=False),
         ).search("query")
 
         assert "invalid JSON" in llm.prompts[1]
@@ -534,7 +551,7 @@ class TestDriftLimitsAndRepair:
                 }),
             ]
         )
-        config = DriftSearchConfig(max_llm_calls=2, action_concurrency=3)
+        config = DriftSearchConfig(max_llm_calls=2, action_concurrency=3, use_hyde=False)
         result = await DriftSearchRetriever(
             FakeGraphStore(), llm, FakeEmbedder(), config=config
         ).search("query")
@@ -547,7 +564,7 @@ class TestDriftLimitsAndRepair:
     @pytest.mark.asyncio
     async def test_config_community_level_is_used_when_constructor_omits_it(self):
         store = FakeGraphStore()
-        config = DriftSearchConfig(community_level="finest")
+        config = DriftSearchConfig(community_level="finest", use_hyde=False)
         await DriftSearchRetriever(
             store, FakeLLM(), FakeEmbedder(), config=config
         ).search("query")
