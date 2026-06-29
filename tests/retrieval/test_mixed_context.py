@@ -21,12 +21,25 @@ class FakeGraphStore:
         self.calls.append(("keyword_search", {}))
         return [{"id": "a", "score": 1.0}]
 
-    def fetch_entity_context(self, matches, retrieval_query=None, query_params=None, mode="local"):
-        self.calls.append(("fetch_entity_context", {"mode": mode}))
+    def fetch_entity_context(self, matches, retrieval_query=None, query_params=None, mode="local", graph_name=None):
+        self.calls.append(("fetch_entity_context", {"mode": mode, "graph_name": graph_name}))
         return [
             {
                 "title": "Alice (Person)",
+                "entity_id": "a",
+                "entity_name": "Alice",
+                "entity_labels": ["__Entity__", "Person"],
+                "entity_description": "CEO of Acme",
                 "relationships": ["Person: Alice -[WORKS_AT]-> Organization: Acme"],
+                "relationship_records": [{
+                    "source_id": "a",
+                    "source_name": "Alice",
+                    "target_id": "org:acme",
+                    "target_name": "Acme",
+                    "rel": "WORKS_AT",
+                    "description": "Alice leads Acme",
+                    "weight": 4.0,
+                }],
                 "source_text": ["Alice directed Inception."],
                 "source_chunk_ids": ["chunk:1"],
                 "score": 0.8,
@@ -39,6 +52,10 @@ class FakeGraphStore:
 
         if "RETURN max(c.level) AS level" in query:
             return [{"level": 2}]
+        if "relationship_keys" in params:
+            return [{"chunk_id": "chunk:1"}]
+        if "claim_ids" in params:
+            return [{"chunk_id": "chunk:1"}]
         if "Chunk" in query and "FROM_CHUNK" in query:
             return [
                 {
@@ -52,7 +69,7 @@ class FakeGraphStore:
                 {
                     "community_id": "c0",
                     "level": 0,
-                    "summary": "Alice leads Acme Corp in the tech sector.",
+                    "report_text": "Alice leads Acme Corp in the tech sector.",
                     "rating": 8.0,
                 }
             ]
@@ -105,7 +122,20 @@ class TestMixedContextBuilder:
             entity_context_rows=[
                 {
                     "title": "Alice (Person)",
+                    "entity_id": "a",
+                    "entity_name": "Alice",
+                    "entity_labels": ["__Entity__", "Person"],
+                    "entity_description": "CEO of Acme",
                     "relationships": ["Person: Alice -[WORKS_AT]-> Organization: Acme"],
+                    "relationship_records": [{
+                        "source_id": "a",
+                        "source_name": "Alice",
+                        "target_id": "org:acme",
+                        "target_name": "Acme",
+                        "rel": "WORKS_AT",
+                        "description": "Alice leads Acme",
+                        "weight": 4.0,
+                    }],
                     "source_text": ["Alice directed Inception."],
                     "source_chunk_ids": ["chunk:1"],
                     "score": 0.8,
@@ -119,6 +149,7 @@ class TestMixedContextBuilder:
         assert "Source Text" in result.context
         assert "Community Reports" in result.context
         assert "Alice" in result.context
+        assert "Alice leads Acme" in result.context
         assert "chunk:1" in result.included_chunk_ids
         assert "c0" in result.included_community_ids
         assert "claim:1" in result.included_claim_ids

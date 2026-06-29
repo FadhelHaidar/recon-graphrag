@@ -21,6 +21,8 @@ class DriftAction:
     context: str = ""
     citations: list = field(default_factory=list)
     follow_ups: list[str] = field(default_factory=list)
+    references: list[dict] = field(default_factory=list)
+    report_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -48,3 +50,15 @@ class DriftSearchConfig:
     action_concurrency: int = 3
     community_level: CommunityLevelSelector = "coarsest"
     reduce_budget_tokens: int = 12000
+
+    def __post_init__(self) -> None:
+        if self.primer_top_k < 1:
+            raise ValueError("primer_top_k must be positive")
+        if self.max_followups < 0 or self.max_depth < 0:
+            raise ValueError("max_followups and max_depth must be non-negative")
+        if not 0 <= self.min_expand_score <= 100:
+            raise ValueError("min_expand_score must be between 0 and 100")
+        if self.max_llm_calls < 1 or self.action_concurrency < 1:
+            raise ValueError("max_llm_calls and action_concurrency must be positive")
+        if self.reduce_budget_tokens < 0:
+            raise ValueError("reduce_budget_tokens must be non-negative")

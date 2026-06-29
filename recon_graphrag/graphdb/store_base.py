@@ -111,32 +111,6 @@ class BaseGraphStore:
             params = {"graph_name": graph_name}
         return self.execute_query(query, params)
 
-    def store_community_summary(
-        self,
-        community_id: str,
-        level: int,
-        summary: str,
-        graph_name: str,
-    ) -> None:
-        query = """
-        MATCH (c:Community {
-            graph_name: $graph_name,
-            id: $cid,
-            level: $level
-        })
-        SET c.summary = $summary,
-            c.updated = timestamp()
-        """
-        self.execute_query(
-            query,
-            {
-                "graph_name": graph_name,
-                "cid": community_id,
-                "level": level,
-                "summary": summary,
-            },
-        )
-
     def store_community_report(
         self,
         report: CommunityReport,
@@ -152,7 +126,6 @@ class BaseGraphStore:
         SET c.report_json = $report_json,
             c.report_text = $report_text,
             c.title = $title,
-            c.summary = $report_text,
             c.rating = $rating,
             c.rating_explanation = $rating_explanation,
             c.report_status = 'success',
@@ -166,7 +139,8 @@ class BaseGraphStore:
         WHERE c.input_fingerprint <> $input_fingerprint
            OR c.input_fingerprint IS NULL
         SET c.input_fingerprint = $input_fingerprint,
-            c.report_embedding = NULL
+            c.report_embedding = NULL,
+            c.report_embedding_error = NULL
         """
         self.execute_query(
             query,
@@ -273,11 +247,11 @@ class BaseGraphStore:
         query = """
         MATCH (c:Community {graph_name: $graph_name})
         WHERE c.report_embedding IS NULL
-          AND coalesce(c.report_text, c.summary, '') <> ''
+          AND c.report_embedding_error IS NULL
+          AND coalesce(c.report_text, '') <> ''
         RETURN c.id AS id,
                c.level AS level,
-               coalesce(c.report_text, c.summary) AS report_text,
-               coalesce(c.report_text, c.summary) AS summary,
+               c.report_text AS report_text,
                coalesce(c.title, '') AS title
         LIMIT $limit
         """
@@ -289,69 +263,25 @@ class BaseGraphStore:
         self,
         node_ids: list[str],
         vectors: list[list[float]],
+        graph_name: str,
+        levels: list[int],
     ) -> None:
         if not node_ids:
             return
+        if len(node_ids) != len(vectors) or len(node_ids) != len(levels):
+            raise ValueError("node_ids, vectors, and levels must have the same length")
         query = """
         UNWIND $pairs AS pair
-        MATCH (c:Community)
-        WHERE c.id = pair.node_id
-        SET c.report_embedding = pair.vector
+        MATCH (c:Community {
+            graph_name: $graph_name,
+            id: pair.node_id,
+            level: pair.level
+        })
+        SET c.report_embedding = pair.vector,
+            c.report_embedding_error = NULL
         """
         pairs = [
-            {"node_id": nid, "vector": vec}
-            for nid, vec in zip(node_ids, vectors)
+            {"node_id": nid, "level": level, "vector": vec}
+            for nid, level, vec in zip(node_ids, levels, vectors)
         ]
-        self.execute_query(query, {"pairs": pairs})
-
-    def vector_search_community_reports(
-        self,
-        query_vector: list[float],
-        graph_name: str,
-        top_k: int = 3,
-        level: int | None = None,
-    ) -> list[dict]:
-        if level is not None:
-            query = """
-            CALL db.index.vector.queryNodes(
-                $index_name, $top_k, $query_vector
-            ) YIELD node AS c, score
-            WHERE c.graph_name = $graph_name AND c.level = $level
-            RETURN c.id AS id,
-                   c.level AS level,
-                   coalesce(c.report_text, c.summary) AS summary,
-                   coalesce(c.report_text, '') AS report_text,
-                   coalesce(c.report_json, '') AS report_json,
-                   c.rating AS rating,
-                   score
-            ORDER BY score DESC
-            """
-            params = {
-                "index_name": "community-report-embeddings",
-                "top_k": top_k,
-                "query_vector": query_vector,
-                "graph_name": graph_name,
-                "level": level,
-            }
-        else:
-            query = """
-            CALL db.index.vector.queryNodes(
-                $index_name, $top_k, $query_vector
-            ) YIELD node AS c, score
-            WHERE c.graph_name = $graph_name
-            RETURN c.id AS id,
-                   c.level AS level,
-                   coalesce(c.report_text, c.summary) AS summary,
-                   coalesce(c.report_text, '') AS report_text,
-                   coalesce(c.report_json, '') AS report_json,
-                   c.rating AS rating,
-                   score
-            ORDER BY score DESC
-            """
-            params = {
-                "index_name": "community-report-embeddings",
-                "top_k": top_k,
-                "query_vector": query_vector,
-                "graph_name": graph_name,
-            }
-        return self.execute_query(query, params)
+        self.execute_query(query, {"graph_name": graph_name, "pairs": pairs})

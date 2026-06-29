@@ -33,21 +33,6 @@ def test_base_store_get_communities_reads_level_scope():
     assert params == {"graph_name": "graph-a", "level": 1}
 
 
-def test_base_store_store_community_summary_sets_summary():
-    store = FakeBaseStore()
-
-    store.store_community_summary("community:1", 0, "summary", "graph-a")
-
-    query, params = store.calls[-1]
-    assert "SET c.summary = $summary" in query
-    assert params == {
-        "graph_name": "graph-a",
-        "cid": "community:1",
-        "level": 0,
-        "summary": "summary",
-    }
-
-
 def test_base_store_store_community_report_sets_structured_fields():
     store = FakeBaseStore()
     report = CommunityReport(
@@ -97,3 +82,21 @@ def test_base_store_claim_and_citation_reads_are_graph_scoped():
     assert "properties(c) AS chunk_metadata" in query
     assert "properties(d) AS document_metadata" in query
     assert params == {"graph_name": "graph-a", "chunk_ids": ["chunk:1"]}
+
+
+def test_community_vector_upsert_is_graph_and_level_scoped():
+    store = FakeBaseStore()
+
+    store.upsert_community_report_vectors(
+        ["community:1"], [[0.1, 0.2]], "graph-a", [2]
+    )
+
+    query, params = store.calls[-1]
+    assert "graph_name: $graph_name" in query
+    assert "level: pair.level" in query
+    assert params == {
+        "graph_name": "graph-a",
+        "pairs": [
+            {"node_id": "community:1", "level": 2, "vector": [0.1, 0.2]}
+        ],
+    }

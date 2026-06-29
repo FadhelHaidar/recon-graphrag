@@ -27,7 +27,7 @@ class CommunityReportEmbedder:
         """Generate embeddings for community reports without embeddings.
 
         Loops until all unembedded reports are processed.
-        Embeds report_text (or summary as fallback) + title.
+        Embeds report text and title.
         Returns total number of reports embedded.
         """
         total = 0
@@ -41,6 +41,7 @@ class CommunityReportEmbedder:
                 break
 
             ids: list[str] = []
+            levels: list[int] = []
             embeddings: list[list[float]] = []
 
             for report in reports:
@@ -49,14 +50,30 @@ class CommunityReportEmbedder:
                     if not text:
                         continue
                     embedding = await self.embedder.async_embed_query(text)
+                    if not embedding:
+                        raise ValueError("embedder returned an empty vector")
                     ids.append(report["id"])
+                    levels.append(int(report["level"]))
                     embeddings.append(embedding)
                 except Exception as e:
                     rid = report.get("id", "?")
                     print(f"  Error embedding community report '{rid}': {e}")
+                    try:
+                        self._mark_failed(report, str(e))
+                    except Exception as mark_error:
+                        print(
+                            f"  Error recording embedding failure for '{rid}': "
+                            f"{mark_error}"
+                        )
+                        return total
 
             if ids:
-                self.graph_store.upsert_community_report_vectors(ids, embeddings)
+                self.graph_store.upsert_community_report_vectors(
+                    ids,
+                    embeddings,
+                    graph_name=self.graph_name,
+                    levels=levels,
+                )
                 total += len(ids)
 
         if total == 0:
@@ -66,10 +83,29 @@ class CommunityReportEmbedder:
 
         return total
 
+    def _mark_failed(self, report: dict, error: str) -> None:
+        """Exclude a failed report until its fingerprint changes."""
+        self.graph_store.execute_query(
+            """
+            MATCH (c:Community {
+                graph_name: $graph_name,
+                id: $id,
+                level: $level
+            })
+            SET c.report_embedding_error = $error
+            """,
+            {
+                "graph_name": self.graph_name,
+                "id": report.get("id"),
+                "level": report.get("level"),
+                "error": error[:1000],
+            },
+        )
+
     @staticmethod
     def _report_to_text(report: dict) -> str:
         title = report.get("title", "").strip()
-        text = report.get("report_text", "").strip() or report.get("summary", "").strip()
+        text = report.get("report_text", "").strip()
         parts = []
         if title:
             parts.append(title)

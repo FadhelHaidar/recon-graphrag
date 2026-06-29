@@ -1,4 +1,4 @@
-"""Community pipeline: detect → summarize (steps 4-5).
+"""Community pipeline: detect → report → embed.
 
 Convenience wrapper that chains the two community steps into a single
 build() call. Typically run on a schedule (e.g. weekly) after new entities
@@ -18,7 +18,7 @@ from recon_graphrag.utils.tokens import TokenCounter
 
 
 class CommunityPipeline:
-    """Run the full community pipeline: detect → summarize."""
+    """Run the full community pipeline: detect → report → embed."""
 
     def __init__(
         self,
@@ -32,8 +32,6 @@ class CommunityPipeline:
         graph_name: str = "entity-graph",
         relationship_weight_property: str = "weight",
         random_seed: Optional[int] = 42,
-        summary_prompt: Optional[str] = None,
-        use_reports: bool = True,
         report_rubric: ReportRubric | None = None,
         summarize_concurrency: int = 1,
         skip_existing: bool = False,
@@ -46,7 +44,7 @@ class CommunityPipeline:
 
         Args:
             graph_store: Store that provides community detection and persistence.
-            llm: LLM used to summarize detected communities.
+            llm: LLM used to generate structured community reports.
             relationship_types: Relationship types to include in the detection graph.
             max_levels: Maximum number of community hierarchy levels to detect.
             gamma: Leiden resolution parameter.
@@ -57,11 +55,9 @@ class CommunityPipeline:
                 to use as the Leiden edge weight, e.g. "weight". Neo4j runs
                 unweighted when this is None; Memgraph defaults to "weight".
             random_seed: Random seed for deterministic Neo4j community detection.
-            summary_prompt: Optional custom prompt for community summaries.
-            use_reports: Generate structured reports instead of plain summaries.
             report_rubric: Rating rubric for structured reports.
             summarize_concurrency: Max concurrent LLM calls per level.
-            skip_existing: Skip communities that already have a summary.
+            skip_existing: Skip communities whose report input is unchanged.
             max_context_tokens: Maximum tokens for community context passed to the
                 LLM. When set, degree-ranked context is greedily packed to fit
                 this budget. When None, all context is included.
@@ -69,9 +65,9 @@ class CommunityPipeline:
                 ApproximateTokenCounter when max_context_tokens is set.
             embedder: Embedder for community report vector embeddings.
                 When provided and embed_community_reports=True, generates
-                report embeddings after summarization.
+                report embeddings after generation.
             embed_community_reports: Whether to embed community reports
-                after summarization. Requires embedder to be set.
+                after report generation. Requires embedder to be set.
         """
         self.graph_store = graph_store
         self.llm = llm
@@ -83,8 +79,6 @@ class CommunityPipeline:
         self.graph_name = graph_name
         self.relationship_weight_property = relationship_weight_property
         self.random_seed = random_seed
-        self.summary_prompt = summary_prompt
-        self.use_reports = use_reports
         self.report_rubric = report_rubric
         self.summarize_concurrency = summarize_concurrency
         self.skip_existing = skip_existing
@@ -94,16 +88,16 @@ class CommunityPipeline:
         self.embed_community_reports = embed_community_reports
 
     async def build(self, level: Optional[int] = None) -> dict:
-        """Run steps 4-5: detect communities and summarize.
+        """Detect communities, generate reports, and embed them.
 
-        Processes levels bottom-up. Within each level, runs up to
-        ``summarize_concurrency`` summaries in parallel.
+        Processes levels finest-to-coarsest. Within each level, runs up to
+        ``summarize_concurrency`` report generations in parallel.
 
         Args:
-            level: Highest community hierarchy level to summarize.
+            level: Coarsest community hierarchy level to report.
                 If None, processes all detected levels. If provided, lower
-                levels are also processed first so parent summaries can use
-                child summaries.
+                finer levels are processed first so parent reports can use
+                child reports.
 
         Returns:
             Dict with stats from each step, including per-level build stats.
@@ -127,15 +121,13 @@ class CommunityPipeline:
             if level is not None
             else detected_levels
         )
-        total_summaries = 0
+        total_reports = 0
         level_stats: list[dict] = []
 
         summarizer = CommunitySummarizer(
             self.graph_store,
             self.llm,
-            prompt_template=self.summary_prompt,
             graph_name=self.graph_name,
-            use_reports=self.use_reports,
             report_rubric=self.report_rubric,
             concurrency=self.summarize_concurrency,
             max_context_tokens=self.max_context_tokens,
@@ -143,8 +135,8 @@ class CommunityPipeline:
         )
 
         for lvl in levels:
-            print(f"Step 5: Summarizing communities (level {lvl})...")
-            summaries, stats = await summarizer.summarize_all(
+            print(f"Step 5: Generating community reports (level {lvl})...")
+            reports, stats = await summarizer.generate_all(
                 level=lvl, skip_existing=self.skip_existing
             )
             print(
@@ -153,7 +145,7 @@ class CommunityPipeline:
                 f"({stats.elapsed_seconds:.1f}s)"
             )
 
-            total_summaries += len(summaries)
+            total_reports += len(reports)
             level_stats.append({
                 "level": lvl,
                 "attempted": stats.attempted,
@@ -181,7 +173,7 @@ class CommunityPipeline:
 
         return {
             "communities": len(community_stats),
-            "summaries": total_summaries,
+            "reports": total_reports,
             "levels": levels,
             "level_stats": level_stats,
             "embedded_reports": embedded_count,

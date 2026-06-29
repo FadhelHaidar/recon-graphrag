@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 from typing import Optional
@@ -48,6 +49,13 @@ from recon_graphrag.utils.tokens import (
     pack_items,
     PackItem,
 )
+
+
+logger = logging.getLogger(__name__)
+
+
+class _LLMCallLimitReached(RuntimeError):
+    """Internal signal used to enforce a per-search hard call budget."""
 
 
 # ---------------------------------------------------------------------------
@@ -151,23 +159,15 @@ Return ONLY valid JSON. Do not include markdown fences.
 
 
 # ---------------------------------------------------------------------------
-# Legacy fallback prompt
+# Local fallback prompt
 # ---------------------------------------------------------------------------
 
-LEGACY_ANSWER_PROMPT = """You have access to detailed findings and broader context.
+FALLBACK_ANSWER_PROMPT = """Answer the query using the local graph findings.
 
 Query: {query}
 
-=== Specific Findings ===
-{entity_context}
-
-=== Broader Context ===
-{community_context}
-
-=== Related Entities ===
-{bridging_context}
-
-Synthesize all the above information to answer the query.
+=== Local Findings ===
+{context}
 
 Answer:"""
 
@@ -186,11 +186,10 @@ class DriftSearchRetriever(BaseRetriever):
         llm: BaseLLM,
         embedder: BaseEmbedder,
         retrieval_query: Optional[str] = None,
-        answer_prompt: Optional[str] = None,
+        reduce_prompt: Optional[str] = None,
         vector_index_name: str = "entity-embeddings",
         fulltext_index_name: str = "entity-names",
         graph_name: str = "entity-graph",
-        community_level: CommunityLevelSelector = "coarsest",
         config: DriftSearchConfig | None = None,
         token_counter: TokenCounter | None = None,
     ):
@@ -198,11 +197,10 @@ class DriftSearchRetriever(BaseRetriever):
         self.llm = llm
         self.embedder = embedder
         self.retrieval_query = retrieval_query
-        self.answer_prompt = answer_prompt or REDUCE_PROMPT
+        self.reduce_prompt = reduce_prompt or REDUCE_PROMPT
         self.vector_index_name = vector_index_name
         self.fulltext_index_name = fulltext_index_name
         self.graph_name = graph_name
-        self.community_level = community_level
         self.config = config or DriftSearchConfig()
         self.counter = token_counter or ApproximateTokenCounter()
         self._retriever = self._build_retriever()
@@ -214,6 +212,7 @@ class DriftSearchRetriever(BaseRetriever):
             vector_index_name=self.vector_index_name,
             fulltext_index_name=self.fulltext_index_name,
             retrieval_query=self.retrieval_query,
+            graph_name=self.graph_name,
             context_mode="drift",
         )
 
@@ -221,7 +220,6 @@ class DriftSearchRetriever(BaseRetriever):
         self,
         query: str,
         top_k: int = 10,
-        community_top_k: int = 3,
         community_level: CommunityLevelSelector = None,
         query_vector: list[float] | None = None,
         effective_search_ratio: int = 1,
@@ -238,16 +236,15 @@ class DriftSearchRetriever(BaseRetriever):
         Args:
             query: User question.
             top_k: Number of entities for local follow-up retrieval.
-            community_top_k: Number of community reports for primer.
             community_level: Which community level to use.
             query_vector: Optional precomputed query vector.
             effective_search_ratio: Over-fetch multiplier for entity retrieval.
             query_params: Optional dict forwarded to the hybrid entity retriever.
             ranker: Hybrid ranker: "naive" or "linear".
             alpha: Required for the "linear" ranker.
-            synthesize_citation_metadata: Include citation metadata (unused in
-                iterative DRIFT, kept for API compatibility).
-            synthesis_metadata_keys: Keys for citation metadata (unused).
+            synthesize_citation_metadata: Include resolved citation metadata
+                in local follow-up context.
+            synthesis_metadata_keys: Citation metadata keys to include.
             synthesize_response: If False, skip final reduction and return
                 context + trace without synthesis.
             conversation_history: Optional conversation history string injected
@@ -255,17 +252,26 @@ class DriftSearchRetriever(BaseRetriever):
         """
         start = time.monotonic()
         state = DriftQueryState(query=query)
+        call_lock = asyncio.Lock()
 
         config = self.config
-        target_selector = community_level or self.community_level or config.community_level
+        target_selector = (
+            community_level if community_level is not None else config.community_level
+        )
         resolved_level = resolve_community_level(
             self.graph_store, self.graph_name, target_selector
         )
-        primer_top_k = community_top_k if community_top_k != 3 else config.primer_top_k
 
         # --- Phase 1: Primer ---
         primer_result = await self._primer_phase(
-            query, state, resolved_level, primer_top_k, conversation_history
+            query,
+            state,
+            resolved_level,
+            config.primer_top_k,
+            conversation_history,
+            query_vector,
+            config,
+            call_lock,
         )
 
         if primer_result.get("fallback"):
@@ -278,14 +284,16 @@ class DriftSearchRetriever(BaseRetriever):
                 ranker=ranker,
                 alpha=alpha,
                 synthesize_response=synthesize_response,
-                start=start,
                 reason=primer_result.get("fallback_reason", "missing_report_embeddings"),
+                call_lock=call_lock,
             )
 
         # --- Phase 2: Traversal ---
         await self._traversal_phase(
             query, state, config, top_k, effective_search_ratio,
             query_params, ranker, alpha, conversation_history,
+            synthesize_citation_metadata, synthesis_metadata_keys, call_lock,
+            synthesize_response,
         )
 
         # --- Phase 3: Reduction ---
@@ -297,6 +305,7 @@ class DriftSearchRetriever(BaseRetriever):
             state=state,
             synthesize_response=synthesize_response,
             conversation_history=conversation_history,
+            call_lock=call_lock,
         )
 
     # ------------------------------------------------------------------
@@ -310,13 +319,17 @@ class DriftSearchRetriever(BaseRetriever):
         resolved_level: int | None,
         primer_top_k: int,
         conversation_history: str,
+        query_vector: list[float] | None,
+        config: DriftSearchConfig,
+        call_lock: asyncio.Lock,
     ) -> dict:
         """Embed query, search community reports, parse primer JSON."""
-        try:
-            query_vector = await self.embedder.async_embed_query(query)
-        except Exception as e:
-            state.failures.append(f"query embedding failed: {e}")
-            return {"fallback": True, "fallback_reason": "query_embedding_failed"}
+        if query_vector is None:
+            try:
+                query_vector = await self.embedder.async_embed_query(query)
+            except Exception as e:
+                state.failures.append(f"query embedding failed: {e}")
+                return {"fallback": True, "fallback_reason": "query_embedding_failed"}
 
         if resolved_level is None:
             return {"fallback": True, "fallback_reason": "no_community_level"}
@@ -345,9 +358,16 @@ class DriftSearchRetriever(BaseRetriever):
         )
 
         try:
-            response = await self.llm.ainvoke(prompt)
-            state.total_llm_calls += 1
-            data = self._parse_json_strict(response.content, state)
+            response = await self._invoke_llm(
+                prompt, state, config.max_llm_calls, call_lock, "primer"
+            )
+            data = await self._parse_json_strict(
+                response.content,
+                state,
+                phase="primer",
+                max_llm_calls=config.max_llm_calls,
+                call_lock=call_lock,
+            )
         except Exception as e:
             state.failures.append(f"primer LLM failed: {e}")
             return {"fallback": True, "fallback_reason": "primer_llm_failed"}
@@ -362,6 +382,8 @@ class DriftSearchRetriever(BaseRetriever):
             status="completed",
             context=report_context,
             follow_ups=data.get("follow_ups", [])[:3],
+            references=data.get("references", []),
+            report_ids=data.get("report_ids", []),
         )
         state.actions.append(primer_action)
 
@@ -382,15 +404,27 @@ class DriftSearchRetriever(BaseRetriever):
         ranker: HybridRanker | str,
         alpha: float | None,
         conversation_history: str,
+        synthesize_citation_metadata: bool,
+        synthesis_metadata_keys: list[str] | None,
+        call_lock: asyncio.Lock,
+        synthesize_response: bool,
     ) -> None:
         """Breadth-first expansion of follow-up questions."""
         # Seed from primer follow-ups
         pending: list[DriftAction] = []
         action_counter = 0
+        seen_questions = {self._normalize_question(query)}
+        traversal_call_limit = max(
+            config.max_llm_calls - (1 if synthesize_response else 0), 0
+        )
 
         primer = state.actions[0] if state.actions else None
-        if primer and primer.follow_ups:
+        if primer and primer.follow_ups and config.max_depth >= 1:
             for fq in primer.follow_ups[: config.max_followups]:
+                normalized = self._normalize_question(fq)
+                if not normalized or normalized in seen_questions:
+                    continue
+                seen_questions.add(normalized)
                 action_counter += 1
                 pending.append(
                     DriftAction(
@@ -403,19 +437,26 @@ class DriftSearchRetriever(BaseRetriever):
 
         while pending:
             # Check limits
-            if state.total_llm_calls >= config.max_llm_calls:
+            if state.total_llm_calls >= traversal_call_limit:
                 state.stopping_reason = "max_llm_calls_reached"
                 break
 
             # Process batch up to concurrency
-            batch = pending[: config.action_concurrency]
-            pending = pending[config.action_concurrency :]
+            available_calls = traversal_call_limit - state.total_llm_calls
+            if available_calls <= 0:
+                state.stopping_reason = "max_llm_calls_reached"
+                break
+            batch_size = min(config.action_concurrency, available_calls)
+            batch = pending[:batch_size]
+            pending = pending[batch_size:]
 
             tasks = [
                 self._process_action(
                     action, query, state, config, top_k,
                     effective_search_ratio, query_params,
                     ranker, alpha, conversation_history,
+                    synthesize_citation_metadata, synthesis_metadata_keys,
+                    call_lock, traversal_call_limit,
                 )
                 for action in batch
             ]
@@ -435,12 +476,11 @@ class DriftSearchRetriever(BaseRetriever):
                     and action.follow_ups
                 ):
                     for fq in action.follow_ups[: config.max_followups]:
-                        action_counter += 1
                         # Deduplicate by normalized query
-                        normalized = fq.strip().lower()
-                        existing = {a.query.strip().lower() for a in state.actions}
-                        existing |= {a.query.strip().lower() for a in pending}
-                        if normalized not in existing:
+                        normalized = self._normalize_question(fq)
+                        if normalized and normalized not in seen_questions:
+                            seen_questions.add(normalized)
+                            action_counter += 1
                             pending.append(
                                 DriftAction(
                                     id=f"action:{action_counter}",
@@ -465,6 +505,10 @@ class DriftSearchRetriever(BaseRetriever):
         ranker: HybridRanker | str,
         alpha: float | None,
         conversation_history: str,
+        synthesize_citation_metadata: bool,
+        synthesis_metadata_keys: list[str] | None,
+        call_lock: asyncio.Lock,
+        llm_call_limit: int,
     ) -> None:
         """Process a single follow-up action."""
         # Local retrieval
@@ -482,9 +526,6 @@ class DriftSearchRetriever(BaseRetriever):
             state.failures.append(f"retrieval failed for {action.id}: {e}")
             return
 
-        local_context = self._format_local_context(retriever_result)
-        action.context = local_context
-
         # Resolve chunk citations
         chunk_ids = _source_chunk_ids_from_result(retriever_result)
         if chunk_ids:
@@ -494,6 +535,16 @@ class DriftSearchRetriever(BaseRetriever):
                 )
             except Exception:
                 pass
+
+        from recon_graphrag.retrieval.local import _format_entity_context
+
+        local_context = _format_entity_context(
+            retriever_result,
+            citations=(action.citations if synthesize_citation_metadata else None),
+            citation_metadata_keys=synthesis_metadata_keys,
+            drift=True,
+        )
+        action.context = local_context
 
         # Get parent answer for context
         parent_answer = ""
@@ -514,12 +565,32 @@ class DriftSearchRetriever(BaseRetriever):
         )
 
         try:
-            response = await self.llm.ainvoke(prompt)
-            state.total_llm_calls += 1
-            data = self._parse_json_strict(response.content, state)
+            response = await self._invoke_llm(
+                prompt, state, llm_call_limit, call_lock, "action"
+            )
+            data = await self._parse_json_strict(
+                response.content,
+                state,
+                phase="action",
+                max_llm_calls=llm_call_limit,
+                call_lock=call_lock,
+            )
             action.answer = data.get("answer", "")
             action.score = float(data.get("score", 0))
             action.follow_ups = data.get("follow_ups", [])[: config.max_followups]
+            action.references = data.get("references", [])
+            if action.references:
+                try:
+                    ref_citations = resolve_reference_citations(
+                        self.graph_store, self.graph_name, action.references
+                    )
+                    action.citations = self._dedupe_citations(
+                        action.citations + ref_citations
+                    )
+                except Exception as citation_error:
+                    state.failures.append(
+                        f"citation resolution failed for {action.id}: {citation_error}"
+                    )
             action.status = "completed"
         except Exception as e:
             action.status = "failed"
@@ -535,6 +606,7 @@ class DriftSearchRetriever(BaseRetriever):
         state: DriftQueryState,
         synthesize_response: bool,
         conversation_history: str,
+        call_lock: asyncio.Lock,
     ) -> SearchResult:
         """Sort actions by score, pack context, synthesize final answer."""
         completed = [a for a in state.actions if a.status == "completed" and a.answer]
@@ -568,8 +640,13 @@ class DriftSearchRetriever(BaseRetriever):
                     seen_cite_keys.add(key)
                     all_citations.append(cite)
 
-        # Resolve report references for additional citations
-        report_refs = self._extract_report_refs_from_state(state)
+        # Resolve references only from a packed primer action and from reports
+        # the primer explicitly selected.
+        report_refs = (
+            self._extract_report_refs_from_state(state)
+            if "primer" in packed_ids
+            else []
+        )
         if report_refs:
             try:
                 ref_citations = resolve_reference_citations(
@@ -583,10 +660,8 @@ class DriftSearchRetriever(BaseRetriever):
             except Exception as e:
                 state.failures.append(f"report citation resolution failed: {e}")
 
-        # Build trace
-        trace = self._build_trace(state)
-
         if not synthesize_response:
+            trace = self._build_trace(state)
             return SearchResult(
                 query=query,
                 mode="drift",
@@ -602,6 +677,7 @@ class DriftSearchRetriever(BaseRetriever):
 
         # Reduce LLM
         if not action_context:
+            trace = self._build_trace(state)
             return SearchResult(
                 query=query,
                 mode="drift",
@@ -611,24 +687,30 @@ class DriftSearchRetriever(BaseRetriever):
                 metadata={"drift_trace": trace},
             )
 
-        prompt = self.answer_prompt.format(
+        prompt = self.reduce_prompt.format(
             query=query,
             action_context=action_context,
             conversation_history=self._format_history(conversation_history),
-            # Legacy placeholders for backward compat
-            entity_context="",
-            community_context="",
-            bridging_context="",
         )
 
         try:
-            response = await self.llm.ainvoke(prompt)
-            state.total_llm_calls += 1
+            response = await self._invoke_llm(
+                prompt,
+                state,
+                self.config.max_llm_calls,
+                call_lock,
+                "reduce",
+            )
             answer = response.content
+        except _LLMCallLimitReached:
+            state.stopping_reason = "max_llm_calls_reached"
+            state.failures.append("reduce LLM skipped: max_llm_calls reached")
+            answer = completed[0].answer if completed else "No relevant information found."
         except Exception as e:
             state.failures.append(f"reduce LLM failed: {e}")
             answer = "Failed to synthesize final answer."
 
+        trace = self._build_trace(state)
         return SearchResult(
             query=query,
             mode="drift",
@@ -639,7 +721,7 @@ class DriftSearchRetriever(BaseRetriever):
         )
 
     # ------------------------------------------------------------------
-    # Fallback (legacy behavior)
+    # Local fallback
     # ------------------------------------------------------------------
 
     async def _fallback_search(
@@ -652,10 +734,11 @@ class DriftSearchRetriever(BaseRetriever):
         ranker: HybridRanker | str,
         alpha: float | None,
         synthesize_response: bool,
-        start: float,
         reason: str,
+        call_lock: asyncio.Lock,
     ) -> SearchResult:
         """Fall back to local-style retrieval when report embeddings missing."""
+        logger.warning("DRIFT falling back to local-style retrieval: %s", reason)
         retriever_result = await self._retriever.search(
             query_text=query,
             top_k=top_k,
@@ -678,11 +761,9 @@ class DriftSearchRetriever(BaseRetriever):
             except Exception:
                 pass
 
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-        trace = self._build_trace(state)
-        trace["fallback_reason"] = reason
-
         if not synthesize_response:
+            trace = self._build_trace(state)
+            trace["fallback_reason"] = reason
             return SearchResult(
                 query=query,
                 mode="drift",
@@ -697,18 +778,25 @@ class DriftSearchRetriever(BaseRetriever):
                 },
             )
 
-        prompt = LEGACY_ANSWER_PROMPT.format(
+        prompt = FALLBACK_ANSWER_PROMPT.format(
             query=query,
-            entity_context=entity_context,
-            community_context="",
-            bridging_context="",
+            context=entity_context,
         )
         try:
-            response = await self.llm.ainvoke(prompt)
+            response = await self._invoke_llm(
+                prompt,
+                state,
+                self.config.max_llm_calls,
+                call_lock,
+                "fallback",
+            )
             answer = response.content
-        except Exception:
+        except Exception as error:
+            state.failures.append(f"fallback LLM failed: {error}")
             answer = "Failed to generate answer."
 
+        trace = self._build_trace(state)
+        trace["fallback_reason"] = reason
         return SearchResult(
             query=query,
             mode="drift",
@@ -725,38 +813,104 @@ class DriftSearchRetriever(BaseRetriever):
     # JSON parsing
     # ------------------------------------------------------------------
 
-    def _parse_json_strict(self, content: str, state: DriftQueryState) -> dict:
-        """Parse JSON from LLM response with one repair attempt."""
+    async def _parse_json_strict(
+        self,
+        content: str,
+        state: DriftQueryState,
+        *,
+        phase: str,
+        max_llm_calls: int,
+        call_lock: asyncio.Lock,
+    ) -> dict:
+        """Parse and validate a DRIFT response, with exactly one repair attempt."""
+        try:
+            return self._validate_drift_json(self._decode_json(content), phase)
+        except (ValueError, TypeError, json.JSONDecodeError) as error:
+            repair_prompt = REPAIR_PROMPT.format(
+                errors=str(error),
+                raw_content=content[:2000],
+            )
+            response = await self._invoke_llm(
+                repair_prompt,
+                state,
+                max_llm_calls,
+                call_lock,
+                f"{phase}_repair",
+            )
+            try:
+                repaired = self._decode_json(response.content)
+                return self._validate_drift_json(repaired, phase)
+            except (ValueError, TypeError, json.JSONDecodeError) as repaired_error:
+                raise ValueError(
+                    f"{phase} JSON remained invalid after one repair: {repaired_error}"
+                ) from repaired_error
+
+    def _decode_json(self, content: str) -> dict:
         content = content.strip()
-        fenced = re.search(r"```(?:json)?\s*(.*?)```", content, re.DOTALL)
+        fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", content, re.DOTALL)
         if fenced:
             content = fenced.group(1).strip()
-
         try:
             data = json.loads(content)
         except json.JSONDecodeError:
             data = self._extract_json_object(content)
-
-        if not isinstance(data, dict):
-            # Try repair
-            try:
-                repair_prompt = REPAIR_PROMPT.format(
-                    errors="Response is not a JSON object",
-                    raw_content=content[:500],
-                )
-                import asyncio
-
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # Can't await here; raise immediately
-                    raise ValueError("JSON parse failed and repair not possible in sync context")
-                response = loop.run_until_complete(self.llm.ainvoke(repair_prompt))
-                state.total_llm_calls += 1
-                data = json.loads(response.content.strip())
-            except Exception:
-                raise ValueError("Failed to parse LLM response as JSON")
-
+        if not isinstance(data, dict) or not data:
+            raise ValueError("response is not a non-empty JSON object")
         return data
+
+    @staticmethod
+    def _validate_drift_json(data: dict, phase: str) -> dict:
+        answer = data.get("answer")
+        score = data.get("score")
+        follow_ups = data.get("follow_ups")
+        if not isinstance(answer, str):
+            raise ValueError("answer must be a string")
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            raise ValueError("score must be numeric")
+        if not 0 <= float(score) <= 100:
+            raise ValueError("score must be between 0 and 100")
+        if not isinstance(follow_ups, list) or not all(
+            isinstance(question, str) and question.strip()
+            for question in follow_ups
+        ):
+            raise ValueError("follow_ups must be a list of non-empty strings")
+        references = data.get("references", [])
+        if not isinstance(references, list) or not all(
+            isinstance(ref, dict)
+            and str(ref.get("target_id", "")).strip()
+            and ref.get("target_type") in {"entity", "relationship", "claim"}
+            for ref in references
+        ):
+            raise ValueError("references must contain typed target_id objects")
+        report_ids = data.get("report_ids", [])
+        if phase == "primer" and (
+            not isinstance(report_ids, list)
+            or not all(isinstance(report_id, str) for report_id in report_ids)
+        ):
+            raise ValueError("report_ids must be a list of strings")
+        data["score"] = float(score)
+        data["follow_ups"] = [question.strip() for question in follow_ups]
+        data["references"] = references
+        data["report_ids"] = report_ids if isinstance(report_ids, list) else []
+        return data
+
+    async def _invoke_llm(
+        self,
+        prompt: str,
+        state: DriftQueryState,
+        max_llm_calls: int,
+        call_lock: asyncio.Lock,
+        phase: str,
+    ):
+        async with call_lock:
+            if state.total_llm_calls >= max_llm_calls:
+                raise _LLMCallLimitReached("max_llm_calls reached")
+            state.total_llm_calls += 1
+        response = await self.llm.ainvoke(prompt)
+        state.phase_tokens[phase] = state.phase_tokens.get(phase, 0) + self.counter.count(
+            prompt + response.content
+        )
+        return response
 
     @staticmethod
     def _extract_json_object(content: str) -> dict:
@@ -771,6 +925,10 @@ class DriftSearchRetriever(BaseRetriever):
                 continue
         return {}
 
+    @staticmethod
+    def _normalize_question(question: str) -> str:
+        return " ".join(re.sub(r"[^\w]+", " ", question.casefold()).split())
+
     # ------------------------------------------------------------------
     # Context formatting
     # ------------------------------------------------------------------
@@ -781,26 +939,9 @@ class DriftSearchRetriever(BaseRetriever):
         for r in reports:
             rid = r.get("id", "?")
             level = r.get("level", "?")
-            summary = r.get("summary", r.get("report_text", ""))
-            parts.append(f"Report {rid} (level {level}):\n{summary}")
+            report_text = r.get("report_text", "")
+            parts.append(f"Report {rid} (level {level}):\n{report_text}")
         return "\n\n".join(parts) if parts else "No community reports available."
-
-    @staticmethod
-    def _format_local_context(retriever_result) -> str:
-        parts = []
-        for item in retriever_result.items:
-            content = item.content
-            if not isinstance(content, dict):
-                continue
-            section = f"Finding: {content.get('title', 'Unknown')}"
-            rels = content.get("relationships", [])
-            if rels:
-                section += "\n  Connections:\n    " + "\n    ".join(rels)
-            sources = content.get("source_text", [])
-            if sources:
-                section += "\n  Evidence:\n    " + "\n    ".join(sources[:2])
-            parts.append(section)
-        return "\n\n".join(parts) if parts else "No local context available."
 
     @staticmethod
     def _format_history(history: str) -> str:
@@ -818,8 +959,26 @@ class DriftSearchRetriever(BaseRetriever):
         seen: set[tuple[str, str]] = set()
         allowed_types = {"entity", "relationship", "claim"}
 
+        primer = next((action for action in state.actions if action.id == "primer"), None)
+        selected_report_ids = set(primer.report_ids if primer else [])
+        available_report_ids = {
+            str(report.get("id")) for report in state.primer_reports if report.get("id")
+        }
+        selected_report_ids &= available_report_ids
+        if not selected_report_ids:
+            selected_report_ids = available_report_ids
+
+        for ref in primer.references if primer else []:
+            key = (str(ref.get("target_type", "")), str(ref.get("target_id", "")))
+            if key[0] in allowed_types and key[1] and key not in seen:
+                seen.add(key)
+                refs.append({"target_type": key[0], "target_id": key[1]})
+
         for report in state.primer_reports:
+            if str(report.get("id")) not in selected_report_ids:
+                continue
             report_json = report.get("report_json", "")
+            json_refs: list[dict] = []
             if report_json:
                 try:
                     from recon_graphrag.retrieval.global_search import (
@@ -832,10 +991,12 @@ class DriftSearchRetriever(BaseRetriever):
                         if key not in seen and ref["target_type"] in allowed_types:
                             seen.add(key)
                             refs.append(ref)
-                except Exception:
-                    pass
-            else:
-                report_text = report.get("summary", report.get("report_text", ""))
+                except Exception as error:
+                    state.failures.append(
+                        f"report reference JSON failed for {report.get('id')}: {error}"
+                    )
+            if not json_refs:
+                report_text = report.get("report_text", "")
                 if report_text:
                     try:
                         from recon_graphrag.retrieval.global_search import (
@@ -852,6 +1013,22 @@ class DriftSearchRetriever(BaseRetriever):
                         pass
 
         return refs
+
+    @staticmethod
+    def _dedupe_citations(citations: list) -> list:
+        seen: set[tuple[str, str, int | None, int | None]] = set()
+        deduped = []
+        for citation in citations:
+            key = (
+                citation.document_id,
+                citation.chunk_id,
+                citation.page_start,
+                citation.page_end,
+            )
+            if key not in seen:
+                seen.add(key)
+                deduped.append(citation)
+        return deduped
 
     # ------------------------------------------------------------------
     # Trace

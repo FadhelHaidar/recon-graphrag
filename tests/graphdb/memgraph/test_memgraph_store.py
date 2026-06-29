@@ -240,6 +240,17 @@ def test_vector_search_runs_vector_procedure(store, fake_driver):
     assert "vector_search.search" in query_text
 
 
+def test_community_report_vector_search_uses_memgraph_procedure(store, fake_driver):
+    store.vector_search_community_reports([0.1, 0.2], "graph-a", top_k=3, level=0)
+
+    query = fake_driver.session_obj.queries[-1]
+    params = fake_driver.session_obj.params[-1]
+    assert "vector_search.search" in query
+    assert "c.graph_name = $graph_name" in query
+    assert params["candidate_k"] == 15
+    assert params["level"] == 0
+
+
 def test_vector_search_overfetches_when_label_filtering(store, fake_driver):
     fake_driver.session_obj._next_result = FakeResult([])
 
@@ -416,10 +427,10 @@ def test_validate_graph_build_runs_counts(store, fake_driver):
             return FakeResult([{"cnt": 3}])
         if "MATCH (:__Entity__)-[r]-(:__Entity__)" in query:
             return FakeResult([{"cnt": 2}])
-        if "MATCH (c:Community)" in query and "summary" not in query:
-            return FakeResult([{"cnt": 7}])
-        if "MATCH (c:Community)" in query and "summary" in query:
+        if "MATCH (c:Community)" in query and "report_text" in query:
             return FakeResult([{"cnt": 6}])
+        if "MATCH (c:Community)" in query:
+            return FakeResult([{"cnt": 7}])
         if "MATCH (e:__Entity__)-[r]-(e)" in query:
             return FakeResult([{"cnt": 0}])
         return FakeResult([])
@@ -437,7 +448,7 @@ def test_validate_graph_build_runs_counts(store, fake_driver):
     assert result["evidence_link_count"] == 3
     assert result["entity_relationship_count"] == 2
     assert result["community_count"] == 7
-    assert result["community_summary_count"] == 6
+    assert result["community_report_count"] == 6
     assert result["entity_self_loop_count"] == 0
 
 

@@ -19,7 +19,6 @@ from typing import Any
 
 ARTIFACT_SCHEMA_VERSION = "1.0"
 ARTIFACT_PROMPT_VERSION = "0.0"  # updated when prompts change
-SCHEMA_VERSION = "2.0"
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +246,6 @@ def citation_excerpt(text: str, max_chars: int = 200) -> str:
 __all__ = [
     "ARTIFACT_SCHEMA_VERSION",
     "ARTIFACT_PROMPT_VERSION",
-    "SCHEMA_VERSION",
     "SourceReference",
     "Citation",
     "DocumentSource",

@@ -10,9 +10,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.models.artifacts import Citation
-from recon_graphrag.retrieval.citations import resolve_chunk_citations
+from recon_graphrag.retrieval.citations import (
+    resolve_chunk_citations,
+    resolve_reference_citations,
+)
 from recon_graphrag.retrieval.community_levels import (
     CommunityLevelSelector,
     resolve_community_level,
@@ -62,7 +66,7 @@ class TextUnitCandidate:
 class CommunityReportCandidate:
     community_id: str
     level: int
-    summary: str
+    report_text: str
     rating: float | None
 
 
@@ -109,10 +113,12 @@ class MixedContextBuilder:
     def __init__(
         self,
         graph_store: GraphStore,
+        embedder: BaseEmbedder | None = None,
         graph_name: str = "entity-graph",
         counter: TokenCounter | None = None,
     ):
         self.graph_store = graph_store
+        self.embedder = embedder
         self.graph_name = graph_name
         self.counter = counter or ApproximateTokenCounter()
 
@@ -139,6 +145,14 @@ class MixedContextBuilder:
             MixedContextResult with rendered context, citations, and telemetry.
         """
         alloc = allocation or DEFAULT_ALLOCATION
+        self._validate_allocation(alloc)
+        if token_budget < 0:
+            raise ValueError("token_budget must be non-negative")
+        heading_reserve = self.counter.count(
+            "=== Graph Facts ===\n\n=== Source Text ===\n\n"
+            "=== Community Reports ===\n\n"
+        )
+        content_budget = max(token_budget - heading_reserve, 0)
 
         entity_ids = [m["id"] for m in entity_matches]
         entity_scores = {m["id"]: float(m.get("score", 0.0)) for m in entity_matches}
@@ -163,7 +177,7 @@ class MixedContextBuilder:
         claims.sort(key=lambda c: (-c.evidence_count, c.claim_id))
 
         # 3. Compute per-category budgets with overflow
-        budgets = self._compute_budgets(token_budget, alloc)
+        budgets = self._compute_budgets(content_budget, alloc)
 
         # 4. Pack each category
         entity_items = [
@@ -215,29 +229,18 @@ class MixedContextBuilder:
             graph_fact_items, budgets["graph_facts"], self.counter
         )
 
-        # 5. Overflow: redistribute unused tokens
-        overflow = (
-            budgets["text_units"]
+        # 5. Overflow: redistribute unused tokens across all remaining categories.
+        overflow = max(
+            content_budget
             - packed_tu.used_tokens
-            + budgets["community_reports"]
             - packed_cr.used_tokens
-            + budgets["graph_facts"]
-            - packed_gf.used_tokens
+            - packed_gf.used_tokens,
+            0,
         )
         if overflow > 0:
-            # Try to include more text units first
-            extra_tu = pack_items(
-                [i for i in tu_items if i.id not in {x.id for x in packed_tu.included}],
-                overflow,
-                self.counter,
-            )
-            packed_tu = PackResult(
-                included=packed_tu.included + extra_tu.included,
-                excluded=packed_tu.excluded,
-                used_tokens=packed_tu.used_tokens + extra_tu.used_tokens,
-                max_tokens=packed_tu.max_tokens,
-                truncated_item_ids=packed_tu.truncated_item_ids,
-            )
+            packed_tu, overflow = self._pack_overflow(packed_tu, tu_items, overflow)
+            packed_gf, overflow = self._pack_overflow(packed_gf, graph_fact_items, overflow)
+            packed_cr, overflow = self._pack_overflow(packed_cr, cr_items, overflow)
 
         # 6. Render context
         sections: list[str] = []
@@ -279,7 +282,7 @@ class MixedContextBuilder:
             i.id for i in packed_gf.included if i.id in claim_id_set
         ]
 
-        # 8. Resolve citations only from included chunks
+        # 8. Resolve citations only from evidence that survived packing.
         citations: list[Citation] = []
         if included_chunk_ids:
             try:
@@ -288,10 +291,32 @@ class MixedContextBuilder:
                 )
             except Exception:
                 pass
+        references = [
+            *(
+                {"target_type": "entity", "target_id": entity_id}
+                for entity_id in included_entity_ids
+            ),
+            *(
+                {"target_type": "relationship", "target_id": rel_key}
+                for rel_key in included_rel_keys
+            ),
+            *(
+                {"target_type": "claim", "target_id": claim_id}
+                for claim_id in included_claim_ids
+            ),
+        ]
+        if references:
+            try:
+                citations.extend(
+                    resolve_reference_citations(
+                        self.graph_store, self.graph_name, references
+                    )
+                )
+            except Exception:
+                pass
+        citations = self._dedupe_citations(citations)
 
-        total_tokens = (
-            packed_tu.used_tokens + packed_cr.used_tokens + packed_gf.used_tokens
-        )
+        total_tokens = self.counter.count(context)
 
         return MixedContextResult(
             context=context,
@@ -329,17 +354,22 @@ class MixedContextBuilder:
                     score=float(match.get("score", 0.0)),
                 )
             )
-        # Enrich from context rows
+        # Enrich from the typed context contract.
         for row in entity_context_rows:
-            title = row.get("title", "")
-            if title and "(" in title:
-                parts = title.rsplit("(", 1)
-                name = parts[0].strip()
-                label = parts[1].rstrip(")").strip() if len(parts) > 1 else "Entity"
+            row_id = str(row.get("entity_id", ""))
+            if row_id:
                 for e in entities:
-                    if not e.name:
-                        object.__setattr__(e, "name", name)
-                        object.__setattr__(e, "label", label)
+                    if e.id != row_id:
+                        continue
+                    labels = row.get("entity_labels", []) or []
+                    object.__setattr__(e, "name", row.get("entity_name", "") or row_id)
+                    object.__setattr__(
+                        e,
+                        "label",
+                        next((label for label in labels if label != "__Entity__"), "Entity"),
+                    )
+                    object.__setattr__(e, "description", row.get("entity_description", ""))
+                continue
         return entities
 
     def _collect_relationships(
@@ -348,13 +378,27 @@ class MixedContextBuilder:
         rels: list[RelationshipCandidate] = []
         seen: set[str] = set()
         for row in entity_context_rows:
-            for rel_str in row.get("relationships", []):
-                if rel_str in seen:
+            for record in row.get("relationship_records", []) or []:
+                rel_type = str(record.get("rel", "")).strip()
+                source_id = str(record.get("source_id", "")).strip()
+                target_id = str(record.get("target_id", "")).strip()
+                if not rel_type or not source_id or not target_id:
                     continue
-                seen.add(rel_str)
-                parsed = self._parse_relationship(rel_str)
-                if parsed:
-                    rels.append(parsed)
+                key = f"{source_id}:{rel_type}:{target_id}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                rels.append(
+                    RelationshipCandidate(
+                        source_id=source_id,
+                        source_name=str(record.get("source_name", source_id)),
+                        target_id=target_id,
+                        target_name=str(record.get("target_name", target_id)),
+                        relationship_type=rel_type,
+                        description=str(record.get("description", "")),
+                        weight=float(record.get("weight", 1.0) or 1.0),
+                    )
+                )
         return rels
 
     def _collect_chunk_ids(self, entity_context_rows: list[dict]) -> list[str]:
@@ -423,10 +467,10 @@ class MixedContextBuilder:
                   (c:Community {graph_name: $graph_name, level: $level})
             WHERE e.id = eid
             WITH DISTINCT c
-            WHERE coalesce(c.report_text, c.summary, '') <> ''
+            WHERE c.report_text <> ''
             RETURN c.id AS community_id,
                    c.level AS level,
-                   coalesce(c.report_text, c.summary) AS summary,
+                   c.report_text AS report_text,
                    c.rating AS rating
             """,
             {
@@ -439,7 +483,7 @@ class MixedContextBuilder:
             CommunityReportCandidate(
                 community_id=row["community_id"],
                 level=row["level"],
-                summary=row["summary"],
+                report_text=row["report_text"],
                 rating=row.get("rating"),
             )
             for row in rows
@@ -493,31 +537,55 @@ class MixedContextBuilder:
             "graph_facts": int(total * gf_ratio),
         }
 
+    @staticmethod
+    def _validate_allocation(allocation: dict[str, float]) -> None:
+        values = [
+            allocation.get("text_units", 0.5),
+            allocation.get("community_reports", 0.1),
+            allocation.get("graph_facts", 0.4),
+        ]
+        if any(value < 0 for value in values):
+            raise ValueError("mixed-context allocation ratios must be non-negative")
+        if sum(values) > 1.000001:
+            raise ValueError("mixed-context allocation ratios must sum to at most 1")
+
+    def _pack_overflow(
+        self,
+        packed: PackResult,
+        all_items: list[PackItem],
+        overflow: int,
+    ) -> tuple[PackResult, int]:
+        included_ids = {item.id for item in packed.included}
+        remaining = [item for item in all_items if item.id not in included_ids]
+        extra = pack_items(remaining, overflow, self.counter)
+        merged = PackResult(
+            included=packed.included + extra.included,
+            excluded=[item for item in remaining if item.id not in {x.id for x in extra.included}],
+            used_tokens=packed.used_tokens + extra.used_tokens,
+            max_tokens=packed.max_tokens + overflow,
+            truncated_item_ids=packed.truncated_item_ids + extra.truncated_item_ids,
+        )
+        return merged, overflow - extra.used_tokens
+
+    @staticmethod
+    def _dedupe_citations(citations: list[Citation]) -> list[Citation]:
+        seen: set[tuple[str, str, int | None, int | None]] = set()
+        result: list[Citation] = []
+        for citation in citations:
+            key = (
+                citation.document_id,
+                citation.chunk_id,
+                citation.page_start,
+                citation.page_end,
+            )
+            if key not in seen:
+                seen.add(key)
+                result.append(citation)
+        return result
+
     # ------------------------------------------------------------------
     # Parsing
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _parse_relationship(rel_str: str) -> RelationshipCandidate | None:
-        """Parse 'Label: Name -[TYPE]-> Label: Name' format."""
-        try:
-            left, right = rel_str.split(" -[", 1)
-            rel_type, right = right.split("]-> ", 1)
-            source_parts = left.split(": ", 1)
-            target_parts = right.split(": ", 1)
-            source_name = source_parts[1] if len(source_parts) > 1 else source_parts[0]
-            target_name = target_parts[1] if len(target_parts) > 1 else target_parts[0]
-            return RelationshipCandidate(
-                source_id=source_name,
-                source_name=source_name,
-                target_id=target_name,
-                target_name=target_name,
-                relationship_type=rel_type.strip(),
-                description="",
-                weight=1.0,
-            )
-        except (ValueError, IndexError):
-            return None
 
     # ------------------------------------------------------------------
     # Rendering
@@ -544,7 +612,7 @@ class MixedContextBuilder:
         header = f"Community {c.community_id} (level {c.level})"
         if c.rating is not None:
             header += f" [rating: {c.rating}]"
-        return f"{header}:\n{c.summary}"
+        return f"{header}:\n{c.report_text}"
 
     @staticmethod
     def _render_claim(c: ClaimCandidate) -> str:

@@ -93,7 +93,7 @@ MOVIE_QUERY_SUITE = [{'query': 'Which movies were directed by Christopher Nolan 
                     'series, and Marvel Cinematic Universe references.'},
  {'query': 'What are the major communities or clusters in this movie graph?',
   'modes': ['global'],
-  'test_objective': 'Assess global search quality using community summaries.'},
+  'test_objective': 'Assess global search quality using community reports.'},
  {'query': 'Summarize the Nolan-related community in this graph.',
   'modes': ['global'],
   'test_objective': 'Test whether global retrieval can summarize the Nolan subgraph '

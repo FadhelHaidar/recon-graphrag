@@ -156,6 +156,8 @@ class TestPipelineConfig:
         cfg = PipelineConfig()
         assert cfg.chunk_size == 1200
         assert cfg.chunk_overlap == 100
+        assert cfg.max_gleanings == 1
+        assert cfg.use_mixed_context is False
         assert cfg.token_counter is None
 
     def test_invalid_chunk_size_raises(self):

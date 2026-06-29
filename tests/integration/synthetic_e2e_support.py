@@ -109,16 +109,6 @@ SYNTHETIC_COMMUNITY_RELATIONSHIP_TYPES = [
     "APPROVED",
 ]
 
-# Neutral prompts that work with any domain.
-SYNTHETIC_COMMUNITY_SUMMARY_PROMPT = """Summarize the following findings.
-
-{context}
-
-Provide a concise 2-4 paragraph summary identifying the key entities,
-their relationships, and important patterns.
-
-Summary:"""
-
 SYNTHETIC_LOCAL_ANSWER_PROMPT = """Based on the findings below, answer the query.
 
 Query: {query}
@@ -157,18 +147,14 @@ Perspectives:
 
 Final Answer:"""
 
-SYNTHETIC_DRIFT_ANSWER_PROMPT = """Answer the query using the specific findings, broader context, and related information.
+SYNTHETIC_DRIFT_ANSWER_PROMPT = """Answer the query using the scored DRIFT actions.
 
 Query: {query}
 
-=== Specific Findings ===
-{entity_context}
+=== Scored Answers ===
+{action_context}
 
-=== Broader Context ===
-{community_context}
-
-=== Related Information ===
-{bridging_context}
+{conversation_history}
 
 Answer:"""
 

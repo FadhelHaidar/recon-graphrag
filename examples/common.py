@@ -45,12 +45,10 @@ ALL_BACKENDS = "all"
 SEARCH_OPTIONS = {
     "local": {},
     "global": {
-        "top_k": 5,
         "community_level": "coarsest",
     },
     "drift": {
         "top_k": 10,
-        "community_top_k": 3,
         "community_level": "finest",
     },
 }
@@ -79,7 +77,7 @@ def get_backend_targets(backend: str) -> list[tuple[str, Any, type]]:
 def configure_movie_rag(graph_rag: GraphRAG) -> GraphRAG:
     """Configure a GraphRAG instance with movie-domain prompts."""
     graph_rag.local.answer_prompt = LOCAL_ANSWER_PROMPT
-    graph_rag.drift.answer_prompt = DRIFT_ANSWER_PROMPT
+    graph_rag.drift.reduce_prompt = DRIFT_ANSWER_PROMPT
     graph_rag.global_.map_prompt = GLOBAL_MAP_PROMPT
     graph_rag.global_.reduce_prompt = GLOBAL_REDUCE_PROMPT
     return graph_rag

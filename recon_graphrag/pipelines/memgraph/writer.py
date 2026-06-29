@@ -67,15 +67,30 @@ class MemgraphGraphWriter(BaseGraphWriter):
                 f"""
                 UNWIND $entities AS row
                 MERGE (e:__Entity__:{label} {{id: row.id, graph_name: row.graph_name}})
+                WITH e, row,
+                     CASE
+                       WHEN e.descriptions IS NOT NULL THEN e.descriptions
+                       WHEN e.description IS NULL OR e.description = '' THEN []
+                       ELSE [e.description]
+                     END AS existing_descriptions
                 SET e += row.properties,
                     e.type = row.type,
                     e.canonical_key = coalesce(row.canonical_key, row.properties.canonical_key),
                     e.human_readable_id = coalesce(row.human_readable_id, row.properties.human_readable_id),
                     e.name = coalesce(row.properties.name, row.properties.title, row.human_readable_id, row.id),
                     e.title = coalesce(row.properties.title, row.properties.name, row.human_readable_id, row.id),
-                    e.description = coalesce(row.properties.description, ''),
                     e.updated = timestamp(),
                     e.created = coalesce(e.created, timestamp())
+                WITH e, row,
+                     CASE
+                       WHEN row.description = '' THEN existing_descriptions
+                       ELSE reduce(acc = [], item IN existing_descriptions + [row.description] |
+                         CASE WHEN item IN acc THEN acc ELSE acc + [item] END)
+                     END AS merged_descriptions
+                SET e.descriptions = merged_descriptions,
+                    e.observation_count = size(merged_descriptions),
+                    e.description = reduce(text = '', item IN merged_descriptions |
+                        text + CASE WHEN text = '' THEN '' ELSE '\n' END + item)
                 """,
                 {"entities": self._entity_rows(group)},
             )
@@ -107,11 +122,36 @@ class MemgraphGraphWriter(BaseGraphWriter):
                 MATCH (source:__Entity__ {{id: row.source_id, graph_name: row.graph_name}})
                 MATCH (target:__Entity__ {{id: row.target_id, graph_name: row.graph_name}})
                 MERGE (source)-[r:{rel_label}]->(target)
+                WITH r, row, coalesce(r.source_chunk_ids, []) AS existing_chunk_ids,
+                     coalesce(r.descriptions,
+                       CASE WHEN r.description IS NULL OR r.description = '' THEN []
+                            ELSE [r.description] END) AS existing_descriptions
                 SET r.id = row.id,
                     r += row.properties,
                     r.graph_name = row.graph_name,
                     r.updated = timestamp(),
                     r.created = coalesce(r.created, timestamp())
+                WITH r, row, existing_descriptions,
+                     reduce(acc = [], item IN existing_chunk_ids + row.source_chunk_ids |
+                       CASE WHEN item IN acc THEN acc ELSE acc + [item] END) AS merged_chunk_ids
+                WITH r, row, merged_chunk_ids,
+                     reduce(acc = [], item IN existing_descriptions +
+                       CASE WHEN row.properties.description IS NULL OR
+                                      row.properties.description = '' THEN []
+                            ELSE [row.properties.description] END |
+                       CASE WHEN item IN acc THEN acc ELSE acc + [item] END
+                     ) AS merged_descriptions
+                SET r.source_chunk_ids = merged_chunk_ids,
+                    r.observation_count = size(merged_chunk_ids),
+                    r.weight = toFloat(size(merged_chunk_ids)),
+                    r.descriptions = merged_descriptions,
+                    r.description = reduce(text = '', item IN merged_descriptions |
+                        text + CASE WHEN text = '' THEN '' ELSE '\n' END + item),
+                    r.strength = CASE
+                        WHEN row.strength IS NULL THEN r.strength
+                        WHEN r.strength IS NULL OR row.strength > r.strength THEN row.strength
+                        ELSE r.strength
+                    END
                 """,
                 {"relationships": self._relationship_rows(group)},
             )

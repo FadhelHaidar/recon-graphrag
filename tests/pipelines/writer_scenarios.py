@@ -68,6 +68,12 @@ class StatefulFakeGraphStore:
             existing.update(row.get("properties", {}))
             existing["type"] = row.get("type", existing.get("type"))
             existing["graph_name"] = row.get("graph_name", existing.get("graph_name"))
+            description = row.get("description") or ""
+            descriptions = existing.setdefault("descriptions", [])
+            if description and description not in descriptions:
+                descriptions.append(description)
+            existing["observation_count"] = len(descriptions)
+            existing["description"] = "\n".join(descriptions)
 
     def _merge_relationships(self, rows: list[dict]) -> None:
         type_match = re.search(r"MERGE \(source\)-\[r:([^ ]+)\]->\(target\)", self.queries[-1])
@@ -85,6 +91,15 @@ class StatefulFakeGraphStore:
             )
             existing.update(row.get("properties", {}))
             existing["graph_name"] = row.get("graph_name", existing.get("graph_name"))
+            source_chunk_ids = existing.setdefault("source_chunk_ids", [])
+            for chunk_id in row.get("source_chunk_ids", []):
+                if chunk_id not in source_chunk_ids:
+                    source_chunk_ids.append(chunk_id)
+            existing["observation_count"] = len(source_chunk_ids)
+            existing["weight"] = float(len(source_chunk_ids))
+            strength = row.get("strength")
+            if strength is not None:
+                existing["strength"] = max(strength, existing.get("strength", strength))
 
     def get_node(self, entity_id: str) -> dict | None:
         return self._nodes.get(entity_id)
@@ -133,6 +148,7 @@ def make_entity_graph_document(
     name: str,
     graph_name: str = "entity-graph",
     document_id: str = "doc:1",
+    description: str | None = None,
 ) -> GraphDocument:
     """Single-entity GraphDocument for merge/replacement tests."""
     return GraphDocument(
@@ -150,7 +166,10 @@ def make_entity_graph_document(
             EntityRecord(
                 id=entity_id,
                 type="Person",
-                properties={"name": name},
+                properties={
+                    "name": name,
+                    **({"description": description} if description else {}),
+                },
                 graph_name=graph_name,
             )
         ],

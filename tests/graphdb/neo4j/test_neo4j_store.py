@@ -184,6 +184,19 @@ def test_vector_search_runs_vector_procedure_with_label_filter():
     assert params["top_k"] == 5
 
 
+def test_community_report_vector_search_overfetches_and_scopes():
+    driver = FakeDriver()
+    store = Neo4jGraphStore(driver)
+
+    store.vector_search_community_reports([0.1], "graph-a", top_k=3, level=0)
+
+    query, params = driver.calls[-1]
+    assert "db.index.vector.queryNodes" in query
+    assert "c.graph_name = $graph_name" in query
+    assert params["candidate_k"] == 15
+    assert params["level"] == 0
+
+
 def test_keyword_search_runs_fulltext_procedure_with_label_filter():
     driver = FakeDriver()
     store = Neo4jGraphStore(driver)

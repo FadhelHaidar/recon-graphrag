@@ -88,17 +88,22 @@ class BaseGraphWriter(ABC):
         ]
 
     def _entity_rows(self, entities: list) -> list[dict[str, Any]]:
-        return [
-            {
-                "id": entity.id,
-                "type": entity.type,
-                "graph_name": entity.graph_name,
-                "canonical_key": entity.canonical_key,
-                "human_readable_id": entity.human_readable_id,
-                "properties": entity.properties,
-            }
-            for entity in entities
-        ]
+        rows: list[dict[str, Any]] = []
+        for entity in entities:
+            properties = dict(entity.properties)
+            description = properties.pop("description", "") or ""
+            rows.append(
+                {
+                    "id": entity.id,
+                    "type": entity.type,
+                    "graph_name": entity.graph_name,
+                    "canonical_key": entity.canonical_key,
+                    "human_readable_id": entity.human_readable_id,
+                    "description": description,
+                    "properties": properties,
+                }
+            )
+        return rows
 
     def _evidence_link_rows(self, links: list) -> list[dict[str, Any]]:
         return [
@@ -111,16 +116,29 @@ class BaseGraphWriter(ABC):
         ]
 
     def _relationship_rows(self, relationships: list) -> list[dict[str, Any]]:
-        return [
-            {
-                "id": rel.id,
-                "source_id": rel.source_id,
-                "target_id": rel.target_id,
-                "graph_name": rel.graph_name,
-                "properties": rel.properties,
-            }
-            for rel in relationships
-        ]
+        rows: list[dict[str, Any]] = []
+        for rel in relationships:
+            properties = dict(rel.properties)
+            source_chunk_ids = properties.pop("source_chunk_ids", []) or []
+            properties.pop("observation_count", None)
+            properties.pop("weight", None)
+            if rel.strength is not None:
+                properties.pop("strength", None)
+            observation_count = max(rel.observation_count, len(set(source_chunk_ids)), 1)
+            rows.append(
+                {
+                    "id": rel.id,
+                    "source_id": rel.source_id,
+                    "target_id": rel.target_id,
+                    "graph_name": rel.graph_name,
+                    "source_chunk_ids": list(dict.fromkeys(source_chunk_ids)),
+                    "observation_count": observation_count,
+                    "weight": float(observation_count),
+                    "strength": rel.strength,
+                    "properties": properties,
+                }
+            )
+        return rows
 
     def _claim_rows(self, claims: list) -> list[dict[str, Any]]:
         return [

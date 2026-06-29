@@ -27,8 +27,6 @@ from recon_graphrag.extraction.validator import SchemaValidator
 from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graphdb.base import GraphStore, GraphWriter
 from recon_graphrag.llm.base import BaseLLM
-from recon_graphrag.models.artifacts import SCHEMA_VERSION
-from recon_graphrag.models.errors import ReindexRequiredError
 from recon_graphrag.utils.tokens import TokenCounter, TiktokenTokenCounter
 
 
@@ -279,8 +277,6 @@ class GraphBuilderPipeline:
         chunks: list,
         metadata: dict,
     ) -> dict:
-        self._check_schema_version()
-
         extraction = await self._extract_and_write_chunks(
             document_id=document_id,
             text_hash=text_hash,
@@ -301,8 +297,6 @@ class GraphBuilderPipeline:
 
         print("Validating graph build")
         validation = self._validate_graph_build()
-
-        self._write_schema_version()
 
         return {
             "extraction": extraction,
@@ -474,42 +468,6 @@ class GraphBuilderPipeline:
 
     def _validate_graph_build(self) -> dict:
         return self.graph_store.validate_graph_build()
-
-    def _check_schema_version(self) -> None:
-        """Fail fast if the graph contains legacy (v1) data without a v2 marker.
-
-        Empty graphs pass — the marker will be written after extraction.
-        """
-        try:
-            entity_count = self.graph_store.get_entity_count()
-            if entity_count == 0:
-                return
-
-            rows = self.graph_store.execute_query(
-                "MATCH (m:__SchemaMetadata__) RETURN m.schema_version AS v"
-            )
-            if rows and rows[0].get("v") == SCHEMA_VERSION:
-                return
-
-            raise ReindexRequiredError()
-        except ReindexRequiredError:
-            raise
-        except Exception:
-            return
-
-    def _write_schema_version(self) -> None:
-        """Write the schema version marker to the graph."""
-        try:
-            self.graph_store.execute_query(
-                """
-                MERGE (m:__SchemaMetadata__)
-                SET m.schema_version = $version,
-                    m.updated = timestamp()
-                """,
-                {"version": SCHEMA_VERSION},
-            )
-        except Exception:
-            pass
 
     def _graph_store_name(self) -> str:
         """Return a human-readable name derived from the graph store class."""

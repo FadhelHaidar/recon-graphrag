@@ -192,13 +192,17 @@ class Neo4jGraphStore(BaseGraphStore):
         label: Optional[str] = None,
         filters: Optional[dict] = None,
     ) -> list[dict]:
-        label_filter = ""
+        filters = filters or {}
+        conditions: list[str] = []
         if label:
-            label_filter = f"WHERE node:{escape_cypher_identifier(label)}"
+            conditions.append(f"node:{escape_cypher_identifier(label)}")
+        if filters.get("graph_name") is not None:
+            conditions.append("node.graph_name = $graph_name")
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         query = f"""
         CALL db.index.vector.queryNodes($index_name, $k, $query_vector)
         YIELD node, score
-        {label_filter}
+        {where_clause}
         RETURN elementId(node) AS id, score
         ORDER BY score DESC
         LIMIT $top_k
@@ -210,6 +214,7 @@ class Neo4jGraphStore(BaseGraphStore):
                 "k": k,
                 "top_k": k,
                 "query_vector": query_vector,
+                "graph_name": filters.get("graph_name"),
             },
         )
 
@@ -221,9 +226,13 @@ class Neo4jGraphStore(BaseGraphStore):
         label: Optional[str] = None,
         filters: Optional[dict] = None,
     ) -> list[dict]:
-        label_filter = ""
+        filters = filters or {}
+        conditions: list[str] = []
         if label:
-            label_filter = f"WHERE node:{escape_cypher_identifier(label)}"
+            conditions.append(f"node:{escape_cypher_identifier(label)}")
+        if filters.get("graph_name") is not None:
+            conditions.append("node.graph_name = $graph_name")
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         query = f"""
         CALL db.index.fulltext.queryNodes(
             $index_name,
@@ -231,7 +240,7 @@ class Neo4jGraphStore(BaseGraphStore):
             {{limit: $k}}
         )
         YIELD node, score
-        {label_filter}
+        {where_clause}
         RETURN elementId(node) AS id, score
         ORDER BY score DESC
         LIMIT $top_k
@@ -243,6 +252,7 @@ class Neo4jGraphStore(BaseGraphStore):
                 "query_text": query_text,
                 "k": k,
                 "top_k": k,
+                "graph_name": filters.get("graph_name"),
             },
         )
 
@@ -252,6 +262,7 @@ class Neo4jGraphStore(BaseGraphStore):
         retrieval_query: Optional[str] = None,
         query_params: Optional[dict] = None,
         mode: str = "local",
+        graph_name: str | None = None,
     ) -> list[dict]:
         from recon_graphrag.retrieval.neo4j.queries import (
             DEFAULT_DRIFT_RETRIEVAL_QUERY,
@@ -268,14 +279,50 @@ class Neo4jGraphStore(BaseGraphStore):
         UNWIND $matches AS match
         MATCH (node)
         WHERE elementId(node) = match.id
+          AND ($graph_name IS NULL OR node.graph_name = $graph_name)
         WITH node, match.score AS score
         {retrieval_query}
         """
-        parameters = {"matches": matches}
+        parameters = {"matches": matches, "graph_name": graph_name}
         if query_params:
             for key, value in query_params.items():
                 parameters.setdefault(key, value)
         return self.execute_query(query, parameters)
+
+    def vector_search_community_reports(
+        self,
+        query_vector: list[float],
+        graph_name: str,
+        top_k: int = 3,
+        level: int | None = None,
+    ) -> list[dict]:
+        """Search report vectors with graph/level filtering after over-fetching."""
+        query = """
+        CALL db.index.vector.queryNodes($index_name, $candidate_k, $query_vector)
+        YIELD node AS c, score
+        WHERE c:Community
+          AND c.graph_name = $graph_name
+          AND ($level IS NULL OR c.level = $level)
+        RETURN c.id AS id,
+               c.level AS level,
+               c.report_text AS report_text,
+               coalesce(c.report_json, '') AS report_json,
+               c.rating AS rating,
+               score
+        ORDER BY score DESC
+        LIMIT $top_k
+        """
+        return self.execute_query(
+            query,
+            {
+                "index_name": "community-report-embeddings",
+                "candidate_k": max(top_k * 5, top_k),
+                "top_k": top_k,
+                "query_vector": query_vector,
+                "graph_name": graph_name,
+                "level": level,
+            },
+        )
 
     # ------------------------------------------------------------------
     # Communities
@@ -336,7 +383,7 @@ class Neo4jGraphStore(BaseGraphStore):
             {"graph_name": graph_name, "cid": community_id, "level": level},
         )
 
-    def get_community_child_summary_context(
+    def get_child_community_reports(
         self,
         graph_name: str,
         community_id: str,
@@ -344,11 +391,11 @@ class Neo4jGraphStore(BaseGraphStore):
         child_level: int,
     ) -> list[dict]:
         from recon_graphrag.retrieval.neo4j.queries import (
-            COMMUNITY_CHILD_SUMMARY_QUERY,
+            COMMUNITY_CHILD_REPORT_QUERY,
         )
 
         return self.execute_query(
-            COMMUNITY_CHILD_SUMMARY_QUERY,
+            COMMUNITY_CHILD_REPORT_QUERY,
             {
                 "graph_name": graph_name,
                 "cid": community_id,
@@ -357,33 +404,19 @@ class Neo4jGraphStore(BaseGraphStore):
             },
         )
 
-    def get_community_summaries_by_keys(
+    def get_community_reports_by_keys(
         self,
         graph_name: str,
         keys: list[dict],
         top_k: int,
     ) -> list[dict]:
         from recon_graphrag.retrieval.neo4j.queries import (
-            DRIFT_COMMUNITY_SUMMARIES_QUERY,
+            COMMUNITY_REPORTS_BY_KEY_QUERY,
         )
 
         return self.execute_query(
-            DRIFT_COMMUNITY_SUMMARIES_QUERY,
+            COMMUNITY_REPORTS_BY_KEY_QUERY,
             {"keys": keys, "graph_name": graph_name, "top_k": top_k},
-        )
-
-    def get_community_entities_by_keys(
-        self,
-        graph_name: str,
-        keys: list[dict],
-    ) -> list[dict]:
-        from recon_graphrag.retrieval.neo4j.queries import (
-            DRIFT_COMMUNITY_ENTITIES_QUERY,
-        )
-
-        return self.execute_query(
-            DRIFT_COMMUNITY_ENTITIES_QUERY,
-            {"keys": keys, "graph_name": graph_name},
         )
 
     # ------------------------------------------------------------------

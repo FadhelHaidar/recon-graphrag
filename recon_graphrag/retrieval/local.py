@@ -73,6 +73,7 @@ class LocalSearchRetriever(BaseRetriever):
             vector_index_name=self.vector_index_name,
             fulltext_index_name=self.fulltext_index_name,
             retrieval_query=self.retrieval_query,
+            graph_name=self.graph_name,
             context_mode="local",
         )
 
@@ -168,6 +169,7 @@ class LocalSearchRetriever(BaseRetriever):
         if self._mixed_context_builder is None:
             self._mixed_context_builder = MixedContextBuilder(
                 graph_store=self.graph_store,
+                embedder=self.embedder,
                 graph_name=self.graph_name,
             )
 
@@ -179,8 +181,8 @@ class LocalSearchRetriever(BaseRetriever):
                 continue
             entity_context_rows.append(content)
             score = content.get("score", 0.0)
-            title = content.get("title", "")
-            entity_matches.append({"id": title, "score": score})
+            entity_id = content.get("entity_id") or content.get("title", "")
+            entity_matches.append({"id": entity_id, "score": score})
 
         mixed = self._mixed_context_builder.build_context(
             entity_matches=entity_matches,
@@ -307,9 +309,6 @@ def _format_entity_context(
     parts = []
     for item in retriever_result.items:
         content = item.content
-        if isinstance(content, str):
-            parts.append(content)
-            continue
         if not isinstance(content, dict):
             continue
 

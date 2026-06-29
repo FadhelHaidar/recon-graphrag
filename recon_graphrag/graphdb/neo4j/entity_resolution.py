@@ -124,8 +124,43 @@ class _Neo4jEntityResolver(BaseEntityResolver):
             )
             if result:
                 merged_nodes += len(node_ids)
+                merged_id = result[0].get("merged_id")
+                summary = self._merge_summaries.get(canonical_entity_id)
+                if merged_id and summary:
+                    self.graph_store.execute_query(
+                        """
+                        MATCH (n) WHERE elementId(n) = $node_id
+                        SET n.descriptions = $descriptions,
+                            n.description = $description,
+                            n.observation_count = size($descriptions),
+                            n.description_input_fingerprint = $fingerprint,
+                            n.description_summary_fallback = $fallback
+                        WITH n
+                        MATCH (n)-[r]-()
+                        WITH r,
+                             apoc.coll.toSet(apoc.coll.flatten(
+                               coalesce(r.source_chunk_ids, [])
+                             )) AS chunks,
+                             apoc.coll.toSet(
+                               coalesce(r.descriptions, []) +
+                               coalesce(apoc.convert.toList(r.description), [])
+                             ) AS descriptions
+                        SET r.source_chunk_ids = chunks,
+                            r.observation_count = size(chunks),
+                            r.weight = toFloat(size(chunks)),
+                            r.descriptions = descriptions,
+                            r.description = apoc.text.join(descriptions, '\n'),
+                            r.description_summary_fallback = true
+                        """,
+                        {
+                            "node_id": merged_id,
+                            "descriptions": summary["descriptions"],
+                            "description": summary["description"],
+                            "fingerprint": summary["description_input_fingerprint"],
+                            "fallback": summary["description_summary_fallback"],
+                        },
+                    )
                 if aliases:
-                    merged_id = result[0].get("merged_id")
                     if merged_id:
                         try:
                             self.graph_store.execute_query(

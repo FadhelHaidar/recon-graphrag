@@ -28,6 +28,7 @@ class PipelineConfig:
     extraction_concurrency: int = 5
     max_gleanings: int = 1
     extract_claims: bool = False
+    use_mixed_context: bool = False
     token_counter: TokenCounter | None = None
 
     def __post_init__(self):

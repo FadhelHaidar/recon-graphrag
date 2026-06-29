@@ -106,7 +106,7 @@ def _make_fake_communities(corpus: list[CorpusItem]) -> list[dict]:
         communities.append(
             {
                 "id": f"comm:{doc_id}",
-                "summary": text[:500],
+                "report_text": text[:500],
                 "level": 0,
                 "score": 0.9 - (i * 0.05),
             }
@@ -181,7 +181,7 @@ async def run_baseline(
         try:
             search_result = await retriever.search(
                 question,
-                level=search_config.level,
+                community_level=search_config.level,
             )
             answer = search_result.answer
             # Extract retrieved contexts from the search diagnostics
@@ -192,10 +192,10 @@ async def run_baseline(
                     """
                     MATCH (c:Community {graph_name: $graph_name, level: $level})
                     WHERE coalesce(c.report_status, 'success') <> 'failed'
-                      AND coalesce(c.report_text, c.summary, '') <> ''
+                      AND c.report_text <> ''
                     RETURN c.id AS id,
                            c.level AS level,
-                           coalesce(c.report_text, c.summary) AS summary
+                           c.report_text AS report_text
                     ORDER BY c.id
                     """,
                     {"graph_name": retriever.graph_name, "level": search_config.level},
@@ -204,7 +204,7 @@ async def run_baseline(
                     RetrievedContext(
                         community_id=str(c.get("id", "")),
                         level=int(c.get("level", 0)),
-                        summary=str(c.get("summary", "")),
+                        summary=str(c.get("report_text", "")),
                         score=0.0,
                     )
                     for c in raw_communities[:search_config.top_k]

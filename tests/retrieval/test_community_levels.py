@@ -26,7 +26,7 @@ class FakeGraphStore:
         if "Community" in query and "report_text" in query:
             level = params.get("level", 0)
             return [
-                {"id": "c2", "level": level, "summary": "Coarse community summary"}
+                {"id": "c2", "level": level, "report_text": "Coarse community report"}
             ]
 
         return []
@@ -37,7 +37,7 @@ class FakeGraphStore:
     def keyword_search(self, index_name, query_text, k, label=None, filters=None):
         return [{"id": "a", "score": 1.0}]
 
-    def fetch_entity_context(self, matches, retrieval_query=None, query_params=None, mode="local"):
+    def fetch_entity_context(self, matches, retrieval_query=None, query_params=None, mode="local", graph_name=None):
         return [
             {
                 "title": "Test (Entity)",
@@ -47,24 +47,6 @@ class FakeGraphStore:
                 "score": 0.8,
             }
         ]
-
-    def get_community_summaries_by_keys(self, graph_name, keys, top_k):
-        self.calls.append(
-            (
-                "get_community_summaries_by_keys",
-                {"graph_name": graph_name, "keys": keys, "top_k": top_k},
-            )
-        )
-        return [{"id": "c2", "summary": "Coarse community summary", "level": 2}]
-
-    def get_community_entities_by_keys(self, graph_name, keys):
-        self.calls.append(
-            (
-                "get_community_entities_by_keys",
-                {"graph_name": graph_name, "keys": keys},
-            )
-        )
-        return []
 
     def resolve_chunk_citations(self, graph_name, chunk_ids):
         self.calls.append(
@@ -112,13 +94,13 @@ class FakeHybridRetriever:
                                 "id": "c0",
                                 "level": 0,
                                 "graph_name": "entity-graph",
-                                "summary": "Fine summary",
+                                "report_text": "Fine report",
                             },
                             {
                                 "id": "c2",
                                 "level": 2,
                                 "graph_name": "entity-graph",
-                                "summary": "Coarse summary",
+                                "report_text": "Coarse report",
                             },
                         ],
                     }
@@ -188,17 +170,17 @@ async def test_drift_search_accepts_coarsest_alias():
 
     def _mock_vscr(query_vector, graph_name, top_k=3, level=None):
         store.vector_search_community_reports_calls.append({"top_k": top_k, "level": level})
-        return [{"id": "r1", "level": level, "summary": "Test report"}]
+        return [{"id": "r1", "level": level, "report_text": "Test report"}]
 
     store.vector_search_community_reports = _mock_vscr
     llm = FakeLLM()
     embedder = FakeEmbedder()
 
-    retriever = DriftSearchRetriever(
-        store, llm, embedder, community_level="coarsest"
-    )
+    retriever = DriftSearchRetriever(store, llm, embedder)
 
-    result = await retriever.search("themes", top_k=1)
+    result = await retriever.search(
+        "themes", top_k=1, community_level="coarsest"
+    )
 
     # "coarsest" → level 0 after reversal
     assert store.vector_search_community_reports_calls[0]["level"] == 0
@@ -206,12 +188,12 @@ async def test_drift_search_accepts_coarsest_alias():
 
 @pytest.mark.asyncio
 async def test_drift_search_can_include_citation_metadata_in_prompt():
-    """synthesize_citation_metadata is accepted but unused in iterative DRIFT."""
+    """DRIFT accepts citation metadata selection for local actions."""
     from recon_graphrag.retrieval.drift import DriftSearchRetriever
 
     store = FakeGraphStore()
     store.vector_search_community_reports = lambda *a, **kw: [
-        {"id": "r1", "level": 0, "summary": "Test"}
+        {"id": "r1", "level": 0, "report_text": "Test"}
     ]
     llm = FakeLLM()
     retriever = DriftSearchRetriever(store, llm, FakeEmbedder())
@@ -233,7 +215,7 @@ async def test_drift_search_with_synthesize_false_skips_llm():
 
     store = FakeGraphStore()
     store.vector_search_community_reports = lambda *a, **kw: [
-        {"id": "r1", "level": 0, "summary": "Test"}
+        {"id": "r1", "level": 0, "report_text": "Test"}
     ]
     llm = FakeLLM()
     retriever = DriftSearchRetriever(store, llm, FakeEmbedder())

@@ -1,8 +1,6 @@
 """Tests for iterative DRIFT search.
 
-Compatibility tests document current behavior. Target behavioral tests
-for features not yet fully wired (e.g. report embedding pipeline) are
-marked xfail.
+Tests for iterative DRIFT behavior and limits.
 """
 
 from __future__ import annotations
@@ -26,13 +24,12 @@ from recon_graphrag.retrieval.community_levels import resolve_community_level
 class FakeGraphStore:
     """Fake store with vector_search_community_reports support."""
 
-    def __init__(self, *, reports=None, bridging_entities=None):
+    def __init__(self, *, reports=None):
         self.calls: list[tuple[str, dict]] = []
         self._reports = reports or [
             {
                 "id": "report:c0:0",
                 "level": 0,
-                "summary": "Alice leads Acme Corp.",
                 "report_text": "Alice leads Acme Corp.",
                 "report_json": json.dumps({
                     "findings": [{
@@ -44,7 +41,6 @@ class FakeGraphStore:
                 "rating": 8.0,
             }
         ]
-        self._bridging_entities = bridging_entities or []
 
     def vector_search(self, index_name, query_vector, k, label=None, filters=None):
         self.calls.append(("vector_search", {"k": k}))
@@ -54,8 +50,8 @@ class FakeGraphStore:
         self.calls.append(("keyword_search", {}))
         return [{"id": "a", "score": 1.0}]
 
-    def fetch_entity_context(self, matches, retrieval_query=None, query_params=None, mode="local"):
-        self.calls.append(("fetch_entity_context", {"mode": mode}))
+    def fetch_entity_context(self, matches, retrieval_query=None, query_params=None, mode="local", graph_name=None):
+        self.calls.append(("fetch_entity_context", {"mode": mode, "graph_name": graph_name}))
         return [
             {
                 "title": "Alice (Person)",
@@ -75,14 +71,6 @@ class FakeGraphStore:
         if "RETURN max(c.level) AS level" in query:
             return [{"level": 2}]
         return []
-
-    def get_community_summaries_by_keys(self, graph_name, keys, top_k):
-        self.calls.append(("get_community_summaries_by_keys", {"keys": keys, "top_k": top_k}))
-        return []
-
-    def get_community_entities_by_keys(self, graph_name, keys):
-        self.calls.append(("get_community_entities_by_keys", {"keys": keys}))
-        return self._bridging_entities
 
     def resolve_chunk_citations(self, graph_name, chunk_ids):
         self.calls.append(("resolve_chunk_citations", {"chunk_ids": chunk_ids}))
@@ -154,11 +142,11 @@ class NoReportSearchStore(FakeGraphStore):
 
 
 # ---------------------------------------------------------------------------
-# Compatibility tests — document current iterative DRIFT behavior
+# Core iterative DRIFT behavior
 # ---------------------------------------------------------------------------
 
 
-class TestDriftSearchCompatibility:
+class TestDriftSearch:
     @pytest.mark.asyncio
     async def test_drift_returns_valid_search_result(self):
         store = FakeGraphStore()
@@ -181,17 +169,22 @@ class TestDriftSearchCompatibility:
         assert embedder.queries[0] == "Who directed Inception?"
 
     @pytest.mark.asyncio
-    async def test_drift_searches_community_reports(self):
+    async def test_drift_uses_configured_primer_report_count(self):
         store = FakeGraphStore()
-        retriever = DriftSearchRetriever(store, FakeLLM(), FakeEmbedder())
+        retriever = DriftSearchRetriever(
+            store,
+            FakeLLM(),
+            FakeEmbedder(),
+            config=DriftSearchConfig(primer_top_k=4),
+        )
 
-        await retriever.search("query", top_k=2, community_top_k=3)
+        await retriever.search("query", top_k=2)
 
         report_call = [
             c for c in store.calls if c[0] == "vector_search_community_reports"
         ]
         assert len(report_call) == 1
-        assert report_call[0][1]["top_k"] == 3
+        assert report_call[0][1]["top_k"] == 4
 
     @pytest.mark.asyncio
     async def test_drift_citations_from_report_refs(self):
@@ -265,11 +258,9 @@ class TestDriftCommunityLevelAliases:
     @pytest.mark.asyncio
     async def test_coarsest_alias_resolves(self):
         store = FakeGraphStore()
-        retriever = DriftSearchRetriever(
-            store, FakeLLM(), FakeEmbedder(), community_level="coarsest"
-        )
+        retriever = DriftSearchRetriever(store, FakeLLM(), FakeEmbedder())
 
-        await retriever.search("query", top_k=2)
+        await retriever.search("query", top_k=2, community_level="coarsest")
 
         report_call = [
             c for c in store.calls if c[0] == "vector_search_community_reports"
@@ -280,11 +271,9 @@ class TestDriftCommunityLevelAliases:
     @pytest.mark.asyncio
     async def test_finest_alias_resolves(self):
         store = FakeGraphStore()
-        retriever = DriftSearchRetriever(
-            store, FakeLLM(), FakeEmbedder(), community_level="finest"
-        )
+        retriever = DriftSearchRetriever(store, FakeLLM(), FakeEmbedder())
 
-        await retriever.search("query", top_k=2)
+        await retriever.search("query", top_k=2, community_level="finest")
 
         report_call = [
             c for c in store.calls if c[0] == "vector_search_community_reports"
@@ -295,9 +284,7 @@ class TestDriftCommunityLevelAliases:
     @pytest.mark.asyncio
     async def test_explicit_level_override(self):
         store = FakeGraphStore()
-        retriever = DriftSearchRetriever(
-            store, FakeLLM(), FakeEmbedder(), community_level="finest"
-        )
+        retriever = DriftSearchRetriever(store, FakeLLM(), FakeEmbedder())
 
         await retriever.search("query", top_k=2, community_level=1)
 
@@ -487,10 +474,9 @@ class TestDriftConversationHistory:
         assert "User: Hi" in llm.prompts[0]
 
 
-class TestDriftBackwardCompat:
+class TestDriftPromptCustomization:
     @pytest.mark.asyncio
-    async def test_answer_prompt_as_reduce_prompt(self):
-        """answer_prompt parameter serves as the reduce prompt."""
+    async def test_custom_reduce_prompt(self):
         store = FakeGraphStore()
         llm = FakeLLM(
             responses=[
@@ -501,11 +487,73 @@ class TestDriftBackwardCompat:
                 }),
             ]
         )
-        custom_prompt = "CUSTOM REDUCE: {query}\n{action_context}\n{conversation_history}\n{entity_context}\n{community_context}\n{bridging_context}"
+        custom_prompt = "CUSTOM REDUCE: {query}\n{action_context}\n{conversation_history}"
         retriever = DriftSearchRetriever(
-            store, llm, FakeEmbedder(), answer_prompt=custom_prompt
+            store, llm, FakeEmbedder(), reduce_prompt=custom_prompt
         )
 
         result = await retriever.search("query", top_k=2)
 
         assert result.answer
+
+
+class TestDriftLimitsAndRepair:
+    @pytest.mark.asyncio
+    async def test_invalid_primer_json_gets_one_async_repair(self):
+        llm = FakeLLM(
+            responses=[
+                "not json",
+                json.dumps({
+                    "answer": "Repaired.",
+                    "score": 70,
+                    "follow_ups": [],
+                    "report_ids": ["report:c0:0"],
+                }),
+            ]
+        )
+        result = await DriftSearchRetriever(
+            FakeGraphStore(), llm, FakeEmbedder()
+        ).search("query")
+
+        assert "invalid JSON" in llm.prompts[1]
+        assert result.metadata["drift_trace"]["total_llm_calls"] == 3
+
+    @pytest.mark.asyncio
+    async def test_max_llm_calls_is_hard_and_trace_includes_final_state(self):
+        llm = FakeLLM(
+            responses=[
+                json.dumps({
+                    "answer": "Primer.",
+                    "score": 80,
+                    "follow_ups": ["Follow up?"],
+                }),
+                json.dumps({
+                    "answer": "Action.",
+                    "score": 90,
+                    "follow_ups": ["More?"],
+                }),
+            ]
+        )
+        config = DriftSearchConfig(max_llm_calls=2, action_concurrency=3)
+        result = await DriftSearchRetriever(
+            FakeGraphStore(), llm, FakeEmbedder(), config=config
+        ).search("query")
+
+        trace = result.metadata["drift_trace"]
+        assert trace["total_llm_calls"] == 2
+        assert trace["stopping_reason"] == "max_llm_calls_reached"
+        assert len(llm.prompts) == 2
+
+    @pytest.mark.asyncio
+    async def test_config_community_level_is_used_when_constructor_omits_it(self):
+        store = FakeGraphStore()
+        config = DriftSearchConfig(community_level="finest")
+        await DriftSearchRetriever(
+            store, FakeLLM(), FakeEmbedder(), config=config
+        ).search("query")
+
+        report_call = next(
+            call for call in store.calls
+            if call[0] == "vector_search_community_reports"
+        )
+        assert report_call[1]["level"] == 2

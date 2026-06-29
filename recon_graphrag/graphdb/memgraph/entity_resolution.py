@@ -94,6 +94,10 @@ class _MemgraphEntityResolver(BaseEntityResolver):
             if canonical_readable_id:
                 combined_props["human_readable_id"] = canonical_readable_id
             combined_props[resolve_property] = canonical_name
+            summary = self._merge_summaries.get(canonical_entity_id)
+            if summary:
+                combined_props.update(summary)
+                combined_props["observation_count"] = len(summary["descriptions"])
             if aliases:
                 existing_aliases = combined_props.get("aliases", [])
                 if not isinstance(existing_aliases, list):
@@ -190,7 +194,35 @@ class _MemgraphEntityResolver(BaseEntityResolver):
                     WITH r, canonical, target, rel_props
                     WHERE NOT id(target) IN $merged_ids
                     MERGE (canonical)-[new_r:{escaped_rel}]->(target)
+                    WITH r, new_r, rel_props,
+                         coalesce(new_r.source_chunk_ids, []) AS existing_chunks,
+                         coalesce(new_r.descriptions,
+                           CASE WHEN new_r.description IS NULL THEN []
+                                ELSE [new_r.description] END) AS existing_descriptions,
+                         new_r.strength AS existing_strength
                     SET new_r += rel_props
+                    WITH r, new_r, rel_props, existing_strength,
+                         reduce(acc = [], item IN existing_chunks +
+                           coalesce(rel_props.source_chunk_ids, []) |
+                           CASE WHEN item IN acc THEN acc ELSE acc + [item] END
+                         ) AS merged_chunks,
+                         reduce(acc = [], item IN existing_descriptions +
+                           CASE WHEN rel_props.description IS NULL THEN []
+                                ELSE [rel_props.description] END |
+                           CASE WHEN item IN acc THEN acc ELSE acc + [item] END
+                         ) AS merged_descriptions
+                    SET new_r.source_chunk_ids = merged_chunks,
+                        new_r.observation_count = size(merged_chunks),
+                        new_r.weight = toFloat(size(merged_chunks)),
+                        new_r.descriptions = merged_descriptions,
+                        new_r.description = reduce(text = '', item IN merged_descriptions |
+                          text + CASE WHEN text = '' THEN '' ELSE '\n' END + item),
+                        new_r.description_summary_fallback = true,
+                        new_r.strength = CASE
+                          WHEN existing_strength IS NULL THEN rel_props.strength
+                          WHEN rel_props.strength IS NULL THEN existing_strength
+                          WHEN existing_strength >= rel_props.strength THEN existing_strength
+                          ELSE rel_props.strength END
                     DELETE r
                     """,
                     {
@@ -218,7 +250,35 @@ class _MemgraphEntityResolver(BaseEntityResolver):
                     WITH r, source, canonical, rel_props
                     WHERE NOT id(source) IN $merged_ids
                     MERGE (source)-[new_r:{escaped_rel}]->(canonical)
+                    WITH r, new_r, rel_props,
+                         coalesce(new_r.source_chunk_ids, []) AS existing_chunks,
+                         coalesce(new_r.descriptions,
+                           CASE WHEN new_r.description IS NULL THEN []
+                                ELSE [new_r.description] END) AS existing_descriptions,
+                         new_r.strength AS existing_strength
                     SET new_r += rel_props
+                    WITH r, new_r, rel_props, existing_strength,
+                         reduce(acc = [], item IN existing_chunks +
+                           coalesce(rel_props.source_chunk_ids, []) |
+                           CASE WHEN item IN acc THEN acc ELSE acc + [item] END
+                         ) AS merged_chunks,
+                         reduce(acc = [], item IN existing_descriptions +
+                           CASE WHEN rel_props.description IS NULL THEN []
+                                ELSE [rel_props.description] END |
+                           CASE WHEN item IN acc THEN acc ELSE acc + [item] END
+                         ) AS merged_descriptions
+                    SET new_r.source_chunk_ids = merged_chunks,
+                        new_r.observation_count = size(merged_chunks),
+                        new_r.weight = toFloat(size(merged_chunks)),
+                        new_r.descriptions = merged_descriptions,
+                        new_r.description = reduce(text = '', item IN merged_descriptions |
+                          text + CASE WHEN text = '' THEN '' ELSE '\n' END + item),
+                        new_r.description_summary_fallback = true,
+                        new_r.strength = CASE
+                          WHEN existing_strength IS NULL THEN rel_props.strength
+                          WHEN rel_props.strength IS NULL THEN existing_strength
+                          WHEN existing_strength >= rel_props.strength THEN existing_strength
+                          ELSE rel_props.strength END
                     DELETE r
                     """,
                     {

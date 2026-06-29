@@ -95,7 +95,7 @@ def test_assembler_deduplicates_relationships_and_aggregates_weight():
     rel = result.relationships[0]
     assert rel.observation_count == 2
     assert rel.strength == 1.0  # first extracted weight
-    assert rel.properties["weight"] == 2.0  # backward compat alias
+    assert rel.properties["weight"] == 2.0  # Leiden observation weight
     assert rel.properties["canonical_key"] == "p1:KNOWS:p2"
     assert rel.properties["human_readable_id"] == "p1:KNOWS:p2"
     assert set(rel.properties["source_chunk_ids"]) == {"c1", "c2"}

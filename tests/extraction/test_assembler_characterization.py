@@ -154,7 +154,7 @@ def test_relationship_observation_count_aggregated():
     rel = doc.relationships[0]
     assert rel.observation_count == 3
     assert rel.strength == 1.0  # first extracted weight preserved
-    assert rel.properties["weight"] == 3.0  # backward compat alias
+    assert rel.properties["weight"] == 3.0  # Leiden observation weight
 
 
 def test_relationship_source_chunk_ids_accumulated():

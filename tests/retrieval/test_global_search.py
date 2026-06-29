@@ -21,7 +21,7 @@ from recon_graphrag.retrieval.global_search import (
 
 def _make_reports(n: int = 5) -> list[dict]:
     return [
-        {"id": f"report:{i}:0", "level": 0, "summary": f"Summary for community {i}."}
+        {"id": f"report:{i}:0", "level": 0, "report_text": f"Summary for community {i}."}
         for i in range(n)
     ]
 
@@ -40,7 +40,7 @@ def _make_report_with_json_ref(
     return {
         "id": rid,
         "level": 0,
-        "summary": f"Summary for {rid}.",
+        "report_text": f"Summary for {rid}.",
         "report_json": json.dumps({
             "id": rid,
             "community_id": rid.replace("report:", "c").replace(":0", ""),
@@ -65,7 +65,7 @@ def _make_report_with_text_ref(
     return {
         "id": rid,
         "level": 0,
-        "summary": f"Summary with [refs: {target_type}:{target_id}]",
+        "report_text": f"Summary with [refs: {target_type}:{target_id}]",
     }
 
 
@@ -89,10 +89,7 @@ class FakeGraphStore:
             for r in self._reports:
                 if r.get("level") != level:
                     continue
-                row = dict(r)
-                if "report_text" not in row and "summary" in row:
-                    row["report_text"] = row["summary"]
-                rows.append(row)
+                rows.append(dict(r))
             return rows
         return self._reports
 
@@ -142,7 +139,6 @@ class TestShuffle:
         s1 = GlobalSearchRetriever._shuffle(reports, seed=42)
         s2 = GlobalSearchRetriever._shuffle(reports, seed=42)
         assert [r["id"] for r in s1] == [r["id"] for r in s2]
-
     def test_different_seeds_differ(self):
         reports = _make_reports(10)
         s1 = GlobalSearchRetriever._shuffle(reports, seed=1)
@@ -158,6 +154,20 @@ class TestShuffle:
 
 
 class TestCreateBatches:
+    def test_oversized_report_is_truncated_to_map_budget(self):
+        retriever = GlobalSearchRetriever(
+            FakeGraphStore(), FakeLLM(), map_budget_tokens=1000
+        )
+        reports = [{"id": "huge", "report_text": "x" * 20000}]
+
+        batches = retriever._create_batches("question", reports)
+        overhead = retriever.token_counter.count(
+            retriever.map_prompt.format(query="question", batch_text="")
+        )
+
+        assert len(batches) == 1
+        assert batches[0].token_count <= 1000 - overhead
+
     def test_single_batch_fits_all(self):
         store = FakeGraphStore()
         llm = FakeLLM()
@@ -236,7 +246,7 @@ class TestFullSearch:
             reduce_response="Final synthesized answer.",
         )
         search = GlobalSearchRetriever(store, llm)
-        result = await search.search("test query", level=0, random_seed=42)
+        result = await search.search("test query", community_level=0, random_seed=42)
 
         assert result.mode == "global"
         assert "Final synthesized" in result.answer
@@ -263,7 +273,7 @@ class TestFullSearch:
         )
         search = GlobalSearchRetriever(store, llm)
 
-        result = await search.search("test query", level=0, random_seed=42)
+        result = await search.search("test query", community_level=0, random_seed=42)
 
         assert len(result.citations) == 1
         assert result.citations[0].chunk_id == "chunk:1"
@@ -274,7 +284,7 @@ class TestFullSearch:
         store = FakeGraphStore()
         llm = FakeLLM()
         search = GlobalSearchRetriever(store, llm)
-        result = await search.search("query", level=None)
+        result = await search.search("query", community_level=None)
         assert "requires" in result.answer.lower()
 
     @pytest.mark.asyncio
@@ -282,7 +292,7 @@ class TestFullSearch:
         store = FakeGraphStore(reports=[])
         llm = FakeLLM()
         search = GlobalSearchRetriever(store, llm)
-        result = await search.search("query", level=0)
+        result = await search.search("query", community_level=0)
         assert "No community reports" in result.answer
 
     @pytest.mark.asyncio
@@ -296,7 +306,7 @@ class TestFullSearch:
             ]
         )
         search = GlobalSearchRetriever(store, llm)
-        result = await search.search("query", level=0)
+        result = await search.search("query", community_level=0)
         assert "No relevant" in result.answer
 
 
@@ -510,7 +520,7 @@ class TestSourceResolution:
             reduce_response="Final answer.",
         )
         search = GlobalSearchRetriever(store, llm)
-        result = await search.search("test query", level=0, random_seed=42)
+        result = await search.search("test query", community_level=0, random_seed=42)
 
         assert len(result.citations) == 1
         assert result.citations[0].chunk_id == "chunk:1"
@@ -533,7 +543,7 @@ class TestSourceResolution:
             reduce_response="Final answer.",
         )
         search = GlobalSearchRetriever(store, llm)
-        result = await search.search("test query", level=0, random_seed=42)
+        result = await search.search("test query", community_level=0, random_seed=42)
 
         assert len(result.citations) == 1
         assert result.citations[0].chunk_id == "chunk:1"
@@ -553,7 +563,7 @@ class TestSourceResolution:
             reduce_response="Final answer.",
         )
         search = GlobalSearchRetriever(store, llm)
-        result = await search.search("test query", level=0, random_seed=42)
+        result = await search.search("test query", community_level=0, random_seed=42)
 
         assert len(result.citations) == 1
         assert result.metadata["source_report_ids_used"] == 1
@@ -576,7 +586,7 @@ class TestSourceResolution:
             reduce_response="Final answer.",
         )
         search = GlobalSearchRetriever(store, llm)
-        result = await search.search("test query", level=0, random_seed=42)
+        result = await search.search("test query", community_level=0, random_seed=42)
 
         assert len(result.citations) == 1
         assert result.metadata["source_references_extracted"] == 1
@@ -587,7 +597,7 @@ class TestSourceResolution:
             {
                 "id": "report:0:0",
                 "level": 0,
-                "summary": "Summary",
+                "report_text": "Summary",
                 "report_json": "not valid json",
             }
         ]
@@ -606,7 +616,7 @@ class TestSourceResolution:
             reduce_response="Final answer.",
         )
         search = GlobalSearchRetriever(store, llm)
-        result = await search.search("test query", level=0, random_seed=42)
+        result = await search.search("test query", community_level=0, random_seed=42)
 
         assert len(result.citations) == 1
         assert any(
@@ -633,7 +643,7 @@ class TestSourceResolution:
             reduce_response="Final answer.",
         )
         search = GlobalSearchRetriever(store, llm)
-        result = await search.search("test query", level=0, random_seed=42)
+        result = await search.search("test query", community_level=0, random_seed=42)
 
         assert result.citations == []
         assert any(
@@ -680,7 +690,7 @@ class TestSynthesizeResponse:
         )
         search = GlobalSearchRetriever(store, llm)
         result = await search.search(
-            "test query", level=0, random_seed=42, synthesize_response=False
+            "test query", community_level=0, random_seed=42, synthesize_response=False
         )
 
         assert result.mode == "global"
@@ -714,7 +724,7 @@ class TestSynthesizeResponse:
         )
         search = GlobalSearchRetriever(store, llm)
         result = await search.search(
-            "test query", level=0, random_seed=42, synthesize_response=False
+            "test query", community_level=0, random_seed=42, synthesize_response=False
         )
 
         assert result.answer == ""
@@ -734,7 +744,7 @@ class TestSynthesizeResponse:
         )
         search = GlobalSearchRetriever(store, llm)
         result = await search.search(
-            "query", level=0, synthesize_response=False
+            "query", community_level=0, synthesize_response=False
         )
         # All zero still returns early with "No relevant" message
         assert "No relevant" in result.answer

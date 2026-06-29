@@ -7,6 +7,7 @@ from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.models.types import SearchResult
 from recon_graphrag.retrieval.drift import DriftSearchRetriever
+from recon_graphrag.retrieval.drift_types import DriftSearchConfig
 from recon_graphrag.retrieval.global_search import GlobalSearchRetriever
 from recon_graphrag.retrieval.local import LocalSearchRetriever
 from recon_graphrag.utils.tokens import TokenCounter
@@ -17,7 +18,7 @@ class GraphRAG:
 
     - **local**: Entity-centric subgraph traversal. Best for specific questions
       about particular entities.
-    - **global**: Community-summaries map-reduce. Best for broad, holistic
+    - **global**: Community-report map-reduce. Best for broad, holistic
       questions and overviews.
     - **drift**: Hybrid entity + community. Combines local specificity with
       global context for questions that benefit from both perspectives.
@@ -33,6 +34,7 @@ class GraphRAG:
         map_budget_tokens: int = 12000,
         reduce_budget_tokens: int = 12000,
         use_mixed_context: bool = False,
+        drift_config: DriftSearchConfig | None = None,
     ):
         self.local = LocalSearchRetriever(
             graph_store, llm, embedder,
@@ -48,7 +50,11 @@ class GraphRAG:
             reduce_budget_tokens=reduce_budget_tokens,
         )
         self.drift = DriftSearchRetriever(
-            graph_store, llm, embedder, graph_name=graph_name
+            graph_store,
+            llm,
+            embedder,
+            graph_name=graph_name,
+            config=drift_config,
         )
 
     async def search(
@@ -61,9 +67,9 @@ class GraphRAG:
             mode: One of "local", "global", "drift".
             **kwargs: Additional arguments passed to the specific retriever:
                 - local: top_k (int)
-                - global: level/community_level
+                - global: community_level
                   (int | "all" | "finest" | "coarsest")
-                - drift: top_k (int), community_top_k (int), community_level
+                - drift: top_k (int), community_level
                   (int | "all" | "finest" | "coarsest")
                 - synthesize_response (bool): Applies to all modes. When
                   False, skip final LLM answer synthesis and return
@@ -80,4 +86,5 @@ class GraphRAG:
             raise ValueError(
                 f"Unknown search mode: '{mode}'. Use one of: local, global, drift"
             )
-        return await modes[mode].search(query, **kwargs)
+        result = await modes[mode].search(query, **kwargs)
+        return result

@@ -144,6 +144,7 @@ class GraphStore(Protocol):
         retrieval_query: Optional[str] = None,
         query_params: Optional[dict] = None,
         mode: str = "local",
+        graph_name: str | None = None,
     ) -> list[dict]:
         """Fetch formatted entity context for ranked entity matches."""
         ...
@@ -183,22 +184,12 @@ class GraphStore(Protocol):
         """Get community statistics."""
         ...
 
-    def store_community_summary(
-        self,
-        community_id: str,
-        level: int,
-        summary: str,
-        graph_name: str,
-    ) -> None:
-        """Store a generated summary on a community node."""
-        ...
-
     def store_community_report(
         self,
         report: CommunityReport,
         graph_name: str,
     ) -> None:
-        """Store a structured community report and compatibility summary."""
+        """Store a structured community report."""
         ...
 
     def mark_community_report_failed(
@@ -229,14 +220,14 @@ class GraphStore(Protocol):
         """
         ...
 
-    def get_community_child_summary_context(
+    def get_child_community_reports(
         self,
         graph_name: str,
         community_id: str,
         level: int,
         child_level: int,
     ) -> list[dict]:
-        """Fetch child community summaries for a parent community."""
+        """Fetch child reports for a parent community."""
         ...
 
     def get_claims_for_entities(
@@ -263,21 +254,13 @@ class GraphStore(Protocol):
         """
         ...
 
-    def get_community_summaries_by_keys(
+    def get_community_reports_by_keys(
         self,
         graph_name: str,
         keys: list[dict],
         top_k: int,
     ) -> list[dict]:
-        """Fetch community summaries for graph-scoped community keys."""
-        ...
-
-    def get_community_entities_by_keys(
-        self,
-        graph_name: str,
-        keys: list[dict],
-    ) -> list[dict]:
-        """Fetch entities and relationships for graph-scoped community keys."""
+        """Fetch reports for graph-scoped community keys."""
         ...
 
     # ------------------------------------------------------------------
@@ -290,7 +273,7 @@ class GraphStore(Protocol):
     ) -> list[dict]:
         """Get community reports without embeddings.
 
-        Returns rows with keys: id, level, report_text, summary, title.
+        Returns rows with keys: id, level, report_text, title.
         """
         ...
 
@@ -298,6 +281,8 @@ class GraphStore(Protocol):
         self,
         node_ids: list[str],
         vectors: list[list[float]],
+        graph_name: str,
+        levels: list[int],
     ) -> None:
         """Batch upsert vector embeddings onto community report nodes."""
         ...
@@ -311,7 +296,7 @@ class GraphStore(Protocol):
     ) -> list[dict]:
         """Vector search over community report embeddings.
 
-        Returns rows with keys: id, level, summary, report_text,
+        Returns rows with keys: id, level, report_text,
         report_json, rating, score.
         """
         ...

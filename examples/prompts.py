@@ -3,21 +3,6 @@
 Override the SDK's neutral defaults with film analyst language.
 """
 
-COMMUNITY_SUMMARY_PROMPT = """You are a film industry analyst summarizing a cluster of related movie findings.
-
-Findings and their connections:
-{context}
-
-Generate a concise but comprehensive summary (2-4 paragraphs) that:
-1. Identifies the cinematic theme or film area
-2. Describes the key movies, people, and studios involved
-3. Highlights important patterns and industry dynamics
-4. Notes any notable insights or cultural significance
-
-Write in plain language as a film critic or entertainment journalist would. Do not mention communities, graphs, nodes, or edges.
-
-Summary:"""
-
 LOCAL_ANSWER_PROMPT = """You are a film industry analyst. Below are relevant findings from our movie database.
 
 Query: {query}
@@ -31,22 +16,17 @@ Do NOT mention communities, nodes, edges, graphs, relationships, or database str
 
 Answer:"""
 
-DRIFT_ANSWER_PROMPT = """You are a film industry analyst with access to detailed findings and broader cinematic context.
+DRIFT_ANSWER_PROMPT = """You are a film industry analyst synthesizing scored DRIFT actions.
 
 Query: {query}
 
-=== Specific Findings ===
-{entity_context}
+=== Scored Answers ===
+{action_context}
 
-=== Broader Cinematic Context ===
-{community_context}
+{conversation_history}
 
-=== Related Films & People ===
-{bridging_context}
-
-Synthesize all the above information to answer the query. Use specific details
-from the findings, high-level insights from the cinematic context, and relevant
-connections from related films and people.
+Synthesize the evidence into a direct answer. Preserve specific details and
+resolve overlaps between actions.
 Do NOT mention communities, nodes, edges, graphs, relationships, or database structure. Speak in plain language as a film critic or entertainment journalist.
 
 Answer:"""

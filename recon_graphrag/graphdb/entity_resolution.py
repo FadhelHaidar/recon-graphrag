@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import re
 import unicodedata
@@ -82,6 +83,7 @@ class BaseEntityResolver(ABC):
 
     def __init__(self, graph_store):
         self.graph_store = graph_store
+        self._merge_summaries: dict[str, dict] = {}
 
     async def resolve(  # noqa: C901
         self,
@@ -156,6 +158,7 @@ class BaseEntityResolver(ABC):
 
         merged_nodes = 0
         if not dry_run and groups:
+            self._merge_summaries = await self._prepare_merge_summaries(groups, llm)
             merged_nodes = self._merge_groups(groups, resolve_property)
 
         return {
@@ -168,6 +171,56 @@ class BaseEntityResolver(ABC):
             "ai_merged_review_groups": ai_merged_review_groups,
             "signals": signals,
         }
+
+    async def _prepare_merge_summaries(
+        self, groups: list[list[_EntityRecord]], llm
+    ) -> dict[str, dict]:
+        """Normalize observations and optionally summarize merged descriptions."""
+        summaries: dict[str, dict] = {}
+        for group in groups:
+            canonical = max(
+                group,
+                key=lambda entity: len(entity.resolve_value or ""),
+            )
+            observations: list[str] = []
+            for entity in group:
+                values = entity.properties.get("descriptions", [])
+                if not isinstance(values, list):
+                    values = [values]
+                description = entity.properties.get("description")
+                if description:
+                    values.append(description)
+                for value in values:
+                    text = str(value).strip()
+                    if text and text not in observations:
+                        observations.append(text)
+            deterministic = "\n".join(observations)
+            fingerprint = hashlib.sha256(
+                json.dumps(observations, ensure_ascii=True).encode("utf-8")
+            ).hexdigest()
+            summary = deterministic
+            fallback = False
+            if llm is not None and len(observations) > 1:
+                prompt = (
+                    "Consolidate these unique observations into one factual entity "
+                    "description. Preserve all non-conflicting facts and return only "
+                    f"the description.\n\n{deterministic}"
+                )
+                try:
+                    response = await llm.ainvoke(prompt)
+                    summary = response.content.strip()
+                    if not summary:
+                        raise ValueError("empty entity description summary")
+                except Exception:
+                    summary = deterministic
+                    fallback = True
+            summaries[canonical.entity_id] = {
+                "descriptions": observations,
+                "description": summary,
+                "description_input_fingerprint": fingerprint,
+                "description_summary_fallback": fallback,
+            }
+        return summaries
 
     def _preflight(self, *, dry_run: bool) -> dict | None:
         return None

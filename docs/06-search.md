@@ -15,7 +15,7 @@ the mechanics behind each mode.
 All modes use the same entry point:
 
 ```python
-from recon_graphrag import GraphRAG
+from recon_graphrag import GraphRAG, DriftSearchConfig
 
 graph_rag = GraphRAG(
     store,
@@ -25,9 +25,20 @@ graph_rag = GraphRAG(
     token_counter=None,            # optional token counter for global search
     map_budget_tokens=12000,       # global map budget (default: 12000)
     reduce_budget_tokens=12000,    # global reduce budget (default: 12000)
+    use_mixed_context=False,       # enable mixed-context for local search
+    drift_config=DriftSearchConfig(primer_top_k=3),
 )
 result = await graph_rag.search("Your question", mode="local")
 ```
+
+| Parameter | Description |
+| --- | --- |
+| `graph_name` | Graph scope for all nodes and relationships. Defaults to `"entity-graph"`. |
+| `token_counter` | Optional token counter for global map/reduce batching. |
+| `map_budget_tokens` | Maximum report text packed into one map prompt. |
+| `reduce_budget_tokens` | Maximum partial-answer text packed into the final reduce prompt. |
+| `use_mixed_context` | When `True`, local search uses `MixedContextBuilder` to combine entity subgraph, community reports, and claims into a single token-budgeted context. Defaults to `False`. |
+| `drift_config` | Optional `DriftSearchConfig` controlling iterative DRIFT search parameters. |
 
 ---
 
@@ -51,6 +62,14 @@ result = await graph_rag.search(
 | `ranker` | Hybrid ranker: `"naive"` or `"linear"`. |
 | `alpha` | Required for the `"linear"` ranker. |
 | `query_params` | Optional dict forwarded to the underlying hybrid entity retriever. |
+| `community_level` | Community level for mixed-context reports. Only used when `use_mixed_context=True`. |
+| `token_budget` | Total token budget for mixed context. Only used when `use_mixed_context=True`. Defaults to `12000`. |
+
+When `use_mixed_context=True` is set on the `GraphRAG` constructor (or directly on
+`LocalSearchRetriever`), local search uses `MixedContextBuilder` to collect five
+candidate types — seed entities, relationships, text units (chunks), community
+reports, and claims — then ranks and token-packs them into a single context
+string. This provides richer context than the default entity-subgraph-only mode.
 
 Local search returns citations when retrieved entities have source chunks.
 By default, citation metadata is returned after synthesis but is not shown to
@@ -95,13 +114,39 @@ result = await graph_rag.search(
 )
 ```
 
+**Example walkthrough:**
+
+Given two community reports at level 0:
+
+```text
+comm:0:0: "Christopher Nolan directed Oppenheimer starring Cillian Murphy..."
+comm:1:0: "Hans Zimmer composed scores for Interstellar, Inception, and Dune..."
+
+Query: "What are the main themes in this dataset?"
+  ↓ resolve level (coarsest = 0)
+  ↓ read all reports at level 0
+  ↓ shuffle with seed=42
+  ↓ pack into batches (map_budget_tokens=12000)
+Batch 0: [comm:0:0, comm:1:0]
+  ↓ LLM map call
+Map output: { answer: "Themes include human ambition, time, space...", helpfulness: 75, report_ids: [...] }
+  ↓ filter (helpfulness > 0) and sort
+  ↓ LLM reduce call
+Final answer: "The main themes are human ambition, exploration of time and space..."
+  ↓ resolve citations from report_json references
+Citations: [chunk:0, chunk:1, chunk:2, chunk:3, chunk:4]
+```
+
+Global search does not touch entity nodes or embeddings at query time. It reads
+stored community reports and synthesizes a corpus-level answer.
+
 | Parameter | Description |
 | --- | --- |
-| `level` / `community_level` | Which community level to search. Use `"coarsest"` when you do not know the numeric levels. |
+| `community_level` | Which community level to search. Use `"coarsest"` when you do not know the numeric levels. |
 | `random_seed` | Seed for reproducible report shuffling. Defaults to `42`. |
 | `map_budget_tokens` | Constructor option on `GlobalSearchRetriever`; maximum report text packed into one map prompt. |
 | `reduce_budget_tokens` | Constructor option on `GlobalSearchRetriever`; maximum partial-answer text packed into the final reduce prompt. |
-| `map_concurrency` | Constructor option on `GlobalSearchRetriever`; max concurrent map calls. Defaults to `1`. |
+| `map_concurrency` | Constructor option on `GlobalSearchRetriever`; max concurrent map calls. Defaults to `5`. |
 | `max_map_calls` | Constructor option on `GlobalSearchRetriever`; max total map calls. Defaults to `None` (unlimited). |
 
 Global search reads stored `Community.report_text` / `Community.summary`
@@ -149,9 +194,8 @@ LLM calls:
   reduce(sorted partial answers)
 ```
 
-`community_level="coarsest"` resolves to the highest level currently stored in
-the graph, so callers do not need to know whether the database has levels
-`0..1`, `0..2`, or something else.
+`community_level="coarsest"` resolves to level `0`. `"finest"` resolves to
+the highest level currently stored in the graph.
 
 Global search skips failed or empty community reports.
 
@@ -164,27 +208,89 @@ reports' structured `report_json` or rendered `[refs: ...]` text.
 ## DRIFT Search
 
 DRIFT search combines local entity retrieval with community context for
-questions that need both detail and big-picture framing.
+questions that need both detail and big-picture framing. It uses an iterative
+traversal that begins with semantic community-report retrieval, generates
+follow-up questions, performs local subgraph searches for each follow-up,
+and reduces all gathered evidence into a final answer.
 
 ```python
 result = await graph_rag.search(
     "Explain the relationship between Christopher Nolan and his frequent collaborators.",
     mode="drift",
     top_k=10,
-    community_top_k=3,
     community_level="coarsest",
 )
 ```
 
+**Example walkthrough:**
+
+```text
+Query: "How does Hans Zimmer connect Inception to Dune?"
+  ↓ Phase 1: Primer
+  ↓ embed query → vector search community reports (primer_top_k=3)
+Reports: [comm:1:0 ("Hans Zimmer composed scores for...")]
+  ↓ LLM generates initial answer + follow-ups
+Primer: { answer: "Zimmer composed for both...", score: 65,
+          follow_ups: ["What films did Zimmer score for Nolan?",
+                       "How did Zimmer's style evolve between Inception and Dune?"] }
+  ↓ Phase 2: Traversal (breadth-first)
+  ↓ action:1 — "What films did Zimmer score for Nolan?"
+    → local entity retrieval (top_k=10): [Hans_Zimmer, Christopher_Nolan, ...]
+    → 1-hop neighbors + chunks → LLM scores 80, 0 follow-ups (score ≥ min_expand_score=20, but no new questions)
+  ↓ action:2 — "How did Zimmer's style evolve between Inception and Dune?"
+    → local entity retrieval: [Hans_Zimmer, Inception, Dune, ...]
+    → LLM scores 45, 1 follow-up at depth 2
+  ↓ action:3 (depth 2) — follow-up from action:2
+    → local entity retrieval → LLM scores 30
+  ↓ Phase 3: Reduction
+  ↓ sort completed actions by score: [action:1 (80), action:2 (45), action:3 (30)]
+  ↓ pack into reduce_budget_tokens=12000
+  ↓ LLM synthesizes final answer
+  ↓ resolve citations from local chunks + primer report references
+```
+
+Total LLM calls: 1 (primer) + 3 (actions) + 1 (reduce) = 5. The tree did not
+reach `max_depth=3` because actions did not generate enough follow-ups.
+
 | Parameter | Description |
 | --- | --- |
 | `top_k` | Number of entities to retrieve. |
-| `community_top_k` | Number of communities to expand into. |
 | `community_level` | Which community level to use. |
 | `query_params` | Optional dict forwarded to the underlying hybrid entity retriever. |
+| `conversation_history` | Optional conversation history string injected into prompts. |
 
-DRIFT returns citations for the retrieved local source chunks. Community-summary
-citations are a separate extension point.
+### DriftSearchConfig
+
+Control iterative DRIFT behavior with `DriftSearchConfig`:
+
+```python
+from recon_graphrag import DriftSearchConfig
+
+config = DriftSearchConfig(
+    primer_top_k=3,           # top community reports for primer phase
+    max_followups=3,          # max follow-up questions per action
+    max_depth=3,              # max traversal depth
+    min_expand_score=20.0,    # minimum score to expand an action (0-100)
+    max_llm_calls=20,         # hard cap on total LLM calls per search
+    action_concurrency=3,     # max concurrent action evaluations
+    community_level="coarsest",  # default community level
+    reduce_budget_tokens=12000,  # token budget for final reduction
+)
+```
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `primer_top_k` | `3` | Number of community reports retrieved by vector similarity in the primer phase. |
+| `max_followups` | `3` | Maximum follow-up questions generated per action. |
+| `max_depth` | `3` | Maximum depth of the iterative traversal tree. |
+| `min_expand_score` | `20.0` | Minimum action score (0-100) required to expand into follow-ups. Actions scoring below this are pruned. |
+| `max_llm_calls` | `20` | Hard cap on total LLM calls across all phases (primer, actions, reduction). Prevents runaway costs. |
+| `action_concurrency` | `3` | Maximum number of actions evaluated concurrently during traversal. |
+| `community_level` | `"coarsest"` | Default community level for primer report search. Overridden by the `community_level` search parameter if provided. |
+| `reduce_budget_tokens` | `12000` | Token budget for packing scored action answers into the final reduction prompt. |
+
+DRIFT returns citations for retrieved local source chunks and for references in
+the selected primer reports.
 Like local search, DRIFT accepts `synthesize_citation_metadata=True` and optional
 `synthesis_metadata_keys=[...]` to include compact citation metadata in the
 answer synthesis context.
@@ -363,14 +469,14 @@ Cillian_Murphy    -[STARRED_IN]-> Oppenheimer      source_chunk_ids: [chunk:4]
 
 **Communities and reports**
 
-Community detection groups entities into clusters. Each `Community` node has a
-`summary` (plain text) and, when structured reports are enabled, a `report_json`
-property containing findings with validated entity references:
+Community detection groups entities into clusters. Each reported `Community`
+node has `report_text` plus `report_json` containing findings with validated
+entity references:
 
 ```text
 Community "comm:0:0"
   <- IN_COMMUNITY <- Christopher_Nolan, Cillian_Murphy, Oppenheimer
-  summary: "Christopher Nolan directed Oppenheimer starring Cillian Murphy..."
+  report_text: "Christopher Nolan directed Oppenheimer starring Cillian Murphy..."
   report_json: {
     "findings": [
       {
@@ -385,7 +491,7 @@ Community "comm:0:0"
 
 Community "comm:1:0"
   <- IN_COMMUNITY <- Hans_Zimmer, Inception, Dune, Interstellar
-  summary: "Hans Zimmer composed scores for science-fiction films..."
+  report_text: "Hans Zimmer composed scores for science-fiction films..."
   report_json: {
     "findings": [
       {
@@ -401,9 +507,8 @@ Community "comm:1:0"
 ```
 
 The `report_json` references are validated against the real entity allowlist
-when the report is generated. The global search retriever, however, does not
-read `report_json`. It only reads `summary`. That distinction is the root of the
-global source problem.
+when the report is generated. Global search reads `report_text` for synthesis
+and `report_json` for evidence references.
 
 ---
 
@@ -455,37 +560,24 @@ stored graph edge.
 
 **Question:** `"How does Hans Zimmer connect Inception to Dune?"`
 
-**Step 1 — Find entities.** Vector/keyword search finds `Hans_Zimmer`,
-`Inception`, and `Dune`.
+**Step 1 — Select primer reports.** The query embedding searches community
+report vectors at the requested hierarchy level.
 
-**Step 2 — Entity traversal (same as Local).** The retriever follows
-relationships and collects source chunk IDs:
+**Step 2 — Plan focused actions.** The primer LLM proposes follow-up questions
+grounded in the selected report text.
 
-```text
-[chunk:0, chunk:1, chunk:3]
-```
+**Step 3 — Retrieve local evidence.** Each action runs hybrid entity retrieval,
+collects typed relationship context, and resolves source chunk IDs.
 
-**Step 3 — Expand to communities.** From the matched entities, the retriever
-follows `IN_COMMUNITY` edges to discover which communities they belong to. All
-three entities belong to `comm:1:0`.
+**Step 4 — Score and expand.** Useful actions may propose bounded follow-ups;
+the configured depth and LLM-call limits cap the traversal.
 
-**Step 4 — Fetch community summaries.** It reads the `summary` text of
-`comm:1:0`: "Hans Zimmer composed scores for science-fiction films including
-Interstellar, Inception, and Dune..."
+**Step 5 — Resolve citations and reduce.** The highest-scoring action answers
+are packed into the reduction budget. Citations combine local source chunks
+with validated references from the selected primer reports.
 
-**Step 5 — Fetch bridging entities.** It looks for other entities in
-`comm:1:0` that were not in the original top-K results, such as `Interstellar`
-and the entity representing the broader science-fiction theme. These are
-"bridging" entities that connect the user's explicit question to wider context.
-
-**Step 6 — Resolve citations and generate answer.** Citations come from the
-same chunk IDs as Local search (`chunk:0`, `chunk:1`, `chunk:3`). The LLM answer
-sees three sections: specific entity findings, broader community context, and
-related bridging entities.
-
-**Result:** `citations` and `sources` are populated the same way as Local. The
-community summary and bridging entities improve the answer text but do not add
-citations; the citations still come from the entity traversal.
+**Result:** `citations` and `sources` include the evidence actually retained for
+the final reduction.
 
 ---
 
@@ -751,7 +843,7 @@ partial or empty citations and records the failure in
 | Mode | Source reliability | Reason |
 | --- | --- | --- |
 | Local | High | Chunk IDs come from stored `(Chunk)-[:FROM_CHUNK]->(__Entity__)` edges. No LLM guessing. |
-| DRIFT | High | Same edge-based chunk IDs as Local; community summaries add context but not citations. |
+| DRIFT | High | Local actions use edge-based chunk IDs; selected report references are also resolved to citations. |
 | Global | Medium/High | Chunk IDs come from validated `report_json` references (or rendered `[refs: ...]` fallback) for reports the map phase actually used. |
 
 If you need traceable source metadata for every claim, prefer Local or DRIFT.
@@ -805,7 +897,10 @@ Common keys across modes:
 | `source_references_extracted` | global | Total distinct references fed to citation resolution |
 | `source_citations_resolved` | global | Number of citations returned |
 | `source_resolution_errors` | global | Non-fatal error messages from report reading/reference extraction/citation resolution |
-| `elapsed_ms` | global | Total wall-clock time |
+| `elapsed_ms` | all | Total wall-clock time |
+| `mixed_context` | local | `True` when `use_mixed_context` was enabled for this search |
+| `used_tokens` | local | Tokens used by `MixedContextBuilder` (only when `use_mixed_context=True`) |
+| `max_tokens` | local | Token budget for mixed context (only when `use_mixed_context=True`) |
 
 Diagnostics are read-only. Use them for logging, dashboards, or tuning search
 parameters.
@@ -814,45 +909,27 @@ parameters.
 
 ## Community Levels
 
-Recon-GraphRAG stores communities with `level=0` as the **finest / most local**
-level. Higher numbers are broader parent communities. The highest available
-level is the **coarsest / most global** level.
-
-This is the opposite of some Microsoft GraphRAG descriptions, where level 0 is
-often interpreted as the coarsest root level.
+Recon-GraphRAG stores communities with `level=0` as the **coarsest / most
+global** level. Higher numbers are progressively finer communities.
 
 Use this mapping when comparing terminology:
 
 ```text
-Recon level 0       ~= Microsoft finest / deepest community level
-Recon highest level ~= Microsoft C0 / root / coarsest community level
+Recon level 0       = Microsoft C0 / root / coarsest community level
+Recon highest level = Microsoft finest / deepest community level
 ```
 
 The search API supports semantic selectors:
 
 ```python
 community_level="all"       # No level filter
-community_level="finest"    # level 0
-community_level="coarsest"  # Highest available level
+community_level="finest"    # Highest available level
+community_level="coarsest"  # level 0
 community_level=0           # Exact stored level
 community_level=1           # Exact stored level
 ```
 
-Global search also accepts the existing `level=` argument for backward
-compatibility:
-
-```python
-await graph_rag.search("What are the major themes?", mode="global", level=0)
-await graph_rag.search(
-    "What are the major themes?",
-    mode="global",
-    community_level="coarsest",
-)
-```
-
-Passing `level=0` does not mean "most global" in this codebase. It means
-"finest / most local community summaries." For Microsoft-style global summaries,
-prefer `community_level="coarsest"`.
+Passing `community_level=0` selects the coarsest, most global community reports.
 
 `community_level="all"` means "no level filter" for APIs that support it.
 Built-in global search does not run across every level at once; it requires one
@@ -908,11 +985,18 @@ Global search uses scored map/reduce prompts defined in
 ### DRIFT Prompt
 
 ```python
-graph_rag.drift.answer_prompt = (
-    "Given specific findings and broader film context, answer: {query}\n\n"
-    "{entity_context}\n{community_context}\n{bridging_context}"
+graph_rag.drift.reduce_prompt = (
+    "Answer {query} from these scored DRIFT actions:\n\n"
+    "{action_context}\n\n{conversation_history}"
 )
 ```
+
+DRIFT exposes internal prompts as module-level constants in
+`recon_graphrag.retrieval.drift`: `PRIMER_PROMPT`, `ACTION_PROMPT`,
+`REDUCE_PROMPT`, and `REPAIR_PROMPT`. Only `reduce_prompt` is stored as an
+instance attribute and can be overridden on the retriever. To customize the
+primer or action prompts, import and patch the module constants before calling
+search, or subclass `DriftSearchRetriever`.
 
 ### Custom Retrieval Query
 
@@ -939,7 +1023,7 @@ Before search can work, the graph should contain:
 | `__Entity__` | Extracted people, places, concepts, etc. | UUID `id`, `canonical_key`, `human_readable_id`, `name`, `title`, `description`, `embedding`, `graph_name` |
 | `Chunk` | A text chunk from the original source unit | `id`, `text`, `embedding`, arbitrary source metadata such as `record_id`, `page`, `table`, `ticket_id` |
 | `Document` | The source unit or container | metadata such as `title`, `source`, `filename`, `collection`, `external_id` |
-| `Community` | A cluster of related entities | `summary`, `report_text`, `report_json`, `report_status`, `level` |
+| `Community` | A cluster of related entities | `report_text`, `report_json`, `report_status`, `level` |
 | `Claim` | A claim/covariate extracted from text | `description`, `claim_type`, `status`, `graph_name` |
 
 Important relationships:
@@ -975,72 +1059,80 @@ Neo4j passes the raw keyword query to Lucene full-text search. Memgraph rewrites
 the text into a Tantivy query, preserving phrases and joining escaped tokens
 with `OR`.
 
-### Local Flow
+---
 
-```text
-query
-  -> vector + keyword entity search
-  -> hybrid fusion
-  -> top-k entities
-  -> one-hop neighbors + source chunks
-  -> answer prompt
-  -> source_chunk_ids resolved to citations
-```
+## Traversal Limits
 
-The LLM sees the matched entities, one-hop relationships, and source snippets.
-It does not see community summaries.
+Each search mode controls how many nodes, reports, and LLM calls are involved.
+The table below summarizes the hard and soft limits.
 
-### Global Flow
+### Local Search
 
-```text
-query + selected community_level
-  -> resolve numeric level ("coarsest" = highest stored level)
-  -> graph query reads all successful non-empty reports at that level
-  -> deterministic shuffle
-  -> pack reports into map batches
-  -> concurrent map LLM calls, one per batch
-  -> helpfulness filter and sort
-  -> pack partial answers
-  -> one reduce LLM call
-  -> validate used report IDs
-  -> read report_json / report_text for used reports
-  -> extract references from findings or [refs: ...] blocks
-  -> dedupe and resolve references to citations
-```
+| Control | Default | What it limits |
+| --- | --- | --- |
+| `top_k` | `10` | Number of seed entities retrieved by hybrid vector + keyword search. |
+| `effective_search_ratio` | `1` | Over-fetch multiplier before post-filtering (`candidate_k = top_k * effective_search_ratio`). |
+| Cypher traversal depth | **1 hop** | The retrieval query traverses one hop out from each seed entity: outgoing and incoming relationships to non-Chunk, non-Document, non-Community neighbors. |
+| Source chunks per entity | **unbounded** (by Cypher) | All `FROM_CHUNK` edges of each seed entity are collected. No Cypher `LIMIT` is applied; the count is bounded by actual graph edges. |
+| `token_budget` (mixed context) | `12000` | When `use_mixed_context=True`, total tokens packed into the LLM context. Split: 50% text units, 10% community reports, 40% graph facts. |
 
-Structured report generation stores `report_json`, `report_text`, title,
-compatibility `summary`, rating fields, version fields, `report_status`, and
-`report_error`. Failed report generations are marked with
-`report_status="failed"` and are not read by global search.
+**Example:** With `top_k=10`, local search retrieves 10 entities, then for each
+entity fetches all direct neighbors and all source chunks. If entity `Christopher_Nolan`
+has 5 relationships and 4 source chunks, all 9 items are returned. There is no
+hard neighbor limit in the Cypher query.
 
-The map phase reads summaries/reports, not raw nodes. The reduce phase reads
-map partial answers, not the original reports. Neither phase performs vector
-similarity search.
+### Global Search
 
-Global map outputs may include stable references:
+| Control | Default | What it limits |
+| --- | --- | --- |
+| `community_level` | required | Which community level to read. All reports at that level are loaded. |
+| Reports per search | **unbounded** | Every non-failed, non-empty report at the selected level is read. No hard cap. |
+| `map_budget_tokens` | `12000` | Tokens per map batch. Reports are greedily packed until this budget is filled. Controls how many reports fit in one map LLM call. |
+| `map_concurrency` | `5` | Max concurrent map LLM calls. |
+| `max_map_calls` | `None` (unlimited) | Hard cap on total map batches. If set and there are more batches, later batches are dropped. |
+| `reduce_budget_tokens` | `12000` | Tokens for packing scored partial answers into the final reduce prompt. |
+| Map calls (total) | `ceil(total_report_tokens / map_budget_tokens)` | One map LLM call per batch. |
+| Reduce calls | `1` | Always exactly one reduce LLM call (unless `synthesize_response=False`). |
 
-```json
-{"target_id": "person:alice", "target_type": "entity"}
-```
+**Example:** With 20 reports totaling ~40k tokens and `map_budget_tokens=12000`:
+- Batches: `ceil(40000 / 12000) = 4` batches
+- Map LLM calls: 4 (concurrent, up to `map_concurrency=5`)
+- Reduce LLM calls: 1
+- Total LLM calls: 5
 
-Supported target types are `entity`, `relationship`, and `claim`. Entity and
-relationship references are normally readable `human_readable_id` /
-`canonical_key` values, while the persisted entity `id` remains a UUID.
+### DRIFT Search
 
-### DRIFT Flow
+| Control | Default | What it limits |
+| --- | --- | --- |
+| `primer_top_k` | `3` | Community reports retrieved by vector similarity in the primer phase. |
+| `top_k` | `10` | Entities retrieved per follow-up action (same as local search). |
+| `max_followups` | `3` | Max follow-up questions generated per action by the LLM. |
+| `max_depth` | `3` | Max depth of the traversal tree. Depth 0 = primer, depth 1 = first follow-ups, etc. |
+| `min_expand_score` | `20.0` | Minimum action score (0-100) to expand into follow-ups. Actions below this are pruned. |
+| `max_llm_calls` | `20` | Hard cap on total LLM calls across all phases (primer + actions + reduce). |
+| `action_concurrency` | `3` | Max concurrent action evaluations during traversal. |
+| `reduce_budget_tokens` | `12000` | Token budget for packing scored action answers into the final reduction prompt. |
+| Cypher traversal depth | **1 hop** | Each action's local entity retrieval uses the same 1-hop query as local search. |
 
-```text
-query
-  -> local-style entity retrieval
-  -> extract community keys from matched entities
-  -> fetch community summaries
-  -> fetch bridging entities in those communities
-  -> answer prompt with specific + broader + related context
-  -> source_chunk_ids resolved to citations
-```
+**Example:** With default config, DRIFT can make at most:
+- 1 primer LLM call
+- Up to 3 primer follow-ups at depth 1 (3 LLM calls for actions)
+- Each action may generate up to 3 more follow-ups at depth 2 (up to 9 LLM calls)
+- Each depth-2 action may generate up to 3 follow-ups at depth 3 (up to 27 LLM calls)
+- 1 reduce LLM call
+- **Theoretical max without `max_llm_calls`:** 1 + 3 + 9 + 27 + 1 = 41
+- **With default `max_llm_calls=20`:** capped at 20 total, so deeper levels are pruned.
+- **With `min_expand_score=20.0`:** actions scoring below 20 are not expanded, so
+  real-world traversal is typically much smaller.
 
-DRIFT is useful when the question needs both evidence around a specific entity
-and community-level framing.
+### Comparison
+
+| | Local | Global | DRIFT |
+| --- | --- | --- | --- |
+| **Graph nodes touched** | `top_k` entities + 1-hop neighbors + source chunks | All community reports at one level | `primer_top_k` reports + `top_k` entities per action × actions |
+| **Cypher traversal depth** | 1 hop | N/A (reads reports directly) | 1 hop per action |
+| **LLM calls** | 1 | map batches + 1 reduce | 1 primer + N actions + 1 reduce (capped by `max_llm_calls`) |
+| **What scales cost** | `top_k` and neighbor count | Number of reports and `map_budget_tokens` | `max_llm_calls`, `max_depth`, `max_followups` |
 
 ---
 
@@ -1048,7 +1140,7 @@ and community-level framing.
 
 The retrievers format graph records into readable text before prompting the LLM.
 
-Local context:
+Local context (default mode):
 
 ```text
 Finding: Nolan (Person)
@@ -1058,6 +1150,23 @@ Connections:
 Evidence:
   Christopher Nolan directed Inception...
   Nolan's next film was Interstellar...
+```
+
+Local context (mixed-context mode, when `use_mixed_context=True`):
+
+```text
+=== Graph Facts ===
+Entity: Christopher_Nolan (Person)
+  Description: Film director
+Relationship: Christopher_Nolan -[DIRECTED]-> Inception (weight: 1.0)
+Claim: Christopher_Nolan won Academy Award (evidence: 2 chunks)
+
+=== Source Text ===
+Christopher Nolan directed Inception. Hans Zimmer composed the score...
+
+=== Community Reports ===
+Report comm:0:0 (level 0, rating: 8.5):
+  Christopher Nolan directed Oppenheimer starring Cillian Murphy...
 ```
 
 DRIFT adds broader and related context:
@@ -1121,6 +1230,7 @@ Search depends on indexes created by `store.create_indexes()`:
 | `entity-embeddings` | Vector | `__Entity__.embedding` | Local, DRIFT |
 | `chunk-embeddings` | Vector | `Chunk.embedding` | Not used directly by search modes |
 | `entity-names` | Full-text / text | `__Entity__.name` | Local, DRIFT |
+| `community-report-embeddings` | Vector | `Community.report_embedding` | DRIFT (primer phase) |
 
 Neo4j uses `db.index.vector.queryNodes` and `db.index.fulltext.queryNodes`.
 Memgraph uses `vector_search.search` and `text_search.search`.
@@ -1134,9 +1244,20 @@ Global and DRIFT search need communities. The community pipeline:
 1. Detects communities with Leiden.
 2. Writes `Community` nodes and hierarchy edges.
 3. Summarizes or generates structured reports.
+4. Generates report embeddings for semantic DRIFT primer search (when `embedder` is provided).
 
 Built-in global search uses the stored reports from step 3. It does not require
 community embeddings.
+
+DRIFT search uses community report embeddings (step 4) for the primer phase.
+If embeddings are missing, DRIFT falls back to local-style entity search. Use
+`CommunityReportEmbedder` to backfill embeddings for existing graphs:
+
+```python
+from recon_graphrag import CommunityReportEmbedder
+
+count = await CommunityReportEmbedder(store, embedder, "entity-graph").embed_reports()
+```
 
 ---
 
