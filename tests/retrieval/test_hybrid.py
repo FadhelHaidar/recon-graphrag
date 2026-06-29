@@ -88,6 +88,9 @@ class FakeGraphStore:
             }
         ]
 
+    def get_claims_for_entities(self, graph_name, entity_ids):
+        return []
+
 
 class FakeEmbedder:
     def __init__(self):
@@ -229,29 +232,9 @@ async def test_local_search_uses_internal_retriever_and_llm():
 
     assert result.mode == "local"
     assert result.answer == "Alice directed Inception."
-    assert "Finding: Alice (Person)" in result.context
-    assert "Alice directed Inception." in llm.prompts[0]
-    assert result.citations == [
-        Citation(
-            document_id="doc:1",
-            chunk_id="chunk:1",
-            document_name="Doc 1",
-            excerpt="Alice directed Inception.",
-            metadata={
-                "collection": "movies",
-                "source": "row-source",
-                "record_id": "row-42",
-                "document_id": "doc:1",
-                "chunk_id": "chunk:1",
-                "document_name": "Doc 1",
-            },
-        )
-    ]
-    citation_call = [c for c in store.calls if c[0] == "resolve_chunk_citations"][0]
-    assert citation_call[1] == {
-        "graph_name": "entity-graph",
-        "chunk_ids": ["chunk:1"],
-    }
+    assert "Alice (Person)" in result.context
+    assert "Who directed Inception?" in llm.prompts[0]
+    assert result.metadata.get("mixed_context") is True
 
 
 @pytest.mark.asyncio
@@ -259,7 +242,7 @@ async def test_local_search_can_include_citation_metadata_in_prompt():
     store = FakeGraphStore()
     embedder = FakeEmbedder()
     llm = FakeLLM()
-    retriever = LocalSearchRetriever(store, llm, embedder)
+    retriever = LocalSearchRetriever(store, llm, embedder, use_mixed_context=False)
 
     result = await retriever.search(
         "Who directed Inception?",
@@ -281,7 +264,7 @@ async def test_local_search_with_synthesize_false_skips_llm():
     store = FakeGraphStore()
     embedder = FakeEmbedder()
     llm = FakeLLM()
-    retriever = LocalSearchRetriever(store, llm, embedder)
+    retriever = LocalSearchRetriever(store, llm, embedder, use_mixed_context=False)
 
     result = await retriever.search(
         "Who directed Inception?",

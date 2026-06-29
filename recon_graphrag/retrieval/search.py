@@ -33,7 +33,7 @@ class GraphRAG:
         token_counter: TokenCounter | None = None,
         map_budget_tokens: int = 12000,
         reduce_budget_tokens: int = 12000,
-        use_mixed_context: bool = False,
+        use_mixed_context: bool = True,
         drift_config: DriftSearchConfig | None = None,
         top_k_relationships: int = 10,
     ):

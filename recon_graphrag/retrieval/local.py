@@ -52,7 +52,7 @@ class LocalSearchRetriever(BaseRetriever):
         vector_index_name: str = "entity-embeddings",
         fulltext_index_name: str = "entity-names",
         graph_name: str = "entity-graph",
-        use_mixed_context: bool = False,
+        use_mixed_context: bool = True,
         top_k_relationships: int = 10,
     ):
         self.graph_store = graph_store

@@ -74,6 +74,10 @@ class FakeGraphStore:
         self.calls.append(("execute_query", {"query": query.strip()[:60], "params": params}))
         if "RETURN max(c.level) AS level" in query:
             return [{"level": 2}]
+        if "IN_COMMUNITY" in query:
+            return []
+        if "Chunk" in query:
+            return []
         return []
 
     def resolve_chunk_citations(self, graph_name, chunk_ids):
@@ -82,6 +86,9 @@ class FakeGraphStore:
     def vector_search_community_reports(self, query_vector, graph_name, top_k=3, level=None):
         self.calls.append(("vector_search_community_reports", {"top_k": top_k, "level": level}))
         return self._reports[:top_k]
+
+    def get_claims_for_entities(self, graph_name, entity_ids):
+        return []
 
 
 class FakeEmbedder:
@@ -168,7 +175,7 @@ class TestTopKRelationships:
         store = FakeGraphStore()
         llm = FakeLLM()
         retriever = LocalSearchRetriever(
-            store, llm, FakeEmbedder(), top_k_relationships=3
+            store, llm, FakeEmbedder(), top_k_relationships=3, use_mixed_context=False,
         )
 
         result = await retriever.search("query", top_k=1, synthesize_response=False)
@@ -181,7 +188,7 @@ class TestTopKRelationships:
         """Default top_k_relationships=10 caps at 10."""
         store = FakeGraphStore()
         llm = FakeLLM()
-        retriever = LocalSearchRetriever(store, llm, FakeEmbedder())
+        retriever = LocalSearchRetriever(store, llm, FakeEmbedder(), use_mixed_context=False)
 
         result = await retriever.search("query", top_k=1, synthesize_response=False)
 
