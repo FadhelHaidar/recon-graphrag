@@ -206,6 +206,11 @@ class BaseGraphStore:
                c.claim_type AS claim_type,
                c.description AS description,
                c.status AS status,
+               c.start_date AS start_date,
+               c.end_date AS end_date,
+               c.object_entity_id AS object_entity_id,
+               c.source_text AS source_text,
+               c.text_unit_id AS text_unit_id,
                ch.id AS chunk_id
         ORDER BY c.claim_type, c.id
         """

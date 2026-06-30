@@ -113,6 +113,30 @@ class GraphStore(Protocol):
         """Batch upsert vector embeddings onto nodes by internal ID."""
         ...
 
+    def get_entities_needing_summary(
+        self, graph_name: str, limit: int = 500
+    ) -> list[dict]:
+        """Fetch entity rows whose raw descriptions need summarization."""
+        ...
+
+    def get_relationships_needing_summary(
+        self, graph_name: str, limit: int = 500
+    ) -> list[dict]:
+        """Fetch relationship rows whose raw descriptions need summarization."""
+        ...
+
+    def persist_entity_summaries(
+        self, graph_name: str, summaries: list[dict]
+    ) -> None:
+        """Persist entity summary text and metadata by internal ID."""
+        ...
+
+    def persist_relationship_summaries(
+        self, graph_name: str, summaries: list[dict]
+    ) -> None:
+        """Persist relationship summary text and metadata by internal ID."""
+        ...
+
     # ------------------------------------------------------------------
     # Search
     # ------------------------------------------------------------------
@@ -238,7 +262,7 @@ class GraphStore(Protocol):
         """Fetch claims linked to the given entity IDs.
 
         Returns rows with keys: claim_id, entity_id, claim_type, description,
-        status, chunk_id.
+        status, object_entity_id, source_text, text_unit_id, chunk_id.
         """
         ...
 

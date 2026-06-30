@@ -77,6 +77,12 @@ class ClaimCandidate:
     claim_type: str
     description: str
     evidence_count: int
+    status: str = "active"
+    object_entity_id: str | None = None
+    source_text: str | None = None
+    text_unit_id: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
 
 
 @dataclass
@@ -510,6 +516,12 @@ class MixedContextBuilder:
                     claim_type=old.claim_type,
                     description=old.description,
                     evidence_count=old.evidence_count + 1,
+                    status=old.status,
+                    object_entity_id=old.object_entity_id,
+                    source_text=old.source_text,
+                    text_unit_id=old.text_unit_id,
+                    start_date=old.start_date,
+                    end_date=old.end_date,
                 )
             else:
                 by_claim[cid] = ClaimCandidate(
@@ -518,6 +530,12 @@ class MixedContextBuilder:
                     claim_type=row.get("claim_type", "general"),
                     description=row.get("description", ""),
                     evidence_count=1,
+                    status=row.get("status", "active"),
+                    object_entity_id=row.get("object_entity_id"),
+                    source_text=row.get("source_text"),
+                    text_unit_id=row.get("text_unit_id"),
+                    start_date=row.get("start_date"),
+                    end_date=row.get("end_date"),
                 )
         return list(by_claim.values())
 
@@ -616,4 +634,14 @@ class MixedContextBuilder:
 
     @staticmethod
     def _render_claim(c: ClaimCandidate) -> str:
-        return f"[{c.claim_id}] ({c.claim_type}) {c.description}"
+        parts = [c.claim_type]
+        if c.status:
+            parts.append(f"status: {c.status}")
+        if c.start_date or c.end_date:
+            parts.append(f"dates: {c.start_date or '?'}..{c.end_date or '?'}")
+        if c.object_entity_id:
+            parts.append(f"object: {c.object_entity_id}")
+        line = f"[{c.claim_id}] ({'; '.join(parts)}) {c.description}"
+        if c.source_text:
+            line += f" Source: {c.source_text[:200]}"
+        return line

@@ -5,6 +5,41 @@ from recon_graphrag.extraction.types import GraphExtraction
 
 
 class SchemaPromptBuilder:
+    @staticmethod
+    def build_entity_summary_prompt(
+        descriptions: list[str], entity_name: str, entity_type: str
+    ) -> str:
+        observations = "\n".join(
+            f"- {description}" for description in descriptions if description.strip()
+        )
+        return f"""
+Summarize the following observations about a single entity into one concise description.
+Use only the provided observations. Return plain text only, with no JSON or markdown.
+
+Entity name: {entity_name}
+Entity type: {entity_type}
+
+Observations:
+{observations}
+""".strip()
+
+    @staticmethod
+    def build_relationship_summary_prompt(
+        descriptions: list[str], source: str, target: str, rel_type: str
+    ) -> str:
+        observations = "\n".join(
+            f"- {description}" for description in descriptions if description.strip()
+        )
+        return f"""
+Summarize the following observations about a single relationship into one concise description.
+Use only the provided observations. Return plain text only, with no JSON or markdown.
+
+Relationship: {source} -[{rel_type}]-> {target}
+
+Observations:
+{observations}
+""".strip()
+
     def build_prompt(self, text: str, schema: GraphSchema) -> str:
         schema.validate()
 
@@ -237,8 +272,12 @@ Rules:
 4. description is the claim text as stated or implied by the source.
 5. status is "active" by default; use "resolved", "expired", or "rejected"
    only if the text explicitly indicates a state change.
-6. Return valid JSON only. Do not include markdown.
-7. If there are no valid claims, return an empty array.
+6. object_entity_id may reference another known entity when the claim is about
+   a relationship or assertion involving another entity.
+7. source_text should be a short source excerpt supporting the claim.
+8. text_unit_id is optional; omit it if the chunk ID is not available.
+9. Return valid JSON only. Do not include markdown.
+10. If there are no valid claims, return an empty array.
 
 JSON format:
 [
@@ -248,7 +287,10 @@ JSON format:
     "description": "Example held the position of CEO.",
     "status": "active",
     "start_date": null,
-    "end_date": null
+    "end_date": null,
+    "object_entity_id": null,
+    "source_text": "Example was appointed CEO.",
+    "text_unit_id": null
   }}
 ]
 

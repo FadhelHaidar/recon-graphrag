@@ -37,6 +37,9 @@ class ExtractedClaim:
     status: str = "active"
     start_date: str | None = None
     end_date: str | None = None
+    object_entity_id: str | None = None
+    source_text: str | None = None
+    text_unit_id: str | None = None
 
 
 @dataclass

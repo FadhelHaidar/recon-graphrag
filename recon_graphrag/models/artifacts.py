@@ -17,8 +17,8 @@ from typing import Any
 # Version constants
 # ---------------------------------------------------------------------------
 
-ARTIFACT_SCHEMA_VERSION = "1.0"
-ARTIFACT_PROMPT_VERSION = "0.0"  # updated when prompts change
+ARTIFACT_SCHEMA_VERSION = "1.1"
+ARTIFACT_PROMPT_VERSION = "0.1"  # updated when prompts change
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +104,11 @@ class ClaimRecord:
     status: str = "active"
     graph_name: str = "entity-graph"
     created_at: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    object_entity_id: str | None = None
+    source_text: str | None = None
+    text_unit_id: str | None = None
 
 
 # ---------------------------------------------------------------------------

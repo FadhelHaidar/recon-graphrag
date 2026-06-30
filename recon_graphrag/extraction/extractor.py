@@ -73,6 +73,7 @@ class LLMGraphExtractor:
         self,
         text: str,
         entity_ids: list[str],
+        text_unit_id: str | None = None,
     ) -> list[ExtractedClaim]:
         """Extract claims/covariates about known entities.
 
@@ -97,6 +98,8 @@ class LLMGraphExtractor:
         return self.claim_parser.parse(
             response.content,
             valid_entity_ids=set(entity_ids),
+            source_text=text[:300],
+            text_unit_id=text_unit_id,
         )
 
     async def _single_extract(self, text: str, schema: GraphSchema) -> GraphExtraction:

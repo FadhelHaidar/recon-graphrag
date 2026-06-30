@@ -78,6 +78,8 @@ class ClaimParser:
         self,
         content: str,
         valid_entity_ids: set[str] | None = None,
+        source_text: str | None = None,
+        text_unit_id: str | None = None,
     ) -> list[ExtractedClaim]:
         """Parse claims from LLM output.
 
@@ -110,6 +112,16 @@ class ClaimParser:
             if valid_entity_ids is not None and subject not in valid_entity_ids:
                 continue
 
+            object_entity_id = item.get("object_entity_id")
+            if object_entity_id is not None:
+                object_entity_id = str(object_entity_id).strip() or None
+            if (
+                object_entity_id is not None
+                and valid_entity_ids is not None
+                and object_entity_id not in valid_entity_ids
+            ):
+                continue
+
             claims.append(
                 ExtractedClaim(
                     subject_entity_id=subject,
@@ -118,7 +130,23 @@ class ClaimParser:
                     status=str(item.get("status", "active")).strip() or "active",
                     start_date=item.get("start_date"),
                     end_date=item.get("end_date"),
+                    object_entity_id=object_entity_id,
+                    source_text=item.get("source_text") or source_text,
+                    text_unit_id=item.get("text_unit_id") or text_unit_id,
                 )
             )
 
         return claims
+
+
+class DescriptionSummaryParser:
+    """Parse plain-text description summaries from the LLM."""
+
+    def parse(self, content: str) -> str:
+        summary = content.strip()
+        fenced = re.search(r"```(?:text|markdown)?\s*(.*?)```", summary, re.DOTALL)
+        if fenced:
+            summary = fenced.group(1).strip()
+        if not summary:
+            raise ValueError("description summary is empty")
+        return summary

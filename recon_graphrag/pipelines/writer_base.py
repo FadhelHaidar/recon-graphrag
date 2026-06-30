@@ -149,6 +149,11 @@ class BaseGraphWriter(ABC):
                 "claim_type": claim.claim_type,
                 "description": claim.description,
                 "status": claim.status,
+                "start_date": claim.start_date,
+                "end_date": claim.end_date,
+                "object_entity_id": claim.object_entity_id,
+                "source_text": claim.source_text,
+                "text_unit_id": claim.text_unit_id,
                 "graph_name": claim.graph_name,
             }
             for claim in claims

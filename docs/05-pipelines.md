@@ -8,7 +8,8 @@ Recon-GraphRAG splits indexing into two pipelines: one that builds the entity gr
 | --------- | --------- | --------- |
 | **Graph Building** | `GraphBuilderPipeline` | 1. Extract entities & relationships via LLM |
 | | | 2. Entity resolution (merge duplicates) |
-| | | 3. Entity embedding |
+| | | 3. Entity/relationship description summarization |
+| | | 4. Entity embedding |
 | **Community Building** | `CommunityPipeline` | 4. Community detection (Leiden via the backend store) |
 | | | 5. Community summarization (LLM) |
 
@@ -32,6 +33,7 @@ pipeline = GraphBuilderPipeline(
     extraction_concurrency=5,   # max chunks extracted in parallel (default: 5)
     max_gleanings=1,            # follow-up extraction loops (default: 1)
     extract_claims=True,        # extract claims about entities (default: False)
+    summarize_descriptions=True,# summarize raw descriptions before embedding
 )
 ```
 
@@ -62,6 +64,9 @@ same keys are stored on chunks and returned later through
 Chunking settings are per-call. By default `chunk_size` and `chunk_overlap`
 are measured in tokens. Set `chunk_unit="characters"` for character-based
 chunking; see [Token-based chunking](#token-based-chunking) below.
+
+The token default is explicit in the pipeline and supersedes older examples that
+used character-based chunking by default.
 
 #### `build_from_documents`
 
@@ -170,6 +175,9 @@ as its own `"text"` envelope if you need full control over chunk boundaries
 | `max_gleanings` | Number of follow-up extraction loops after the initial pass. Each loop asks the LLM whether it missed any entities, then extracts only the missed items. Defaults to `1`; use `0` for single-shot extraction. |
 | `extract_claims` | When `True`, runs a second LLM call per chunk to extract claims, assertions, and covariates about extracted entities. Claims are stored as `Claim` nodes linked to their subject entity and source chunk, and are available as evidence in community reports and global search. Defaults to `False`. |
 | `perform_entity_resolution` | When `True` (default), resolves duplicate entities after extraction. Set to `False` to skip resolution. |
+| `summarize_descriptions` | When `True` (default), runs a mandatory LLM pass after entity resolution to collapse raw entity and relationship `descriptions` arrays into scalar `description` summaries before embedding. |
+| `summarization_concurrency` | Maximum concurrent description summarization calls. Defaults to `5`. |
+| `summarization_limit` | Batch size for fetching unsummarized entities or relationships. Defaults to `500`. |
 | `embed_entities` | When `True` (default), embeds entity nodes after extraction and resolution. Set to `False` to skip embedding. |
 | `fail_on_resolution_error` | When `True`, raises resolution errors instead of logging and continuing. Defaults to `False`. |
 | `fail_on_embedding_error` | When `True`, raises embedding errors instead of logging and continuing. Defaults to `False`. |
@@ -271,7 +279,8 @@ pipeline = GraphBuilderPipeline(
 ```
 
 Each claim has a subject entity, a claim type (e.g. `"role"`, `"status"`,
-`"opinion"`, `"attribute"`), a description, and an optional status. Claims are
+`"opinion"`, `"attribute"`), a description, optional status, optional object
+entity, source text excerpt, and text unit ID. Claims are
 stored as `Claim` nodes in the graph with two edges:
 
 - `(Claim)-[:SUBJECT_OF]->(Entity)` — which entity the claim is about.

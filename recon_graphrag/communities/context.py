@@ -47,6 +47,11 @@ class ClaimContext:
     claim_type: str
     description: str
     status: str = "active"
+    object_entity_id: str | None = None
+    source_text: str | None = None
+    text_unit_id: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
 
 
 @dataclass
@@ -117,9 +122,15 @@ def render_community_context(context: CommunityContext) -> str:
         lines.append("")
         lines.append("Claims:")
         for claim in context.claims:
-            lines.append(
-                f"  [{claim.id}] ({claim.claim_type}) {claim.description}"
-            )
+            parts = [f"status={claim.status}"]
+            if claim.start_date or claim.end_date:
+                parts.append(f"dates={claim.start_date or '?'}..{claim.end_date or '?'}")
+            if claim.object_entity_id:
+                parts.append(f"object={claim.object_entity_id}")
+            line = f"  [{claim.id}] ({claim.claim_type}; {', '.join(parts)}) {claim.description}"
+            if claim.source_text:
+                line += f" Source: {claim.source_text[:200]}"
+            lines.append(line)
 
     return "\n".join(lines)
 
@@ -353,6 +364,11 @@ def enrich_context_with_claims(
             claim_type=row.get("claim_type", "general"),
             description=row.get("description", ""),
             status=row.get("status", "active"),
+            object_entity_id=row.get("object_entity_id"),
+            source_text=row.get("source_text"),
+            text_unit_id=row.get("text_unit_id"),
+            start_date=row.get("start_date"),
+            end_date=row.get("end_date"),
         )
         for row in claim_rows
         if row.get("claim_id") and row.get("entity_id")
@@ -436,9 +452,10 @@ def build_packed_reference_ids(
         seen_entities.add(entity.id)
         included_entity_count += 1
 
-    # Claims are not packed, so include all if any edges/entities were included
-    if packed.included_edges > 0 or packed.included_entities > 0:
+    # Claims are rendered for entities that survived packing.
+    if seen_entities:
         for claim in context.claims:
-            ids.append(claim.id)
+            if claim.entity_id in seen_entities:
+                ids.append(claim.id)
 
     return ids

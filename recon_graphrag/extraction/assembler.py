@@ -150,6 +150,17 @@ class GraphDocumentAssembler:
                             source=_build_source_ref(document_id, chunk, metadata),
                             status=extracted_claim.status,
                             graph_name=graph_name,
+                            start_date=extracted_claim.start_date,
+                            end_date=extracted_claim.end_date,
+                            object_entity_id=(
+                                _build_entity_uuid(
+                                    graph_name, extracted_claim.object_entity_id
+                                )
+                                if extracted_claim.object_entity_id
+                                else None
+                            ),
+                            source_text=extracted_claim.source_text or chunk.text[:300],
+                            text_unit_id=extracted_claim.text_unit_id or chunk.id,
                         )
                     )
 

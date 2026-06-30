@@ -21,6 +21,7 @@ from recon_graphrag.extraction.chunking import (
     _page_text,
 )
 from recon_graphrag.extraction.extractor import LLMGraphExtractor
+from recon_graphrag.extraction.description_summarizer import DescriptionSummarizer
 from recon_graphrag.extraction.schema import GraphSchema
 from recon_graphrag.extraction.assembler import GraphDocumentAssembler
 from recon_graphrag.extraction.validator import SchemaValidator
@@ -57,6 +58,9 @@ class GraphBuilderPipeline:
         entity_resolution_context_mode: str = "safe_defaults",
         allow_ai_auto_merge: bool = False,
         embed_entities: bool = True,
+        summarize_descriptions: bool = True,
+        summarization_concurrency: int = 5,
+        summarization_limit: int = 500,
         fail_on_resolution_error: bool = False,
         fail_on_embedding_error: bool = False,
     ):
@@ -81,6 +85,9 @@ class GraphBuilderPipeline:
         self.entity_resolution_context_mode = entity_resolution_context_mode
         self.allow_ai_auto_merge = allow_ai_auto_merge
         self.embed_entity_nodes = embed_entities
+        self.summarize_descriptions = summarize_descriptions
+        self.summarization_concurrency = summarization_concurrency
+        self.summarization_limit = summarization_limit
         self.fail_on_resolution_error = fail_on_resolution_error
         self.fail_on_embedding_error = fail_on_embedding_error
 
@@ -291,6 +298,12 @@ class GraphBuilderPipeline:
             print("Resolving duplicate entities")
             await self._resolve_entities()
 
+        if self.summarize_descriptions:
+            print("Summarizing entity descriptions")
+            await self._summarize_entity_descriptions()
+            print("Summarizing relationship descriptions")
+            await self._summarize_relationship_descriptions()
+
         if self.embed_entity_nodes:
             print("Embedding entity nodes")
             await self._embed_entities()
@@ -347,6 +360,7 @@ class GraphBuilderPipeline:
                             claims = await self.extractor.extract_claims(
                                 text=chunk.text,
                                 entity_ids=entity_ids,
+                                text_unit_id=chunk.id,
                             )
                             print(
                                 f"  [{i}/{total}] Claims chunk {chunk.id}: "
@@ -465,6 +479,24 @@ class GraphBuilderPipeline:
             print(f"Entity embedding failed: {e}")
             if self.fail_on_embedding_error:
                 raise
+
+    async def _summarize_entity_descriptions(self) -> None:
+        summarizer = DescriptionSummarizer(
+            self.llm,
+            self.graph_store,
+            self.graph_name,
+            concurrency=self.summarization_concurrency,
+        )
+        await summarizer.summarize_entities(limit=self.summarization_limit)
+
+    async def _summarize_relationship_descriptions(self) -> None:
+        summarizer = DescriptionSummarizer(
+            self.llm,
+            self.graph_store,
+            self.graph_name,
+            concurrency=self.summarization_concurrency,
+        )
+        await summarizer.summarize_relationships(limit=self.summarization_limit)
 
     def _validate_graph_build(self) -> dict:
         return self.graph_store.validate_graph_build()

@@ -225,62 +225,28 @@ class CommunitySummarizer:
         context_tokens_used: int | None = None
         context_truncated = False
         if self.max_context_tokens is not None:
-            packed = pack_community_context(
-                context,
-                max_tokens=self.max_context_tokens,
-                counter=self.token_counter,
-            )
-            context_text = packed.text
-            context_tokens_used = packed.used_tokens
-            context_truncated = packed.truncated
-            # Use allowlist from packed context so findings can only
-            # reference items the LLM actually saw.
-            reference_ids = build_packed_reference_ids(context, packed)
-            valid_ids = set(reference_ids)
-            if packed.truncated:
-                child_rows = self._fetch_child_report_rows(community_id, level)
-                if child_rows:
-                    counter = self.token_counter or ApproximateTokenCounter()
-                    child_budget = int(self.max_context_tokens * 0.6)
-                    child_items = [
-                        PackItem(
-                            id=str(row["id"]),
-                            text=(
-                                f"--- Sub-community {row['id']} "
-                                f"(level {row['level']}) ---\n{row['report_text']}"
-                            ),
-                            priority=float(row.get("context_tokens_used", 0)),
-                        )
-                        for row in child_rows
-                        if str(row.get("report_text", "")).strip()
-                    ]
-                    packed_children = pack_items(
-                        child_items, child_budget, counter, truncate_oversized=True
-                    )
-                    remaining = max(
-                        self.max_context_tokens - packed_children.used_tokens, 0
-                    )
-                    packed_direct = pack_community_context(
-                        context, max_tokens=remaining, counter=counter
-                    )
-                    context_text = "\n\n".join(
-                        part
-                        for part in (
-                            "\n\n".join(
-                                item.text for item in packed_children.included
-                            ),
-                            packed_direct.text,
-                        )
-                        if part
-                    )
-                    context_tokens_used = (
-                        packed_children.used_tokens + packed_direct.used_tokens
-                    )
-                    context_truncated = True
-                    reference_ids = build_packed_reference_ids(
-                        context, packed_direct
-                    )
-                    valid_ids = set(reference_ids)
+            child_rows = self._fetch_child_report_rows(community_id, level)
+            if child_rows:
+                (
+                    context_text,
+                    context_tokens_used,
+                    context_truncated,
+                    reference_ids,
+                ) = self._build_parent_context(context, child_rows, self.max_context_tokens)
+                valid_ids = set(reference_ids)
+            else:
+                packed = pack_community_context(
+                    context,
+                    max_tokens=self.max_context_tokens,
+                    counter=self.token_counter,
+                )
+                context_text = packed.text
+                context_tokens_used = packed.used_tokens
+                context_truncated = packed.truncated
+                # Use allowlist from packed context so findings can only
+                # reference items the LLM actually saw.
+                reference_ids = build_packed_reference_ids(context, packed)
+                valid_ids = set(reference_ids)
         else:
             context_text = render_community_context(context)
 
@@ -379,6 +345,11 @@ class CommunitySummarizer:
                         "claim_type": claim.claim_type,
                         "description": claim.description,
                         "status": claim.status,
+                        "object_entity_id": claim.object_entity_id,
+                        "source_text": claim.source_text,
+                        "text_unit_id": claim.text_unit_id,
+                        "start_date": claim.start_date,
+                        "end_date": claim.end_date,
                     }
                     for claim in context.claims
                 ],
@@ -387,6 +358,47 @@ class CommunitySummarizer:
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _build_parent_context(
+        self,
+        context: CommunityContext,
+        child_rows: list[dict],
+        max_tokens: int,
+    ) -> tuple[str, int, bool, list[str]]:
+        counter = self.token_counter or ApproximateTokenCounter()
+        child_budget = int(max_tokens * 0.6)
+        child_items = [
+            PackItem(
+                id=str(row["id"]),
+                text=(
+                    f"--- Sub-community {row['id']} "
+                    f"(level {row['level']}) ---\n{row['report_text']}"
+                ),
+                priority=float(row.get("context_tokens_used", 0) or 0),
+            )
+            for row in child_rows
+            if str(row.get("report_text", "")).strip()
+        ]
+        packed_children = pack_items(
+            child_items, child_budget, counter, truncate_oversized=True
+        )
+        remaining = max(max_tokens - packed_children.used_tokens, 0)
+        packed_direct = pack_community_context(context, max_tokens=remaining, counter=counter)
+        context_text = "\n\n".join(
+            part
+            for part in (
+                "\n\n".join(item.text for item in packed_children.included),
+                packed_direct.text,
+            )
+            if part
+        )
+        reference_ids = build_packed_reference_ids(context, packed_direct)
+        return (
+            context_text,
+            packed_children.used_tokens + packed_direct.used_tokens,
+            bool(packed_children.truncated_item_ids) or packed_direct.truncated,
+            reference_ids,
+        )
 
     def _report_input_fingerprint(
         self,

@@ -1237,6 +1237,7 @@ class DriftSearchRetriever:
                     "parent_id": a.parent_id,
                     "depth": a.depth,
                     "query": a.query,
+                    "answer": a.answer,
                     "score": a.score,
                     "status": a.status,
                 }

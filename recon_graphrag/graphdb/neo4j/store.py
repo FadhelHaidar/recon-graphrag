@@ -368,6 +368,82 @@ class Neo4jGraphStore(BaseGraphStore):
         """
         return self.execute_query(query, {"limit": limit})
 
+    def get_entities_needing_summary(
+        self, graph_name: str, limit: int = 500
+    ) -> list[dict]:
+        query = """
+        MATCH (e:__Entity__ {graph_name: $graph_name})
+        WHERE coalesce(e.description_summary_status, '') <> 'success'
+          AND size(coalesce(e.descriptions, [])) > 0
+        RETURN elementId(e) AS id,
+               e.id AS entity_id,
+               coalesce(e.name, e.title, e.id) AS name,
+               coalesce(e.type, last(labels(e))) AS type,
+               e.descriptions AS descriptions
+        LIMIT $limit
+        """
+        return self.execute_query(query, {"graph_name": graph_name, "limit": limit})
+
+    def get_relationships_needing_summary(
+        self, graph_name: str, limit: int = 500
+    ) -> list[dict]:
+        query = """
+        MATCH (source:__Entity__)-[r]->(target:__Entity__)
+        WHERE r.graph_name = $graph_name
+          AND coalesce(r.description_summary_status, '') <> 'success'
+          AND size(coalesce(r.descriptions, [])) > 0
+        RETURN elementId(r) AS id,
+               r.id AS rel_id,
+               coalesce(source.human_readable_id, source.canonical_key, source.id) AS source_id,
+               coalesce(target.human_readable_id, target.canonical_key, target.id) AS target_id,
+               type(r) AS type,
+               r.descriptions AS descriptions
+        LIMIT $limit
+        """
+        return self.execute_query(query, {"graph_name": graph_name, "limit": limit})
+
+    def persist_entity_summaries(
+        self, graph_name: str, summaries: list[dict]
+    ) -> None:
+        if not summaries:
+            return
+        query = """
+        UNWIND $summaries AS row
+        MATCH (e:__Entity__ {graph_name: $graph_name})
+        WHERE elementId(e) = row.id
+        SET e.descriptions = row.descriptions,
+            e.description_summary_status = row.description_summary_status,
+            e.description_input_fingerprint = row.description_input_fingerprint,
+            e.description_summary_updated = row.description_summary_updated,
+            e.description_summary_error = row.description_summary_error,
+            e.description = CASE
+                WHEN row.description IS NULL THEN e.description
+                ELSE row.description
+            END
+        """
+        self.execute_query(query, {"graph_name": graph_name, "summaries": summaries})
+
+    def persist_relationship_summaries(
+        self, graph_name: str, summaries: list[dict]
+    ) -> None:
+        if not summaries:
+            return
+        query = """
+        UNWIND $summaries AS row
+        MATCH ()-[r]->()
+        WHERE r.graph_name = $graph_name AND elementId(r) = row.id
+        SET r.descriptions = row.descriptions,
+            r.description_summary_status = row.description_summary_status,
+            r.description_input_fingerprint = row.description_input_fingerprint,
+            r.description_summary_updated = row.description_summary_updated,
+            r.description_summary_error = row.description_summary_error,
+            r.description = CASE
+                WHEN row.description IS NULL THEN r.description
+                ELSE row.description
+            END
+        """
+        self.execute_query(query, {"graph_name": graph_name, "summaries": summaries})
+
     def get_community_ranked_context(
         self,
         graph_name: str,

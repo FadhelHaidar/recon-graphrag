@@ -45,6 +45,18 @@ class FakeGraphStore:
     def get_unembedded_entities(self, limit=500):
         return []
 
+    def get_entities_needing_summary(self, graph_name, limit=500):
+        return []
+
+    def get_relationships_needing_summary(self, graph_name, limit=500):
+        return []
+
+    def persist_entity_summaries(self, graph_name, summaries):
+        pass
+
+    def persist_relationship_summaries(self, graph_name, summaries):
+        pass
+
     def upsert_vectors(self, ids, property_name, vectors):
         pass
 
