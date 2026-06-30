@@ -630,6 +630,7 @@ async def test_partial_extraction_failure_continues(
         metadata={"source": "test"},
         chunk_size=15,
         chunk_overlap=5,
+        chunk_unit="characters",
     )
 
     assert result["extraction"]["chunks"] == expected_chunks

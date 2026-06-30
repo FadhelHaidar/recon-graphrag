@@ -51,7 +51,7 @@ result = await pipeline.build_from_text(
     },
     chunk_size=1200,          # text chunking size (default: 1200)
     chunk_overlap=100,        # overlap between chunks (default: 100)
-    chunk_unit="characters",  # "characters" or "tokens" (default: "characters")
+    chunk_unit="tokens",      # "tokens" or "characters" (default: "tokens")
 )
 ```
 
@@ -59,9 +59,9 @@ result = await pipeline.build_from_text(
 same keys are stored on chunks and returned later through
 `citation.metadata`.
 
-Chunking settings are per-call. `chunk_unit="tokens"` measures `chunk_size`
-and `chunk_overlap` in tokens; see [Token-based chunking](#token-based-chunking)
-below.
+Chunking settings are per-call. By default `chunk_size` and `chunk_overlap`
+are measured in tokens. Set `chunk_unit="characters"` for character-based
+chunking; see [Token-based chunking](#token-based-chunking) below.
 
 #### `build_from_documents`
 
@@ -112,9 +112,9 @@ same call.
 
 | Parameter | Applies to | Description |
 | --------- | ---------- | ----------- |
-| `chunk_size` | `build_from_text`, `build_from_documents` text envelopes | Target chunk size. In characters by default, or tokens when `chunk_unit="tokens"`. Defaults to `1200`. |
+| `chunk_size` | `build_from_text`, `build_from_documents` text envelopes | Target chunk size. In tokens by default, or characters when `chunk_unit="characters"`. Defaults to `1200`. |
 | `chunk_overlap` | `build_from_text`, `build_from_documents` text envelopes | Overlap between consecutive chunks. Defaults to `100`. |
-| `chunk_unit` | `build_from_text`, `build_from_documents` text envelopes | `"characters"` (default) or `"tokens"`. |
+| `chunk_unit` | `build_from_text`, `build_from_documents` text envelopes | `"tokens"` (default) or `"characters"`. |
 | `token_counter` | `build_from_text`, `build_from_documents` text envelopes | Optional `TokenCounter`. Overrides the default tiktoken counter in token mode. |
 | `token_encoding` | `build_from_text`, `build_from_documents` text envelopes | Tiktoken encoding name when `chunk_unit="tokens"` and no custom counter is provided. Defaults to `"cl100k_base"`. |
 | `window_size` | `build_from_documents` page envelopes | Number of pages per window. Defaults to `2`. |
@@ -122,17 +122,16 @@ same call.
 
 ### Token-based chunking
 
-By default, `chunk_size` and `chunk_overlap` are measured in characters. Set
-`chunk_unit="tokens"` to measure them in tokens instead. When no custom
-`token_counter` is provided, the pipeline uses `TiktokenTokenCounter` with the
-`cl100k_base` encoding:
+By default, `chunk_size` and `chunk_overlap` are measured in tokens using
+`TiktokenTokenCounter` with the `cl100k_base` encoding. Set
+`chunk_unit="characters"` for character-based chunking instead:
 
 ```python
 result = await pipeline.build_from_text(
     text,
     chunk_size=500,
     chunk_overlap=50,
-    chunk_unit="tokens",
+    chunk_unit="characters",
 )
 ```
 
@@ -145,7 +144,6 @@ result = await pipeline.build_from_text(
     text,
     chunk_size=500,
     chunk_overlap=50,
-    chunk_unit="tokens",
     token_counter=ApproximateTokenCounter(),
 )
 ```

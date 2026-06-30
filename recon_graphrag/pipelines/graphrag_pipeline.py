@@ -96,13 +96,13 @@ class GraphBuilderPipeline:
         *,
         chunk_size: int = 1200,
         chunk_overlap: int = 100,
-        chunk_unit: str = "characters",
+        chunk_unit: str = "tokens",
         token_counter: TokenCounter | None = None,
         token_encoding: str = "cl100k_base",
     ) -> dict:
         """Build knowledge graph from raw text.
 
-        Uses internal character-level chunking and extraction, then automatically:
+        Uses internal token-based chunking and extraction, then automatically:
           - Step 2: Entity resolution (merge duplicates)
           - Step 3: Entity embedding (for local/DRIFT search)
 
@@ -142,7 +142,7 @@ class GraphBuilderPipeline:
         *,
         chunk_size: int = 1200,
         chunk_overlap: int = 100,
-        chunk_unit: str = "characters",
+        chunk_unit: str = "tokens",
         token_counter: TokenCounter | None = None,
         token_encoding: str = "cl100k_base",
         window_size: int = 2,
