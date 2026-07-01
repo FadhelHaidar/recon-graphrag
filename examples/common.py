@@ -193,13 +193,19 @@ async def finalize_graph_ingest(
     embedder,
     llm=None,
     entity_resolution_strategy: str = "normalized",
-    resolve_entities: bool = True,
+    run_entity_resolution: bool = True,
     embed_entities: bool = True,
     allow_ai_auto_merge: bool = False,
 ) -> dict:
-    """Run post-write maintenance: backfill, resolve, embed, validate."""
+    """Run post-write maintenance: backfill, resolve, embed, validate.
+
+    Entity resolution is delegated to the graph store's strategy-specific
+    methods (resolve_entities_exact, resolve_entities_normalized,
+    resolve_entities_fuzzy, resolve_entities_hybrid) based on
+    `entity_resolution_strategy`.
+    """
     store.backfill_descriptions()
-    if resolve_entities:
+    if run_entity_resolution:
         print("Resolving duplicate entities after all selected graph ingests")
         if entity_resolution_strategy == "exact":
             resolution = await store.resolve_entities_exact(

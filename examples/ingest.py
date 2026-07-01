@@ -99,7 +99,7 @@ async def ingest_artifact(
     llm_provider: str = "openrouter",
     entity_resolution_strategy: str = "normalized",
     create_indexes: bool = True,
-    resolve_entities: bool = True,
+    run_entity_resolution: bool = True,
     embed_entities: bool = True,
     allow_ai_auto_merge: bool = False,
 ) -> dict:
@@ -129,7 +129,7 @@ async def ingest_artifact(
                 embedder,
                 llm=llm,
                 entity_resolution_strategy=entity_resolution_strategy,
-                resolve_entities=resolve_entities,
+                run_entity_resolution=run_entity_resolution,
                 embed_entities=embed_entities,
                 allow_ai_auto_merge=allow_ai_auto_merge,
             )
@@ -147,7 +147,7 @@ if __name__ == "__main__":
             llm_provider=args.llm_provider,
             entity_resolution_strategy=args.entity_resolution_strategy,
             create_indexes=not args.skip_indexes,
-            resolve_entities=not args.skip_entity_resolution,
+            run_entity_resolution=not args.skip_entity_resolution,
             embed_entities=not args.skip_entity_embeddings,
             allow_ai_auto_merge=args.allow_ai_auto_merge,
         )

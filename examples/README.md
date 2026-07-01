@@ -48,12 +48,17 @@ This separation lets you extract once and experiment with multiple backends with
 
 ## Entity resolution
 
-`ingest.py` supports multiple entity-resolution strategies:
+`ingest.py` supports multiple entity-resolution strategies via the graph store's
+strategy-specific methods (`resolve_entities_exact`,
+`resolve_entities_normalized`, `resolve_entities_fuzzy`, and
+`resolve_entities_hybrid`):
 
 ```bash
 python ingest.py --backend neo4j --entity-resolution-strategy normalized
 python ingest.py --backend neo4j --entity-resolution-strategy hybrid --allow-ai-auto-merge
 ```
+
+Use `--skip-entity-resolution` to persist entities without merging duplicates.
 
 ## Note
 
