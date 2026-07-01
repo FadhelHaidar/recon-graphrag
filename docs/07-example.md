@@ -9,22 +9,22 @@ The `examples/` directory contains a complete, runnable movie-industry project t
 - Define a domain schema with many entity and relationship types.
 - Configure multiple LLM/embedder providers.
 - Customize retriever prompts for a domain.
-- Build a graph from paginated text.
+- Build a graph from paginated text with per-document metadata.
 - Run local, global, and DRIFT searches.
 
 ### Files
 
 | File | Purpose |
 | --------- | --------- |
-| [schema.py](../examples/schema.py) | Domain schema with 10 entity types and 14 relationship types |
+| [schema.py](../examples/schema.py) | Domain schema with 14 entity types and 22 relationship types |
 | [config.py](../examples/config.py) | Multi-provider setup (Azure OpenAI, OpenRouter, local) and store getters for Neo4j and Memgraph |
 | [prompts.py](../examples/prompts.py) | Domain-customized prompts for all retrievers |
-| [data.py](../examples/data.py) | Sample movie text data |
+| [data.py](../examples/data.py) | Sample movie text data with per-page metadata |
 | [extract.py](../examples/extract.py) | Extract once into a database-neutral JSON graph artifact |
 | [ingest.py](../examples/ingest.py) | Ingest the shared graph artifact into one or all graph backends |
 | [communities.py](../examples/communities.py) | Build communities for one or all graph backends |
 | [search.py](../examples/search.py) | Run the shared query suite on Neo4j or Memgraph |
-| [compare_backends.py](../examples/compare_backends.py) | Compare graph stats and retrieval outputs across Neo4j and Memgraph |
+| [advanced/compare_backends.py](../examples/advanced/compare_backends.py) | Compare graph stats and retrieval outputs across Neo4j and Memgraph |
 
 ### Provider selection
 
@@ -32,23 +32,14 @@ All build and search scripts accept `--llm-provider` and `--embedder-provider` f
 
 ```bash
 python extract.py --llm-provider openrouter
-python ingest.py --backend all --embedder-provider openai --llm-provider openai --entity-resolution-strategy hybrid
-python search.py --backend neo4j --llm-provider openai --embedder-provider sentence-transformer
+python ingest.py --backend all --embedder-provider openrouter --llm-provider openrouter
+python search.py --backend neo4j --llm-provider openrouter --embedder-provider openrouter
 ```
 
 Supported LLM providers: `openrouter`, `azure_openai`, `openai`.  
 Supported embedder providers: `openrouter`, `azure_openai`, `openai`, `sentence-transformer`.
 
-You can also set the `LLM_PROVIDER` and `EMBEDDER_PROVIDER` environment variables instead of passing flags.
-
-For hybrid entity resolution during ingest, pass
-`--entity-resolution-strategy hybrid`. The LLM and embedder review ambiguous
-duplicate candidates. Add `--allow-ai-auto-merge` only when you want
-LLM-approved review candidates to be merged into the stored graph:
-
-```bash
-python ingest.py --backend neo4j --entity-resolution-strategy hybrid --allow-ai-auto-merge
-```
+You can also set the `LLM_PROVIDER` and `EMBEDDER_PROVIDER` environment variables instead of passing flags. If neither is set, the scripts default to `openrouter`.
 
 ### Search modes per test case
 
@@ -73,7 +64,7 @@ python ingest.py --backend neo4j --entity-resolution-strategy hybrid --allow-ai-
    ```bash
    cd examples
    python extract.py --llm-provider openrouter
-   python ingest.py --backend neo4j --embedder-provider openrouter --llm-provider openrouter --entity-resolution-strategy hybrid
+   python ingest.py --backend neo4j --embedder-provider openrouter --llm-provider openrouter
    ```
 
 4. Build communities:
@@ -103,7 +94,7 @@ python ingest.py --backend neo4j --entity-resolution-strategy hybrid --allow-ai-
    ```bash
    cd examples
    python extract.py --llm-provider openrouter
-   python ingest.py --backend memgraph --embedder-provider openrouter --llm-provider openrouter --entity-resolution-strategy hybrid
+   python ingest.py --backend memgraph --embedder-provider openrouter --llm-provider openrouter
    ```
 
 4. Build communities:
@@ -124,14 +115,14 @@ To compare outputs fairly, ingest all configured graph backends from the same ar
 
 ```bash
 python extract.py --llm-provider openrouter
-python ingest.py --backend all --embedder-provider openrouter --llm-provider openrouter --entity-resolution-strategy hybrid
+python ingest.py --backend all --embedder-provider openrouter --llm-provider openrouter
 python communities.py --backend all --llm-provider openrouter --embedder-provider openrouter
-python compare_backends.py --limit 5
+python advanced/compare_backends.py --limit 5
 ```
 
 ### Schema highlights
 
-The movie schema includes entity types such as `Movie`, `Person`, `Company`, `Genre`, `Award`, and `Location`, connected by relationships such as `DIRECTED`, `ACTED_IN`, `PRODUCED_BY`, `WON`, `NOMINATED_FOR`, and `LOCATED_IN`.
+The movie schema includes entity types such as `Movie`, `Person`, `Studio`, `Award`, `Theme`, `Technique`, `Character`, and `Genre`, connected by relationships such as `DIRECTED`, `ACTED_IN`, `PRODUCED`, `WON_AWARD`, `NOMINATED_FOR`, `EXPLORES`, `USES_TECHNIQUE`, and `SET_IN`.
 
 ### Prompt customization
 

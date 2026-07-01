@@ -14,22 +14,19 @@ import argparse
 import asyncio
 import os
 
-try:
-    from .common import (
-        configure_movie_rag,
-        get_backend_targets,
-        run_movie_search_suite,
-    )
-    from .config import get_embedder, get_llm
-    from .query_suite import MOVIE_QUERY_SUITE
-except ImportError:
-    from common import (
-        configure_movie_rag,
-        get_backend_targets,
-        run_movie_search_suite,
-    )
-    from config import get_embedder, get_llm
-    from query_suite import MOVIE_QUERY_SUITE
+from recon_graphrag.retrieval.search_drift import DriftSearchRetriever
+from recon_graphrag.retrieval.search_global import GlobalSearchRetriever
+from recon_graphrag.retrieval.search_local import LocalSearchRetriever
+
+from common import SEARCH_OPTIONS, get_backend_targets
+from config import get_embedder, get_llm
+from prompts import (
+    DRIFT_ANSWER_PROMPT,
+    GLOBAL_MAP_PROMPT,
+    GLOBAL_REDUCE_PROMPT,
+    LOCAL_ANSWER_PROMPT,
+)
+from query_suite import MOVIE_QUERY_SUITE
 
 
 def parse_args():
@@ -45,14 +42,14 @@ def parse_args():
     parser.add_argument(
         "--llm-provider",
         choices=["openrouter", "azure_openai", "openai"],
-        default=os.getenv("LLM_PROVIDER", "azure_openai"),
-        help="LLM provider (defaults to LLM_PROVIDER env var, then azure_openai).",
+        default=os.getenv("LLM_PROVIDER", "openrouter"),
+        help="LLM provider (defaults to LLM_PROVIDER env var, then openrouter).",
     )
     parser.add_argument(
         "--embedder-provider",
         choices=["openrouter", "azure_openai", "openai", "sentence-transformer"],
-        default=os.getenv("EMBEDDER_PROVIDER", "azure_openai"),
-        help="Embedder provider (defaults to EMBEDDER_PROVIDER env var, then azure_openai).",
+        default=os.getenv("EMBEDDER_PROVIDER", "openrouter"),
+        help="Embedder provider (defaults to EMBEDDER_PROVIDER env var, then openrouter).",
     )
     parser.add_argument(
         "--modes",
@@ -80,11 +77,46 @@ async def run_search_suite(
     _, store, _ = get_backend_targets(backend)[0]
     llm = get_llm(llm_provider)
     embedder = get_embedder(embedder_provider)
-    search_instances = configure_movie_rag(store, llm, embedder)
+
+    # Build the three retriever instances directly
+    local = LocalSearchRetriever(store, llm, embedder, graph_name="entity-graph")
+    local.answer_prompt = LOCAL_ANSWER_PROMPT
+
+    global_search = GlobalSearchRetriever(store, llm, graph_name="entity-graph")
+    global_search.map_prompt = GLOBAL_MAP_PROMPT
+    global_search.reduce_prompt = GLOBAL_REDUCE_PROMPT
+
+    drift = DriftSearchRetriever(store, llm, embedder, graph_name="entity-graph")
+    drift.reduce_prompt = DRIFT_ANSWER_PROMPT
+
+    search_instances = {
+        "local": local,
+        "global": global_search,
+        "drift": drift,
+    }
+
     suite = MOVIE_QUERY_SUITE
     if limit is not None:
         suite = suite[:limit]
-    await run_movie_search_suite(search_instances, suite, modes_filter=modes)
+
+    for item in suite:
+        item_modes = item.get("modes", ["local", "global", "drift"])
+        if modes:
+            item_modes = [mode for mode in item_modes if mode in modes]
+
+        print("\n" + "=" * 60)
+        print(f"QUERY: {item['query']}")
+        print(f"MODES: {', '.join(item_modes)}")
+        print(f"OBJECTIVE: {item['test_objective']}")
+        print("=" * 60)
+
+        for mode in item_modes:
+            search = search_instances[mode]
+            try:
+                result = await search.search(item["query"], **SEARCH_OPTIONS[mode])
+                print(f"\n>>> [{mode.upper()} ANSWER]:\n{result.answer}")
+            except Exception as exc:
+                print(f"\n>>> [{mode.upper()} ERROR]: {exc}")
 
 
 if __name__ == "__main__":

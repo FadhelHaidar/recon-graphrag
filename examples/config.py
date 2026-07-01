@@ -43,9 +43,9 @@ def get_llm(provider: str | None = None):
     """Return an LLM instance for the requested provider.
 
     Supported providers: "openrouter", "azure_openai", "openai".
-    Falls back to the LLM_PROVIDER env var, then "azure_openai".
+    Falls back to the LLM_PROVIDER env var, then "openrouter".
     """
-    provider = (provider or os.getenv("LLM_PROVIDER", "azure_openai")).lower()
+    provider = (provider or os.getenv("LLM_PROVIDER", "openrouter")).lower()
 
     if provider == "openrouter":
         return create_llm(
@@ -82,9 +82,9 @@ def get_embedder(provider: str | None = None):
 
     Supported providers: "openrouter", "azure_openai", "openai",
     "sentence-transformer".
-    Falls back to the EMBEDDER_PROVIDER env var, then "azure_openai".
+    Falls back to the EMBEDDER_PROVIDER env var, then "openrouter".
     """
-    provider = (provider or os.getenv("EMBEDDER_PROVIDER", "azure_openai")).lower()
+    provider = (provider or os.getenv("EMBEDDER_PROVIDER", "openrouter")).lower()
 
     if provider == "openrouter":
         return create_embedder(

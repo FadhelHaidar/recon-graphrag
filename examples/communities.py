@@ -47,12 +47,12 @@ def parse_args():
     parser.add_argument(
         "--llm-provider",
         choices=["openrouter", "azure_openai", "openai"],
-        default=os.getenv("LLM_PROVIDER", "azure_openai"),
+        default=os.getenv("LLM_PROVIDER", "openrouter"),
     )
     parser.add_argument(
         "--embedder-provider",
         choices=["openrouter", "azure_openai", "openai", "sentence-transformer"],
-        default=os.getenv("EMBEDDER_PROVIDER", "azure_openai"),
+        default=os.getenv("EMBEDDER_PROVIDER", "openrouter"),
     )
     parser.add_argument(
         "--level",
