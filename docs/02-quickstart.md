@@ -175,31 +175,31 @@ DRIFT falls back to local-style entity search.
 
 ## 7. Search the graph
 
-`GraphRAG` provides three search modes:
+Recon-GraphRAG provides three search classes — `LocalSearchRetriever`,
+`GlobalSearchRetriever`, and `DriftSearchRetriever` — each with its own
+constructor and search method:
 
 ```python
-from recon_graphrag import GraphRAG
-
-graph_rag = GraphRAG(store, llm, embedder)
+from recon_graphrag import LocalSearchRetriever, GlobalSearchRetriever, DriftSearchRetriever
 
 # Specific question about an entity
-local_result = await graph_rag.search(
+local_search = LocalSearchRetriever(store, llm, embedder)
+local_result = await local_search.search(
     "Who directed Inception?",
-    mode="local",
     top_k=10,
 )
 
 # Broad overview using community reports
-global_result = await graph_rag.search(
+global_search = GlobalSearchRetriever(store, llm)
+global_result = await global_search.search(
     "What are the main themes?",
-    mode="global",
     community_level="coarsest",
 )
 
 # Hybrid detail + context
-drift_result = await graph_rag.search(
+drift_search = DriftSearchRetriever(store, llm, embedder)
+drift_result = await drift_search.search(
     "Tell me about Christopher Nolan's work.",
-    mode="drift",
     top_k=10,
 )
 ```
@@ -234,7 +234,7 @@ Here is the full script in one block:
 ```python
 from neo4j import GraphDatabase
 from recon_graphrag import (
-    GraphRAG,
+    LocalSearchRetriever,
     GraphBuilderPipeline,
     CommunityPipeline,
     Neo4jGraphStore,
@@ -297,8 +297,8 @@ community = CommunityPipeline(
 await community.build()
 
 # Search
-graph_rag = GraphRAG(store, llm, embedder)
-result = await graph_rag.search("What are the key findings?", mode="local")
+local_search = LocalSearchRetriever(store, llm, embedder)
+result = await local_search.search("What are the key findings?", top_k=10)
 print(result.answer)
 ```
 

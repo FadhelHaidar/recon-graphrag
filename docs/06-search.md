@@ -1,6 +1,6 @@
 # Search
 
-Recon-GraphRAG provides three search modes through `GraphRAG.search()`:
+Recon-GraphRAG provides three search modes through dedicated search classes:
 **Local**, **Global**, and **DRIFT**. Use this page for both the public API and
 the mechanics behind each mode.
 
@@ -12,34 +12,45 @@ the mechanics behind each mode.
 | **Global** | Community report map-reduce | Broad overviews and thematic landscapes |
 | **DRIFT** | Entity + community hybrid | Questions needing detail plus surrounding context |
 
-All modes use the same entry point:
+Each mode has its own search class:
 
 ```python
-from recon_graphrag import GraphRAG, DriftSearchConfig
-
-graph_rag = GraphRAG(
-    store,
-    llm,
-    embedder,
-    graph_name="entity-graph",     # graph scope (default: "entity-graph")
-    token_counter=None,            # optional token counter for global search
-    map_budget_tokens=12000,       # global map budget (default: 12000)
-    reduce_budget_tokens=12000,    # global reduce budget (default: 12000)
-    use_mixed_context=False,       # enable mixed-context for local search
-    drift_config=DriftSearchConfig(primer_top_k=3),
+from recon_graphrag import (
+    LocalSearchRetriever,
+    GlobalSearchRetriever,
+    DriftSearchRetriever,
+    DriftSearchConfig,
 )
-result = await graph_rag.search("Your question", mode="local")
+
+# Local search — entity-centric subgraph traversal
+local_search = LocalSearchRetriever(
+    store, llm, embedder,
+    graph_name="entity-graph",        # graph scope (default: "entity-graph")
+    use_mixed_context=True,           # enable mixed-context (default: True)
+    top_k_relationships=10,           # max relationships per entity (default: 10)
+)
+result = await local_search.search("Your question", top_k=10)
+
+# Global search — community report map-reduce
+global_search = GlobalSearchRetriever(
+    store, llm,
+    graph_name="entity-graph",
+    token_counter=None,               # optional token counter for batching
+    map_budget_tokens=12000,          # map budget (default: 12000)
+    reduce_budget_tokens=12000,       # reduce budget (default: 12000)
+)
+result = await global_search.search("Your question", community_level="coarsest")
+
+# DRIFT search — entity + community hybrid
+drift_search = DriftSearchRetriever(
+    store, llm, embedder,
+    graph_name="entity-graph",
+    config=DriftSearchConfig(primer_top_k=3),
+)
+result = await drift_search.search("Your question", top_k=10)
 ```
 
-| Parameter | Description |
-| --- | --- |
-| `graph_name` | Graph scope for all nodes and relationships. Defaults to `"entity-graph"`. |
-| `token_counter` | Optional token counter for global map/reduce batching. |
-| `map_budget_tokens` | Maximum report text packed into one map prompt. |
-| `reduce_budget_tokens` | Maximum partial-answer text packed into the final reduce prompt. |
-| `use_mixed_context` | When `True`, local search uses `MixedContextBuilder` to combine entity subgraph, community reports, and claims into a single token-budgeted context. Defaults to `True`. |
-| `drift_config` | Optional `DriftSearchConfig` controlling iterative DRIFT search parameters. |
-| `top_k_relationships` | Maximum relationships shown per entity in local context. Defaults to `10`. |
+Each class owns its own constructor parameters, prompts, and search method.
 
 ---
 
@@ -49,9 +60,8 @@ Local search answers specific questions by retrieving relevant entities, their
 neighbors, and related text chunks.
 
 ```python
-result = await graph_rag.search(
+result = await local_search.search(
     "Who directed Inception?",
-    mode="local",
     top_k=10,
 )
 ```
@@ -66,11 +76,11 @@ result = await graph_rag.search(
 | `community_level` | Community level for mixed-context reports. Only used when `use_mixed_context=True`. |
 | `token_budget` | Total token budget for mixed context. Only used when `use_mixed_context=True`. Defaults to `12000`. |
 
-When `use_mixed_context=True` is set on the `GraphRAG` constructor (or directly on
-`LocalSearchRetriever`), local search uses `MixedContextBuilder` to collect five
-candidate types — seed entities, relationships, text units (chunks), community
-reports, and claims — then ranks and token-packs them into a single context
-string. This provides richer context than the default entity-subgraph-only mode.
+When `use_mixed_context=True` is set on `LocalSearchRetriever`, local search
+uses `MixedContextBuilder` to collect five candidate types — seed entities,
+relationships, text units (chunks), community reports, and claims — then ranks
+and token-packs them into a single context string. This provides richer context
+than the default entity-subgraph-only mode.
 
 Local search returns citations when retrieved entities have source chunks.
 By default, citation metadata is returned after synthesis but is not shown to
@@ -78,9 +88,8 @@ the LLM. Opt in when the answer should see source identifiers while being
 written:
 
 ```python
-result = await graph_rag.search(
+result = await local_search.search(
     "Who directed Inception?",
-    mode="local",
     synthesize_citation_metadata=True,
     synthesis_metadata_keys=["record_id", "collection"],
 )
@@ -107,9 +116,8 @@ resolve level
 ```
 
 ```python
-result = await graph_rag.search(
+result = await global_search.search(
     "What are the main themes in this dataset?",
-    mode="global",
     community_level="coarsest",
     random_seed=42,
 )
@@ -215,9 +223,8 @@ follow-up questions, performs local subgraph searches for each follow-up,
 and reduces all gathered evidence into a final answer.
 
 ```python
-result = await graph_rag.search(
+result = await drift_search.search(
     "Explain the relationship between Christopher Nolan and his frequent collaborators.",
-    mode="drift",
     top_k=10,
     community_level="coarsest",
 )
@@ -310,9 +317,8 @@ useful when an outer agent or orchestration layer wants to consume the context
 directly.
 
 ```python
-result = await graph_rag.search(
+result = await local_search.search(
     "What evidence is relevant?",
-    mode="local",
     synthesize_response=False,
 )
 agent_context = result.context
@@ -353,7 +359,7 @@ Mode-specific behavior:
 `SearchResult` includes structured citation fields in addition to answer text:
 
 ```python
-result = await graph_rag.search("Who directed Inception?", mode="local")
+result = await local_search.search("Who directed Inception?")
 
 for citation in result.citations:
     print(citation.document_id, citation.chunk_id, citation.page_start)
@@ -863,9 +869,8 @@ Every `SearchResult` includes a `metadata` dict with diagnostics for debugging
 and monitoring:
 
 ```python
-result = await graph_rag.search(
+result = await global_search.search(
     "What are the main themes?",
-    mode="global",
     community_level="coarsest",
 )
 print(result.metadata)
@@ -966,7 +971,7 @@ domain-specific behavior.
 ### Local Prompt
 
 ```python
-graph_rag.local.answer_prompt = (
+local_search.answer_prompt = (
     "You are a film analyst. Answer based on:\n{context}\n\nQuestion: {query}"
 )
 ```
@@ -974,11 +979,11 @@ graph_rag.local.answer_prompt = (
 ### Global Map/Reduce Prompts
 
 ```python
-graph_rag.global_.map_prompt = (
+global_search.map_prompt = (
     "Answer from this batch of community reports.\n\n"
     "Question: {query}\n\nReports:\n{batch_text}"
 )
-graph_rag.global_.reduce_prompt = (
+global_search.reduce_prompt = (
     "Synthesize these partial answers.\n\n"
     "Question: {query}\n\nPartials:\n{partial_text}"
 )
@@ -990,7 +995,7 @@ Global search uses scored map/reduce prompts defined in
 ### DRIFT Prompt
 
 ```python
-graph_rag.drift.reduce_prompt = (
+drift_search.reduce_prompt = (
     "Answer {query} from these scored DRIFT actions:\n\n"
     "{action_context}\n\n{conversation_history}"
 )
@@ -1009,7 +1014,7 @@ Advanced users can override the Cypher query used to fetch local or DRIFT
 entity context:
 
 ```python
-graph_rag.local.retrieval_query = (
+local_search.retrieval_query = (
     "OPTIONAL MATCH (node)-[r]-(neighbor) RETURN node.name AS title, score"
 )
 ```

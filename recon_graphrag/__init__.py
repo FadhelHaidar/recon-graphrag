@@ -6,7 +6,6 @@ from recon_graphrag._version import __version__, get_git_sha
 from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
 
 # Retrieval
-from recon_graphrag.retrieval.search import GraphRAG
 from recon_graphrag.retrieval.base import BaseRetriever
 from recon_graphrag.retrieval.search_local import LocalSearchRetriever
 from recon_graphrag.retrieval.search_global import GlobalSearchRetriever
@@ -64,7 +63,6 @@ __all__ = [
     # Pipelines
     "GraphBuilderPipeline",
     # Retrieval
-    "GraphRAG",
     "BaseRetriever",
     "LocalSearchRetriever",
     "GlobalSearchRetriever",

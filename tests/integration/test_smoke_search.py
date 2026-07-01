@@ -20,7 +20,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 async def main():
     from tests.integration.factories import get_embedder, get_llm, get_neo4j_store
-    from recon_graphrag.retrieval.search import GraphRAG
+    from recon_graphrag.retrieval.search_drift import DriftSearchRetriever
+    from recon_graphrag.retrieval.search_global import GlobalSearchRetriever
+    from recon_graphrag.retrieval.search_local import LocalSearchRetriever
     from recon_graphrag.retrieval.drift_types import DriftSearchConfig
 
     store = get_neo4j_store()
@@ -57,17 +59,24 @@ async def main():
     )
     print(f"Entities: {entity_count[0]['cnt']}")
 
-    # Create GraphRAG with aligned defaults
+    # Create search instances with aligned defaults
     drift_config = DriftSearchConfig(
         use_hyde=False,  # skip HyDE for faster smoke test
         action_use_mixed_context=True,
     )
-    grag = GraphRAG(
+    local_search = LocalSearchRetriever(
         store, llm, embedder,
         graph_name=graph_name,
         use_mixed_context=True,
         top_k_relationships=10,
-        drift_config=drift_config,
+    )
+    global_search = GlobalSearchRetriever(
+        store, llm, graph_name=graph_name,
+    )
+    drift_search = DriftSearchRetriever(
+        store, llm, embedder,
+        graph_name=graph_name,
+        config=drift_config,
     )
 
     query = "What are the main entities and their relationships?"
@@ -75,7 +84,7 @@ async def main():
 
     # --- Local search ---
     print("\n=== Local Search ===")
-    result = await grag.search(query, mode="local", top_k=3)
+    result = await local_search.search(query, top_k=3)
     print(f"  answer: {result.answer[:200]}...")
     print(f"  citations: {len(result.citations)}")
     print(f"  metadata keys: {list(result.metadata.keys())}")
@@ -88,8 +97,8 @@ async def main():
     # --- Global search ---
     if levels:
         print("\n=== Global Search ===")
-        result = await grag.search(
-            query, mode="global", community_level="coarsest",
+        result = await global_search.search(
+            query, community_level="coarsest",
         )
         print(f"  answer: {result.answer[:200]}...")
         print(f"  citations: {len(result.citations)}")
@@ -99,7 +108,7 @@ async def main():
 
     # --- DRIFT search ---
     print("\n=== DRIFT Search ===")
-    result = await grag.search(query, mode="drift", top_k=3)
+    result = await drift_search.search(query, top_k=3)
     print(f"  answer: {result.answer[:200]}...")
     print(f"  citations: {len(result.citations)}")
     trace = result.metadata.get("drift_trace", {})

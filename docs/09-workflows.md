@@ -1,13 +1,13 @@
 # Advanced Workflows
 
-Recon-GraphRAG's high-level examples ([`GraphBuilderPipeline`](05-pipelines.md), [`GraphRAG.search()`](06-search.md)) cover the most common path, but the library is composed of smaller, interchangeable building blocks. This guide explains those primitives so you can assemble custom workflows, implement new backends, or inspect intermediate artifacts without running a full pipeline.
+Recon-GraphRAG's high-level examples ([`GraphBuilderPipeline`](05-pipelines.md), [search classes](06-search.md)) cover the most common path, but the library is composed of smaller, interchangeable building blocks. This guide explains those primitives so you can assemble custom workflows, implement new backends, or inspect intermediate artifacts without running a full pipeline.
 
 ## When to use the building blocks
 
 Reach for these primitives when you want to:
 
 - Extract entities once and save the structured output to JSON/Parquet before database ingestion.
-- Call `LocalSearchRetriever`, `GlobalSearchRetriever`, or `DriftSearchRetriever` directly instead of through `GraphRAG`.
+- Call `LocalSearchRetriever`, `GlobalSearchRetriever`, or `DriftSearchRetriever` directly for fine-grained control.
 - Use `MixedContextBuilder` to combine entity subgraph, community reports, and claims into a token-budgeted context for local search.
 - Inspect `DriftQueryState` and `DriftAction` to trace the iterative DRIFT traversal.
 - Implement a custom `GraphStore` backend (Postgres, in-memory, etc.).
@@ -621,7 +621,7 @@ Backend notes:
 
 ## Retrieval primitives
 
-Instead of `GraphRAG.search()`, you can instantiate retrievers directly. This is useful when you need fine-grained control over index names, prompts, or result formatting.
+You can instantiate retrievers directly for fine-grained control over index names, prompts, or result formatting.
 
 All retrievers return a [`SearchResult`](../recon_graphrag/models/types.py)
 with `query`, `mode`, `answer`, `context`, and optional `citations`.
@@ -912,4 +912,4 @@ async def extract_to_json(text: str, schema: GraphSchema, llm, out_path: Path):
 
 - Combine these primitives with custom `GraphWriter` for logging or caching.
 - See [`docs/05-pipelines.md`](05-pipelines.md) for the high-level pipeline that wraps these steps.
-- See [`docs/06-search.md`](06-search.md) for the high-level `GraphRAG.search()` API.
+- See [`docs/06-search.md`](06-search.md) for the search API reference.

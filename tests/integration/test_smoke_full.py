@@ -11,7 +11,10 @@ from __future__ import annotations
 import pytest
 
 from tests.integration.factories import get_embedder, get_llm, get_memgraph_store, get_neo4j_store
-from recon_graphrag import CommunityPipeline, GraphBuilderPipeline, GraphRAG, IndexManager
+from recon_graphrag import CommunityPipeline, GraphBuilderPipeline, IndexManager
+from recon_graphrag.retrieval.search_drift import DriftSearchRetriever
+from recon_graphrag.retrieval.search_global import GlobalSearchRetriever
+from recon_graphrag.retrieval.search_local import LocalSearchRetriever
 from tests.integration.support import (
     cleanup_graph,
     require_integration_env,
@@ -121,40 +124,36 @@ async def _run_synthetic_e2e(store, graph_name: str):
         assert community_result.get("reports", 0) > 0
         assert community_result.get("embedded_reports", 0) > 0
 
-        graph_rag = GraphRAG(
-            store,
-            llm,
-            embedder,
-            graph_name=graph_name,
-            use_mixed_context=True,
+        local_search = LocalSearchRetriever(
+            store, llm, embedder, graph_name=graph_name, use_mixed_context=True
         )
-        graph_rag.local.answer_prompt = SYNTHETIC_LOCAL_ANSWER_PROMPT
-        graph_rag.global_.map_prompt = SYNTHETIC_GLOBAL_MAP_PROMPT
-        graph_rag.global_.reduce_prompt = SYNTHETIC_GLOBAL_REDUCE_PROMPT
-        graph_rag.drift.reduce_prompt = SYNTHETIC_DRIFT_ANSWER_PROMPT
+        local_search.answer_prompt = SYNTHETIC_LOCAL_ANSWER_PROMPT
+
+        global_search = GlobalSearchRetriever(store, llm, graph_name=graph_name)
+        global_search.map_prompt = SYNTHETIC_GLOBAL_MAP_PROMPT
+        global_search.reduce_prompt = SYNTHETIC_GLOBAL_REDUCE_PROMPT
+
+        drift_search = DriftSearchRetriever(store, llm, embedder, graph_name=graph_name)
+        drift_search.reduce_prompt = SYNTHETIC_DRIFT_ANSWER_PROMPT
 
         results = [
-            await graph_rag.search(
+            await local_search.search(
                 "Who investigated the suspicious login incident?",
-                mode="local",
                 synthesize_citation_metadata=True,
                 synthesis_metadata_keys=["record_ids", "collections", "external_id"],
             ),
-            await graph_rag.search(
+            await global_search.search(
                 "What systems and organizations are involved in incident response?",
-                mode="global",
                 community_level="coarsest",
             ),
-            await graph_rag.search(
+            await drift_search.search(
                 "How does the Identity Gateway connect to the Payments API?",
-                mode="drift",
                 community_level="finest",
                 synthesize_citation_metadata=True,
                 synthesis_metadata_keys=["record_ids", "collections", "external_id"],
             ),
-            await graph_rag.search(
+            await global_search.search(
                 "What are the main systems and their dependencies?",
-                mode="global",
                 community_level="coarsest",
                 random_seed=42,
             ),

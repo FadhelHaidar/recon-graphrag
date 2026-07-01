@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from recon_graphrag import GraphRAG, IndexManager as Neo4jIndexManager
+from recon_graphrag import IndexManager as Neo4jIndexManager
 from recon_graphrag.embeddings import EntityEmbedder
 from recon_graphrag.extraction.assembler import GraphDocumentAssembler
 from recon_graphrag.extraction.chunking import PageWindowBuilder
@@ -19,6 +19,9 @@ from recon_graphrag.extraction.extractor import LLMGraphExtractor
 from recon_graphrag.extraction.types import GraphDocument
 from recon_graphrag.extraction.validator import SchemaValidator
 from recon_graphrag.graphdb.memgraph.index_manager import IndexManager as MemgraphIndexManager
+from recon_graphrag.retrieval.search_drift import DriftSearchRetriever
+from recon_graphrag.retrieval.search_global import GlobalSearchRetriever
+from recon_graphrag.retrieval.search_local import LocalSearchRetriever
 
 try:
     from .config import EMBEDDING_DIM, get_memgraph_store, get_neo4j_store
@@ -74,13 +77,21 @@ def get_backend_targets(backend: str) -> list[tuple[str, Any, type]]:
     ]
 
 
-def configure_movie_rag(graph_rag: GraphRAG) -> GraphRAG:
-    """Configure a GraphRAG instance with movie-domain prompts."""
-    graph_rag.local.answer_prompt = LOCAL_ANSWER_PROMPT
-    graph_rag.drift.reduce_prompt = DRIFT_ANSWER_PROMPT
-    graph_rag.global_.map_prompt = GLOBAL_MAP_PROMPT
-    graph_rag.global_.reduce_prompt = GLOBAL_REDUCE_PROMPT
-    return graph_rag
+def configure_movie_rag(
+    graph_store, llm, embedder, *, graph_name: str = "entity-graph"
+) -> dict[str, Any]:
+    """Create and configure local, global, and drift search instances."""
+    local = LocalSearchRetriever(graph_store, llm, embedder, graph_name=graph_name)
+    local.answer_prompt = LOCAL_ANSWER_PROMPT
+
+    global_search = GlobalSearchRetriever(graph_store, llm, graph_name=graph_name)
+    global_search.map_prompt = GLOBAL_MAP_PROMPT
+    global_search.reduce_prompt = GLOBAL_REDUCE_PROMPT
+
+    drift = DriftSearchRetriever(graph_store, llm, embedder, graph_name=graph_name)
+    drift.reduce_prompt = DRIFT_ANSWER_PROMPT
+
+    return {"local": local, "global": global_search, "drift": drift}
 
 
 # ---------------------------------------------------------------------------
@@ -219,11 +230,11 @@ async def finalize_graph_ingest(
 
 
 async def run_movie_search_suite(
-    graph_rag: GraphRAG,
+    search_instances: dict[str, Any],
     test_queries: list[dict[str, Any]],
     modes_filter: list[str] | None = None,
 ) -> None:
-    """Run the shared movie query suite against a configured GraphRAG."""
+    """Run the shared movie query suite against configured search instances."""
     for item in test_queries:
         modes = item.get("modes", ["local", "global", "drift"])
         if modes_filter:
@@ -239,10 +250,13 @@ async def run_movie_search_suite(
             if mode not in SEARCH_OPTIONS:
                 print(f"\n>>> [{mode.upper()} ERROR]: Unknown mode.")
                 continue
+            search = search_instances.get(mode)
+            if search is None:
+                print(f"\n>>> [{mode.upper()} ERROR]: No search instance for mode.")
+                continue
             try:
-                result = await graph_rag.search(
+                result = await search.search(
                     item["query"],
-                    mode=mode,
                     **SEARCH_OPTIONS[mode],
                 )
                 print(f"\n>>> [{mode.upper()} ANSWER]:\n{result.answer}")

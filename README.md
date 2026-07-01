@@ -66,7 +66,7 @@ See [docs/01-installation.md](docs/01-installation.md) for more install options 
 ```python
 from neo4j import GraphDatabase
 from recon_graphrag import (
-    GraphRAG,
+    LocalSearchRetriever,
     GraphBuilderPipeline,
     CommunityPipeline,
     Neo4jGraphStore,
@@ -129,8 +129,8 @@ community = CommunityPipeline(
 await community.build()
 
 # Search
-graph_rag = GraphRAG(store, llm, embedder)
-result = await graph_rag.search("What are the key findings?", mode="local")
+local_search = LocalSearchRetriever(store, llm, embedder)
+result = await local_search.search("What are the key findings?", top_k=10)
 print(result.answer)
 for citation in result.citations:
     print(citation.metadata)  # arbitrary source metadata, e.g. record_id/table/page

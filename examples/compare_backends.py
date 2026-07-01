@@ -15,8 +15,6 @@ import asyncio
 import os
 import traceback
 
-from recon_graphrag import GraphRAG
-
 try:
     from .common import SEARCH_OPTIONS, configure_movie_rag, get_backend_targets
     from .config import get_embedder, get_llm
@@ -109,13 +107,14 @@ def _context_headings(context: str) -> list[str]:
 
 
 async def _run_one(
-    graph_rag: GraphRAG,
+    search_instances: dict[str, Any],
     query: str,
     mode: str,
     tracebacks: bool = False,
 ) -> dict:
     try:
-        result = await graph_rag.search(query, mode=mode, **SEARCH_OPTIONS[mode])
+        search = search_instances[mode]
+        result = await search.search(query, **SEARCH_OPTIONS[mode])
         return {
             "ok": True,
             "answer": result.answer,
@@ -176,8 +175,8 @@ async def main():
     targets = {name: store for name, store, _ in get_backend_targets("all")}
     neo4j_store = targets["neo4j"]
     memgraph_store = targets["memgraph"]
-    neo4j_rag = configure_movie_rag(GraphRAG(neo4j_store, llm, embedder))
-    memgraph_rag = configure_movie_rag(GraphRAG(memgraph_store, llm, embedder))
+    neo4j_rag = configure_movie_rag(neo4j_store, llm, embedder)
+    memgraph_rag = configure_movie_rag(memgraph_store, llm, embedder)
 
     neo4j_stats = _safe_stats(neo4j_store)
     memgraph_stats = _safe_stats(memgraph_store)

@@ -13,7 +13,7 @@ Recon-GraphRAG splits indexing into two pipelines: one that builds the entity gr
 | **Community Building** | `CommunityPipeline` | 4. Community detection (Leiden via the backend store) |
 | | | 5. Community summarization (LLM) |
 
-After both pipelines run, the graph is ready for `GraphRAG.search()` in `local`, `global`, or `drift` mode.
+After both pipelines run, the graph is ready for search using `LocalSearchRetriever`, `GlobalSearchRetriever`, or `DriftSearchRetriever`.
 
 ---
 

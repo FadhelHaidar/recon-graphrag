@@ -14,8 +14,6 @@ import argparse
 import asyncio
 import os
 
-from recon_graphrag import GraphRAG
-
 try:
     from .common import (
         configure_movie_rag,
@@ -82,11 +80,11 @@ async def run_search_suite(
     _, store, _ = get_backend_targets(backend)[0]
     llm = get_llm(llm_provider)
     embedder = get_embedder(embedder_provider)
-    graph_rag = configure_movie_rag(GraphRAG(store, llm, embedder))
+    search_instances = configure_movie_rag(store, llm, embedder)
     suite = MOVIE_QUERY_SUITE
     if limit is not None:
         suite = suite[:limit]
-    await run_movie_search_suite(graph_rag, suite, modes_filter=modes)
+    await run_movie_search_suite(search_instances, suite, modes_filter=modes)
 
 
 if __name__ == "__main__":

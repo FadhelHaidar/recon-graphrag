@@ -192,18 +192,6 @@ class TestTopKRelationships:
         # Store returns 20 relationships; default cap is 10
         assert result.context.count("REL_") == 10
 
-    def test_graphrag_passes_top_k_relationships(self):
-        """GraphRAG orchestrator passes top_k_relationships to LocalSearchRetriever."""
-        from recon_graphrag.retrieval.search import GraphRAG
-
-        store = FakeGraphStore()
-        grag = GraphRAG(store, FakeLLM(), FakeEmbedder(), top_k_relationships=5)
-        assert grag.local.top_k_relationships == 5
-
-
-# ---------------------------------------------------------------------------
-# P2: allow_general_knowledge
-# ---------------------------------------------------------------------------
 
 
 def _make_gk_reports(n: int = 2) -> list[dict]:
@@ -454,18 +442,3 @@ class TestDriftActionMixedContext:
         # If any actions ran with mixed context, builder should exist
         # (it's created lazily in _build_action_mixed_context)
 
-
-# ---------------------------------------------------------------------------
-# GraphRAG orchestrator
-# ---------------------------------------------------------------------------
-
-
-class TestGraphRAGOrchestrator:
-    @pytest.mark.asyncio
-    async def test_search_rejects_invalid_mode(self):
-        """GraphRAG.search raises ValueError for unknown mode."""
-        from recon_graphrag.retrieval.search import GraphRAG
-
-        grag = GraphRAG(FakeGraphStore(), FakeLLM(), FakeEmbedder())
-        with pytest.raises(ValueError, match="Unknown search mode"):
-            await grag.search("query", mode="invalid")
