@@ -37,8 +37,8 @@ For questions, troubleshooting help, or general discussion, use GitHub Discussio
 1. Fork and clone the repository:
 
    ```bash
-   git clone https://github.com/YOUR_USERNAME/Recon-GraphRAG.git
-   cd Recon-GraphRAG
+   git clone https://github.com/YOUR_USERNAME/recon-graphrag.git
+   cd recon-graphrag
    ```
 
 2. Install dependencies. We recommend using `uv`:
@@ -157,7 +157,7 @@ Release Please uses these signals to determine that the next release should be a
 
 ## Pull request process
 
-1. Open your pull request against the `master` branch.
+1. Open your pull request against the `main` branch.
 2. Fill in the PR description with:
    - What changed and why.
    - Any breaking changes.

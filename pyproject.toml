@@ -32,11 +32,11 @@ evaluation = ["pydantic>=2.0"]
 dev = ["pytest>=8.0", "pytest-asyncio>=1.3.0", "pydantic>=2.0", "openpyxl>=3.1"]
 
 [project.urls]
-Homepage = "https://github.com/FadhelHaidar/Recon-GraphRAG"
-Documentation = "https://github.com/FadhelHaidar/Recon-GraphRAG#readme"
-Repository = "https://github.com/FadhelHaidar/Recon-GraphRAG.git"
-Issues = "https://github.com/FadhelHaidar/Recon-GraphRAG/issues"
-Changelog = "https://github.com/FadhelHaidar/Recon-GraphRAG/blob/master/CHANGELOG.md"
+Homepage = "https://github.com/FadhelHaidar/recon-graphrag"
+Documentation = "https://github.com/FadhelHaidar/recon-graphrag#readme"
+Repository = "https://github.com/FadhelHaidar/recon-graphrag.git"
+Issues = "https://github.com/FadhelHaidar/recon-graphrag/issues"
+Changelog = "https://github.com/FadhelHaidar/recon-graphrag/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 include = ["recon_graphrag*"]

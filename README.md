@@ -1,9 +1,9 @@
 # Recon-GraphRAG
 
-[![CI](https://github.com/FadhelHaidar/Recon-GraphRAG/actions/workflows/ci.yml/badge.svg)](https://github.com/FadhelHaidar/Recon-GraphRAG/actions/workflows/ci.yml)
+[![CI](https://github.com/FadhelHaidar/recon-graphrag/actions/workflows/ci.yml/badge.svg)](https://github.com/FadhelHaidar/recon-graphrag/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![GitHub Release](https://img.shields.io/github/v/release/FadhelHaidar/Recon-GraphRAG)](https://github.com/FadhelHaidar/Recon-GraphRAG/releases)
+[![GitHub Release](https://img.shields.io/github/v/release/FadhelHaidar/recon-graphrag)](https://github.com/FadhelHaidar/recon-graphrag/releases)
 
 Domain-agnostic GraphRAG SDK for Neo4j and Memgraph, with a pluggable graph-store backend and the [Microsoft GraphRAG](https://microsoft.github.io/graphrag/) philosophy.
 
@@ -79,14 +79,14 @@ Neo4j and Memgraph implement the same `GraphStore` contract. Their index and com
 The package is not yet on PyPI. Install it directly from GitHub with `uv`:
 
 ```bash
-uv add git+https://github.com/FadhelHaidar/Recon-GraphRAG.git
+uv add git+https://github.com/FadhelHaidar/recon-graphrag.git
 uv sync
 ```
 
 With optional extras:
 
 ```bash
-uv add "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git"
+uv add "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/recon-graphrag.git"
 uv sync
 ```
 
@@ -95,7 +95,7 @@ uv sync
 Pin to a specific release:
 
 ```bash
-uv add git+https://github.com/FadhelHaidar/Recon-GraphRAG.git@v0.4.0
+uv add git+https://github.com/FadhelHaidar/recon-graphrag.git@v0.4.0
 uv sync
 ```
 
@@ -186,8 +186,8 @@ For a step-by-step walkthrough, see [docs/02-quickstart.md](docs/02-quickstart.m
 | Provider | LLM | Embeddings | Notes |
 |---|---|---|---|
 | OpenAI | ✅ | ✅ | Default, recommended |
-| Anthropic | ✅ | — | `uv add "recon-graphrag[anthropic] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git"` |
-| Ollama | ✅ | ✅ | `uv add "recon-graphrag[ollama] @ git+https://github.com/FadhelHaidar/Recon-GraphRAG.git"` |
+| Anthropic | ✅ | — | `uv add "recon-graphrag[anthropic] @ git+https://github.com/FadhelHaidar/recon-graphrag.git"` |
+| Ollama | ✅ | ✅ | `uv add "recon-graphrag[ollama] @ git+https://github.com/FadhelHaidar/recon-graphrag.git"` |
 | Sentence Transformers | — | ✅ | Local embeddings, no API key needed |
 | OpenRouter | ✅ | — | Via OpenAI-compatible interface |
 
