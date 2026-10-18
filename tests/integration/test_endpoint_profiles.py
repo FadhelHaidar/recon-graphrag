@@ -139,6 +139,76 @@ def test_openai_factory_defaults_remain_available(monkeypatch, provider_creators
     )
 
 
+@pytest.mark.parametrize("provider", [None, "OPENAI"])
+@pytest.mark.parametrize("value", [None, "", "true", "false"])
+@pytest.mark.parametrize("effort", [None, "", "none", "minimal", "low", "medium", "high", "xhigh"])
+def test_openai_reasoning_settings_preserve_independent_embedding_profile(
+    monkeypatch, provider_creators, provider, value, effort,
+):
+    select_legacy_openai(monkeypatch)
+    monkeypatch.setenv("EMBEDDING_MODEL", "profile-embedding")
+    monkeypatch.setenv("EMBEDDING_BASE_URL", "http://embedding.invalid/v1")
+    monkeypatch.setenv("EMBEDDING_API_KEY", "synthetic-embedding-key")
+    if value is not None:
+        monkeypatch.setenv("LLM_ENABLE_THINKING", value)
+    if effort is not None:
+        monkeypatch.setenv("LLM_REASONING_EFFORT", effort)
+
+    factories.get_llm(provider)
+    factories.get_embedder(provider)
+    expected = {
+        "model_name": "legacy-chat", "base_url": None,
+        "api_key": "synthetic-legacy-key",
+    }
+    model_params = {}
+    if value in ("true", "false"):
+        model_params["extra_body"] = {
+            "chat_template_kwargs": {"enable_thinking": value == "true"}
+        }
+    if effort:
+        model_params["reasoning_effort"] = effort
+    if model_params:
+        expected["model_params"] = model_params
+    provider_creators["llm"].assert_called_once_with("openai", **expected)
+    provider_creators["embedder"].assert_called_once_with(
+        "openai", model="profile-embedding", base_url="http://embedding.invalid/v1",
+        api_key="synthetic-embedding-key",
+    )
+    validate_openai()
+
+
+@pytest.mark.parametrize("value", ["1", "0", "yes", "TRUE", "False", " ", "synthetic-secret"])
+def test_openai_thinking_toggle_rejects_invalid_values_without_leaking_them(
+    monkeypatch, provider_creators, value,
+):
+    select_legacy_openai(monkeypatch)
+    monkeypatch.setenv("LLM_ENABLE_THINKING", value)
+    with pytest.raises(ValueError) as exc:
+        factories.get_llm()
+    assert str(exc.value) == "LLM_ENABLE_THINKING must be true or false"
+    provider_creators["llm"].assert_not_called()
+    factories.get_embedder()
+    provider_creators["embedder"].assert_called_once_with(
+        "openai", model="legacy-embedding", base_url=None, api_key="synthetic-legacy-key",
+    )
+
+
+@pytest.mark.parametrize("value", ["HIGH", "false", "1", " ", "synthetic-secret"])
+def test_openai_reasoning_effort_rejects_invalid_values_without_leaking_them(
+    monkeypatch, provider_creators, value,
+):
+    select_legacy_openai(monkeypatch)
+    monkeypatch.setenv("LLM_REASONING_EFFORT", value)
+    with pytest.raises(ValueError) as exc:
+        factories.get_llm()
+    assert str(exc.value) == "Invalid LLM_REASONING_EFFORT"
+    provider_creators["llm"].assert_not_called()
+    factories.get_embedder()
+    provider_creators["embedder"].assert_called_once_with(
+        "openai", model="legacy-embedding", base_url=None, api_key="synthetic-legacy-key",
+    )
+
+
 @pytest.mark.parametrize("validator", ["selected", "tier"])
 @pytest.mark.parametrize("fail_on_missing", [True, False])
 @pytest.mark.parametrize("missing_field", ["model", "key"])
@@ -191,6 +261,8 @@ def test_no_profile_preserves_legacy_model_validation(monkeypatch, validator):
 
 @pytest.mark.parametrize("provider", [None, "azure_openai", "openrouter", "sentence-transformer"])
 def test_profiles_do_not_change_other_provider_paths(monkeypatch, provider_creators, provider):
+    monkeypatch.setenv("LLM_ENABLE_THINKING", "ignored-invalid-value")
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "ignored-invalid-value")
     for prefix in ("LLM", "EMBEDDING"):
         monkeypatch.setenv(f"{prefix}_MODEL", "ignored-profile-model")
         monkeypatch.setenv(f"{prefix}_API_KEY", "synthetic-ignored-key")

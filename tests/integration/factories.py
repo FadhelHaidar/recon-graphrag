@@ -12,12 +12,9 @@ import os
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
 
-from recon_graphrag import (
-    MemgraphGraphStore,
-    Neo4jGraphStore,
-    create_embedder,
-    create_llm,
-)
+from recon_graphrag import create_embedder, create_llm
+from recon_graphrag.graphdb.memgraph.store import MemgraphGraphStore
+from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
 
 load_dotenv()
 
@@ -63,6 +60,19 @@ def get_llm(provider: str | None = None):
         )
 
     if provider == "openai":
+        enable_thinking = os.getenv("LLM_ENABLE_THINKING")
+        model_params = {}
+        if enable_thinking not in (None, ""):
+            if enable_thinking not in ("true", "false"):
+                raise ValueError("LLM_ENABLE_THINKING must be true or false")
+            model_params["extra_body"] = {
+                "chat_template_kwargs": {"enable_thinking": enable_thinking == "true"}
+            }
+        reasoning_effort = os.getenv("LLM_REASONING_EFFORT")
+        if reasoning_effort not in (None, ""):
+            if reasoning_effort not in ("none", "minimal", "low", "medium", "high", "xhigh"):
+                raise ValueError("Invalid LLM_REASONING_EFFORT")
+            model_params["reasoning_effort"] = reasoning_effort
         return create_llm(
             "openai",
             model_name=(
@@ -72,6 +82,7 @@ def get_llm(provider: str | None = None):
             ),
             base_url=os.getenv("LLM_BASE_URL") or None,
             api_key=os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY"),
+            **({"model_params": model_params} if model_params else {}),
         )
 
     if provider == "azure_openai":

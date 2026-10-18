@@ -175,6 +175,59 @@ This is useful for OpenAI's `dimensions` or `encoding_format` parameters, and fo
 
 ---
 
+## Thinking and reasoning effort
+
+Thinking switches and reasoning effort are model-specific request options, not
+universal capabilities of OpenAI-compatible endpoints. The SDK does not choose a
+reasoning default or infer capabilities from a model name. If you omit these
+options, the model/server determines its own behavior.
+
+| Situation | Configuration |
+| --- | --- |
+| Non-thinking model | Omit both options. Even a thinking switch set to `False` may be unsupported. |
+| Thinking model, provider defaults wanted | Omit both options. No effort level is selected by the SDK. |
+| Endpoint supports a thinking switch | Set its documented switch explicitly. |
+| Endpoint supports reasoning effort | Set a level accepted by that model and endpoint. |
+
+For a Qwen-compatible endpoint supporting `chat_template_kwargs.enable_thinking`:
+
+```python
+llm = create_llm(
+    "openai",
+    model_name="your-qwen-model",
+    base_url="http://localhost:8000/v1",
+    api_key="your-api-key",
+    model_params={
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+    },
+)
+```
+
+For a model supporting the standard `reasoning_effort` request parameter:
+
+```python
+llm = create_llm(
+    "openai",
+    model_name="your-reasoning-model",
+    api_key="your-api-key",
+    model_params={"reasoning_effort": "low"},
+)
+```
+
+These are alternative examples, not interchangeable settings. An explicit `none`
+effort is not the same as omission and is not supported by every reasoning model.
+Only combine effort with a thinking switch if the endpoint supports both. Request
+options are forwarded as supplied; the SDK does not silently remove unsupported
+options or retry without them. An endpoint may reject or ignore an option, so HTTP
+success alone does not establish that it took effect.
+
+The SDK does not read `LLM_ENABLE_THINKING` or `LLM_REASONING_EFFORT` from `.env`.
+Those settings configure the repository's OpenAI-compatible integration-test
+factory only. Application code must pass `model_params` explicitly, as above.
+See [test profile configuration](10-testing.md#optional-openai-compatible-test-settings).
+
+---
+
 ## Embedding dimensions
 
 Most providers have a fixed output dimension. Make sure the `embedding_dim` passed to `store.create_indexes()` matches your embedder.

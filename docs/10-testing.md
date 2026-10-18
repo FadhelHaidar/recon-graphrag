@@ -131,6 +131,67 @@ The selected provider variables must also be configured:
 | OpenRouter embedder | `OPENROUTER_API_KEY`, `OPENROUTER_EMBED_MODEL` |
 | Sentence-Transformers embedder | No provider credentials; the local model dependency must be installed |
 
+### Optional OpenAI-compatible test settings
+
+For `LLM_PROVIDER=openai`, the test-owned factory accepts independent `LLM_MODEL`,
+`LLM_BASE_URL`, and `LLM_API_KEY` overrides. Embeddings use their own
+`EMBEDDING_MODEL`, `EMBEDDING_BASE_URL`, and `EMBEDDING_API_KEY` overrides.
+Nonempty overrides take precedence over the legacy OpenAI settings above.
+
+Two optional `.env` settings control LLM requests only:
+
+| Variable | Accepted values | Forwarded request option |
+| --- | --- | --- |
+| `LLM_ENABLE_THINKING` | Strict lowercase `true` or `false` | `extra_body.chat_template_kwargs.enable_thinking` (boolean) |
+| `LLM_REASONING_EFFORT` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` | `reasoning_effort` (string) |
+
+Unset or empty values omit the corresponding option, preserving existing behavior.
+Invalid nonempty values raise `ValueError` before LLM creation without echoing values.
+The accepted effort values are the factory's validation list, not a guarantee
+that every model supports all of them. These are separate controls with no
+automatic mapping; enable only options your endpoint supports. Neither affects
+embeddings, Azure test setup, or OpenRouter's existing reasoning setting.
+
+| Model / desired behavior | `.env` settings |
+| --- | --- |
+| Non-thinking model | Leave both variables empty or unset. |
+| Thinking model using server defaults | Leave both variables empty or unset; no default effort is injected. |
+| Qwen-compatible endpoint with thinking disabled | Set `LLM_ENABLE_THINKING=false`; leave effort empty unless separately supported. |
+| Model with supported effort control | Set `LLM_REASONING_EFFORT` to a supported level; leave the switch empty unless separately supported. |
+
+For example, to disable thinking on a compatible Qwen endpoint:
+
+```dotenv
+LLM_PROVIDER=openai
+LLM_ENABLE_THINKING=false
+LLM_REASONING_EFFORT=
+```
+
+When changing models, revisit these overrides. `false` still sends a switch and
+can be unsupported by a non-thinking model; `none` sends an explicit effort and
+is not equivalent to leaving effort unset. Provider rejections are surfaced
+without silently dropping options. Some endpoints may ignore unsupported options,
+so check provider documentation and reported reasoning usage rather than relying
+only on a successful HTTP response.
+
+These environment variables belong only to the integration-test factory; the SDK
+does not read them. Application code can already use the public high-level factory
+explicitly, choosing supported options via `model_params`, for example:
+
+```python
+from recon_graphrag import create_llm
+
+llm = create_llm(
+    "openai",
+    model_name="your-supported-model",
+    model_params={"reasoning_effort": "low"},
+)
+```
+
+For a compatible Qwen endpoint, use
+`model_params={"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}`
+instead, or include both keys only if that endpoint supports both options.
+
 ---
 
 ## Recommended commands
