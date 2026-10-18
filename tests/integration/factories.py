@@ -3,6 +3,8 @@
 Duplicated from examples/config.py so that integration tests do not depend on
 the examples package. Environment variable names and defaults are intentionally
 compatible with examples/config.py and aligned with tests/integration/support.py.
+For the selected OpenAI provider, nonempty LLM_*/EMBEDDING_* profile values
+independently override legacy settings; unset URLs retain SDK defaults.
 """
 
 import os
@@ -10,12 +12,9 @@ import os
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
 
-from recon_graphrag import (
-    MemgraphGraphStore,
-    Neo4jGraphStore,
-    create_embedder,
-    create_llm,
-)
+from recon_graphrag import create_embedder, create_llm
+from recon_graphrag.graphdb.memgraph.store import MemgraphGraphStore
+from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
 
 load_dotenv()
 
@@ -61,10 +60,29 @@ def get_llm(provider: str | None = None):
         )
 
     if provider == "openai":
+        enable_thinking = os.getenv("LLM_ENABLE_THINKING")
+        model_params = {}
+        if enable_thinking not in (None, ""):
+            if enable_thinking not in ("true", "false"):
+                raise ValueError("LLM_ENABLE_THINKING must be true or false")
+            model_params["extra_body"] = {
+                "chat_template_kwargs": {"enable_thinking": enable_thinking == "true"}
+            }
+        reasoning_effort = os.getenv("LLM_REASONING_EFFORT")
+        if reasoning_effort not in (None, ""):
+            if reasoning_effort not in ("none", "minimal", "low", "medium", "high", "xhigh"):
+                raise ValueError("Invalid LLM_REASONING_EFFORT")
+            model_params["reasoning_effort"] = reasoning_effort
         return create_llm(
             "openai",
-            model_name=os.getenv("OPENAI_LLM_MODEL", "gpt-4o-mini"),
-            api_key=os.getenv("OPENAI_API_KEY"),
+            model_name=(
+                os.getenv("LLM_MODEL")
+                or os.getenv("OPENAI_LLM_MODEL")
+                or "gpt-4o-mini"
+            ),
+            base_url=os.getenv("LLM_BASE_URL") or None,
+            api_key=os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY"),
+            **({"model_params": model_params} if model_params else {}),
         )
 
     if provider == "azure_openai":
@@ -102,8 +120,13 @@ def get_embedder(provider: str | None = None):
     if provider == "openai":
         return create_embedder(
             "openai",
-            model=os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small"),
-            api_key=os.getenv("OPENAI_API_KEY"),
+            model=(
+                os.getenv("EMBEDDING_MODEL")
+                or os.getenv("OPENAI_EMBED_MODEL")
+                or "text-embedding-3-small"
+            ),
+            base_url=os.getenv("EMBEDDING_BASE_URL") or None,
+            api_key=os.getenv("EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY"),
         )
 
     if provider == "sentence-transformer":

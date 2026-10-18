@@ -16,13 +16,15 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from tests.integration.factories import get_memgraph_store, get_neo4j_store
-from recon_graphrag import CommunityPipeline, GraphBuilderPipeline, IndexManager
+from recon_graphrag import CommunityPipeline, GraphBuilderPipeline
+from recon_graphrag.graphdb.index_manager import IndexManager
 from recon_graphrag.extraction.schema import (
     GraphSchema,
     NodeType,
     PropertyType,
     RelationshipType,
 )
+from recon_graphrag.llm.base import LLMResponse, LLMUsage
 from tests.integration.support import cleanup_graph, single_count, require_integration_env
 
 # ---------------------------------------------------------------------------
@@ -72,8 +74,11 @@ _EXTRACTION_RESPONSE = json.dumps({
 
 
 def _make_fake_llm():
-    llm = MagicMock()
-    llm.ainvoke = AsyncMock(return_value=MagicMock(content=_EXTRACTION_RESPONSE))
+    llm = MagicMock(model_name="deterministic-fake")
+    llm.ainvoke = AsyncMock(return_value=LLMResponse(
+        content=_EXTRACTION_RESPONSE,
+        usage=LLMUsage(request_tokens=100, response_tokens=150, total_tokens=250),
+    ))
     llm.aclose = AsyncMock()
     return llm
 
@@ -208,10 +213,8 @@ async def _run_deterministic_workflow(store, graph_name: str):
         print(f"  Relationship types: {rel_types}")
 
     finally:
-        for resource in (llm, embedder):
-            close = getattr(resource, "aclose", None)
-            if callable(close):
-                await close()
+        await llm.aclose()
+        await embedder.aclose()
 
 
 # ---------------------------------------------------------------------------

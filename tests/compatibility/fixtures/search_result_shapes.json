@@ -1,0 +1,1143 @@
+{
+  "local:synthesize=False:tracked=False": {
+    "result": {
+      "query": "str",
+      "mode": "str",
+      "answer": "str",
+      "context": "str",
+      "citations": [
+        {
+          "document_id": "str",
+          "chunk_id": "str",
+          "document_name": "str",
+          "page_start": "NoneType",
+          "page_end": "NoneType",
+          "excerpt": "str",
+          "metadata": {
+            "collection": "str",
+            "record_id": "str",
+            "source": "str",
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str"
+          }
+        }
+      ],
+      "metadata": {
+        "synthesize_response": "bool",
+        "response_synthesis_skipped": "bool"
+      }
+    },
+    "sources": [
+      {
+        "document_id": "str",
+        "document_name": "str",
+        "chunk_list": [
+          {
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str",
+            "page_start": "NoneType",
+            "page_end": "NoneType",
+            "excerpt": "str",
+            "metadata": {
+              "collection": "str",
+              "record_id": "str",
+              "source": "str",
+              "document_id": "str",
+              "chunk_id": "str",
+              "document_name": "str"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "local-mixed:synthesize=False:tracked=False": {
+    "result": {
+      "query": "str",
+      "mode": "str",
+      "answer": "str",
+      "context": "str",
+      "citations": [
+        {
+          "document_id": "str",
+          "chunk_id": "str",
+          "document_name": "str",
+          "page_start": "NoneType",
+          "page_end": "NoneType",
+          "excerpt": "str",
+          "metadata": {
+            "collection": "str",
+            "record_id": "str",
+            "source": "str",
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str"
+          }
+        }
+      ],
+      "metadata": {
+        "synthesize_response": "bool",
+        "response_synthesis_skipped": "bool",
+        "mixed_context": "bool",
+        "used_tokens": "int",
+        "max_tokens": "int"
+      }
+    },
+    "sources": [
+      {
+        "document_id": "str",
+        "document_name": "str",
+        "chunk_list": [
+          {
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str",
+            "page_start": "NoneType",
+            "page_end": "NoneType",
+            "excerpt": "str",
+            "metadata": {
+              "collection": "str",
+              "record_id": "str",
+              "source": "str",
+              "document_id": "str",
+              "chunk_id": "str",
+              "document_name": "str"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "global:synthesize=False:tracked=False": {
+    "result": {
+      "query": "str",
+      "mode": "str",
+      "answer": "str",
+      "context": "str",
+      "citations": [
+        {
+          "document_id": "str",
+          "chunk_id": "str",
+          "document_name": "str",
+          "page_start": "NoneType",
+          "page_end": "NoneType",
+          "excerpt": "str",
+          "metadata": {
+            "collection": "str",
+            "record_id": "str",
+            "source": "str",
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str"
+          }
+        }
+      ],
+      "metadata": {
+        "selected_level": "int",
+        "random_seed": "int",
+        "reports_available": "int",
+        "reports_used": "int",
+        "map_batches": "int",
+        "map_succeeded": "int",
+        "map_failed": "int",
+        "map_filtered_zero": "int",
+        "reduce_partials_used": "int",
+        "source_report_ids_used": "int",
+        "source_references_extracted": "int",
+        "source_citations_resolved": "int",
+        "source_resolution_errors": [],
+        "elapsed_ms": "int",
+        "synthesize_response": "bool",
+        "response_synthesis_skipped": "bool"
+      }
+    },
+    "sources": [
+      {
+        "document_id": "str",
+        "document_name": "str",
+        "chunk_list": [
+          {
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str",
+            "page_start": "NoneType",
+            "page_end": "NoneType",
+            "excerpt": "str",
+            "metadata": {
+              "collection": "str",
+              "record_id": "str",
+              "source": "str",
+              "document_id": "str",
+              "chunk_id": "str",
+              "document_name": "str"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "drift:synthesize=False:tracked=False": {
+    "result": {
+      "query": "str",
+      "mode": "str",
+      "answer": "str",
+      "context": "str",
+      "citations": [
+        {
+          "document_id": "str",
+          "chunk_id": "str",
+          "document_name": "str",
+          "page_start": "NoneType",
+          "page_end": "NoneType",
+          "excerpt": "str",
+          "metadata": {
+            "collection": "str",
+            "record_id": "str",
+            "source": "str",
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str"
+          }
+        }
+      ],
+      "metadata": {
+        "synthesize_response": "bool",
+        "response_synthesis_skipped": "bool",
+        "drift_trace": {
+          "primer_report_ids": [
+            "str"
+          ],
+          "generated_questions": [],
+          "actions": [
+            {
+              "id": "str",
+              "parent_id": "NoneType",
+              "depth": "int",
+              "query": "str",
+              "answer": "str",
+              "score": "float",
+              "status": "str"
+            }
+          ],
+          "stopping_reason": "str",
+          "total_llm_calls": "int",
+          "phase_tokens": {
+            "primer": "int",
+            "elapsed_ms": "int"
+          },
+          "failures": []
+        }
+      }
+    },
+    "sources": [
+      {
+        "document_id": "str",
+        "document_name": "str",
+        "chunk_list": [
+          {
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str",
+            "page_start": "NoneType",
+            "page_end": "NoneType",
+            "excerpt": "str",
+            "metadata": {
+              "collection": "str",
+              "record_id": "str",
+              "source": "str",
+              "document_id": "str",
+              "chunk_id": "str",
+              "document_name": "str"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "local:synthesize=True:tracked=False": {
+    "result": {
+      "query": "str",
+      "mode": "str",
+      "answer": "str",
+      "context": "str",
+      "citations": [
+        {
+          "document_id": "str",
+          "chunk_id": "str",
+          "document_name": "str",
+          "page_start": "NoneType",
+          "page_end": "NoneType",
+          "excerpt": "str",
+          "metadata": {
+            "collection": "str",
+            "record_id": "str",
+            "source": "str",
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str"
+          }
+        }
+      ],
+      "metadata": {}
+    },
+    "sources": [
+      {
+        "document_id": "str",
+        "document_name": "str",
+        "chunk_list": [
+          {
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str",
+            "page_start": "NoneType",
+            "page_end": "NoneType",
+            "excerpt": "str",
+            "metadata": {
+              "collection": "str",
+              "record_id": "str",
+              "source": "str",
+              "document_id": "str",
+              "chunk_id": "str",
+              "document_name": "str"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "local-mixed:synthesize=True:tracked=False": {
+    "result": {
+      "query": "str",
+      "mode": "str",
+      "answer": "str",
+      "context": "str",
+      "citations": [
+        {
+          "document_id": "str",
+          "chunk_id": "str",
+          "document_name": "str",
+          "page_start": "NoneType",
+          "page_end": "NoneType",
+          "excerpt": "str",
+          "metadata": {
+            "collection": "str",
+            "record_id": "str",
+            "source": "str",
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str"
+          }
+        }
+      ],
+      "metadata": {
+        "mixed_context": "bool",
+        "used_tokens": "int",
+        "max_tokens": "int"
+      }
+    },
+    "sources": [
+      {
+        "document_id": "str",
+        "document_name": "str",
+        "chunk_list": [
+          {
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str",
+            "page_start": "NoneType",
+            "page_end": "NoneType",
+            "excerpt": "str",
+            "metadata": {
+              "collection": "str",
+              "record_id": "str",
+              "source": "str",
+              "document_id": "str",
+              "chunk_id": "str",
+              "document_name": "str"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "global:synthesize=True:tracked=False": {
+    "result": {
+      "query": "str",
+      "mode": "str",
+      "answer": "str",
+      "context": "str",
+      "citations": [
+        {
+          "document_id": "str",
+          "chunk_id": "str",
+          "document_name": "str",
+          "page_start": "NoneType",
+          "page_end": "NoneType",
+          "excerpt": "str",
+          "metadata": {
+            "collection": "str",
+            "record_id": "str",
+            "source": "str",
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str"
+          }
+        }
+      ],
+      "metadata": {
+        "selected_level": "int",
+        "random_seed": "int",
+        "reports_available": "int",
+        "reports_used": "int",
+        "map_batches": "int",
+        "map_succeeded": "int",
+        "map_failed": "int",
+        "map_filtered_zero": "int",
+        "reduce_partials_used": "int",
+        "source_report_ids_used": "int",
+        "source_references_extracted": "int",
+        "source_citations_resolved": "int",
+        "source_resolution_errors": [],
+        "elapsed_ms": "int"
+      }
+    },
+    "sources": [
+      {
+        "document_id": "str",
+        "document_name": "str",
+        "chunk_list": [
+          {
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str",
+            "page_start": "NoneType",
+            "page_end": "NoneType",
+            "excerpt": "str",
+            "metadata": {
+              "collection": "str",
+              "record_id": "str",
+              "source": "str",
+              "document_id": "str",
+              "chunk_id": "str",
+              "document_name": "str"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "drift:synthesize=True:tracked=False": {
+    "result": {
+      "query": "str",
+      "mode": "str",
+      "answer": "str",
+      "context": "str",
+      "citations": [
+        {
+          "document_id": "str",
+          "chunk_id": "str",
+          "document_name": "str",
+          "page_start": "NoneType",
+          "page_end": "NoneType",
+          "excerpt": "str",
+          "metadata": {
+            "collection": "str",
+            "record_id": "str",
+            "source": "str",
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str"
+          }
+        }
+      ],
+      "metadata": {
+        "drift_trace": {
+          "primer_report_ids": [
+            "str"
+          ],
+          "generated_questions": [],
+          "actions": [
+            {
+              "id": "str",
+              "parent_id": "NoneType",
+              "depth": "int",
+              "query": "str",
+              "answer": "str",
+              "score": "float",
+              "status": "str"
+            }
+          ],
+          "stopping_reason": "str",
+          "total_llm_calls": "int",
+          "phase_tokens": {
+            "primer": "int",
+            "elapsed_ms": "int",
+            "reduce": "int"
+          },
+          "failures": []
+        }
+      }
+    },
+    "sources": [
+      {
+        "document_id": "str",
+        "document_name": "str",
+        "chunk_list": [
+          {
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str",
+            "page_start": "NoneType",
+            "page_end": "NoneType",
+            "excerpt": "str",
+            "metadata": {
+              "collection": "str",
+              "record_id": "str",
+              "source": "str",
+              "document_id": "str",
+              "chunk_id": "str",
+              "document_name": "str"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "local:synthesize=False:tracked=True": {
+    "result": {
+      "query": "str",
+      "mode": "str",
+      "answer": "str",
+      "context": "str",
+      "citations": [
+        {
+          "document_id": "str",
+          "chunk_id": "str",
+          "document_name": "str",
+          "page_start": "NoneType",
+          "page_end": "NoneType",
+          "excerpt": "str",
+          "metadata": {
+            "collection": "str",
+            "record_id": "str",
+            "source": "str",
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str"
+          }
+        }
+      ],
+      "metadata": {
+        "synthesize_response": "bool",
+        "response_synthesis_skipped": "bool"
+      }
+    },
+    "sources": [
+      {
+        "document_id": "str",
+        "document_name": "str",
+        "chunk_list": [
+          {
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str",
+            "page_start": "NoneType",
+            "page_end": "NoneType",
+            "excerpt": "str",
+            "metadata": {
+              "collection": "str",
+              "record_id": "str",
+              "source": "str",
+              "document_id": "str",
+              "chunk_id": "str",
+              "document_name": "str"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "local-mixed:synthesize=False:tracked=True": {
+    "result": {
+      "query": "str",
+      "mode": "str",
+      "answer": "str",
+      "context": "str",
+      "citations": [
+        {
+          "document_id": "str",
+          "chunk_id": "str",
+          "document_name": "str",
+          "page_start": "NoneType",
+          "page_end": "NoneType",
+          "excerpt": "str",
+          "metadata": {
+            "collection": "str",
+            "record_id": "str",
+            "source": "str",
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str"
+          }
+        }
+      ],
+      "metadata": {
+        "synthesize_response": "bool",
+        "response_synthesis_skipped": "bool",
+        "mixed_context": "bool",
+        "used_tokens": "int",
+        "max_tokens": "int"
+      }
+    },
+    "sources": [
+      {
+        "document_id": "str",
+        "document_name": "str",
+        "chunk_list": [
+          {
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str",
+            "page_start": "NoneType",
+            "page_end": "NoneType",
+            "excerpt": "str",
+            "metadata": {
+              "collection": "str",
+              "record_id": "str",
+              "source": "str",
+              "document_id": "str",
+              "chunk_id": "str",
+              "document_name": "str"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "global:synthesize=False:tracked=True": {
+    "result": {
+      "query": "str",
+      "mode": "str",
+      "answer": "str",
+      "context": "str",
+      "citations": [
+        {
+          "document_id": "str",
+          "chunk_id": "str",
+          "document_name": "str",
+          "page_start": "NoneType",
+          "page_end": "NoneType",
+          "excerpt": "str",
+          "metadata": {
+            "collection": "str",
+            "record_id": "str",
+            "source": "str",
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str"
+          }
+        }
+      ],
+      "metadata": {
+        "selected_level": "int",
+        "random_seed": "int",
+        "reports_available": "int",
+        "reports_used": "int",
+        "map_batches": "int",
+        "map_succeeded": "int",
+        "map_failed": "int",
+        "map_filtered_zero": "int",
+        "reduce_partials_used": "int",
+        "source_report_ids_used": "int",
+        "source_references_extracted": "int",
+        "source_citations_resolved": "int",
+        "source_resolution_errors": [],
+        "elapsed_ms": "int",
+        "synthesize_response": "bool",
+        "response_synthesis_skipped": "bool",
+        "token_usage": {
+          "run_id": "str",
+          "totals": {
+            "calls": "int",
+            "input_tokens": "int",
+            "output_tokens": "int",
+            "total_tokens": "int",
+            "estimated_calls": "int"
+          },
+          "stages": {
+            "retrieval.global_map": {
+              "calls": "int",
+              "input_tokens": "int",
+              "output_tokens": "int",
+              "total_tokens": "int",
+              "estimated_calls": "int"
+            }
+          }
+        }
+      }
+    },
+    "sources": [
+      {
+        "document_id": "str",
+        "document_name": "str",
+        "chunk_list": [
+          {
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str",
+            "page_start": "NoneType",
+            "page_end": "NoneType",
+            "excerpt": "str",
+            "metadata": {
+              "collection": "str",
+              "record_id": "str",
+              "source": "str",
+              "document_id": "str",
+              "chunk_id": "str",
+              "document_name": "str"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "drift:synthesize=False:tracked=True": {
+    "result": {
+      "query": "str",
+      "mode": "str",
+      "answer": "str",
+      "context": "str",
+      "citations": [
+        {
+          "document_id": "str",
+          "chunk_id": "str",
+          "document_name": "str",
+          "page_start": "NoneType",
+          "page_end": "NoneType",
+          "excerpt": "str",
+          "metadata": {
+            "collection": "str",
+            "record_id": "str",
+            "source": "str",
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str"
+          }
+        }
+      ],
+      "metadata": {
+        "synthesize_response": "bool",
+        "response_synthesis_skipped": "bool",
+        "drift_trace": {
+          "primer_report_ids": [
+            "str"
+          ],
+          "generated_questions": [],
+          "actions": [
+            {
+              "id": "str",
+              "parent_id": "NoneType",
+              "depth": "int",
+              "query": "str",
+              "answer": "str",
+              "score": "float",
+              "status": "str"
+            }
+          ],
+          "stopping_reason": "str",
+          "total_llm_calls": "int",
+          "phase_tokens": {
+            "primer": "int",
+            "elapsed_ms": "int"
+          },
+          "failures": []
+        },
+        "token_usage": {
+          "run_id": "str",
+          "totals": {
+            "calls": "int",
+            "input_tokens": "int",
+            "output_tokens": "int",
+            "total_tokens": "int",
+            "estimated_calls": "int"
+          },
+          "stages": {
+            "drift.primer": {
+              "calls": "int",
+              "input_tokens": "int",
+              "output_tokens": "int",
+              "total_tokens": "int",
+              "estimated_calls": "int"
+            }
+          }
+        }
+      }
+    },
+    "sources": [
+      {
+        "document_id": "str",
+        "document_name": "str",
+        "chunk_list": [
+          {
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str",
+            "page_start": "NoneType",
+            "page_end": "NoneType",
+            "excerpt": "str",
+            "metadata": {
+              "collection": "str",
+              "record_id": "str",
+              "source": "str",
+              "document_id": "str",
+              "chunk_id": "str",
+              "document_name": "str"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "local:synthesize=True:tracked=True": {
+    "result": {
+      "query": "str",
+      "mode": "str",
+      "answer": "str",
+      "context": "str",
+      "citations": [
+        {
+          "document_id": "str",
+          "chunk_id": "str",
+          "document_name": "str",
+          "page_start": "NoneType",
+          "page_end": "NoneType",
+          "excerpt": "str",
+          "metadata": {
+            "collection": "str",
+            "record_id": "str",
+            "source": "str",
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str"
+          }
+        }
+      ],
+      "metadata": {
+        "token_usage": {
+          "run_id": "str",
+          "totals": {
+            "calls": "int",
+            "input_tokens": "int",
+            "output_tokens": "int",
+            "total_tokens": "int",
+            "estimated_calls": "int"
+          },
+          "stages": {
+            "retrieval.local": {
+              "calls": "int",
+              "input_tokens": "int",
+              "output_tokens": "int",
+              "total_tokens": "int",
+              "estimated_calls": "int"
+            }
+          }
+        }
+      }
+    },
+    "sources": [
+      {
+        "document_id": "str",
+        "document_name": "str",
+        "chunk_list": [
+          {
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str",
+            "page_start": "NoneType",
+            "page_end": "NoneType",
+            "excerpt": "str",
+            "metadata": {
+              "collection": "str",
+              "record_id": "str",
+              "source": "str",
+              "document_id": "str",
+              "chunk_id": "str",
+              "document_name": "str"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "local-mixed:synthesize=True:tracked=True": {
+    "result": {
+      "query": "str",
+      "mode": "str",
+      "answer": "str",
+      "context": "str",
+      "citations": [
+        {
+          "document_id": "str",
+          "chunk_id": "str",
+          "document_name": "str",
+          "page_start": "NoneType",
+          "page_end": "NoneType",
+          "excerpt": "str",
+          "metadata": {
+            "collection": "str",
+            "record_id": "str",
+            "source": "str",
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str"
+          }
+        }
+      ],
+      "metadata": {
+        "mixed_context": "bool",
+        "used_tokens": "int",
+        "max_tokens": "int",
+        "token_usage": {
+          "run_id": "str",
+          "totals": {
+            "calls": "int",
+            "input_tokens": "int",
+            "output_tokens": "int",
+            "total_tokens": "int",
+            "estimated_calls": "int"
+          },
+          "stages": {
+            "retrieval.local": {
+              "calls": "int",
+              "input_tokens": "int",
+              "output_tokens": "int",
+              "total_tokens": "int",
+              "estimated_calls": "int"
+            }
+          }
+        }
+      }
+    },
+    "sources": [
+      {
+        "document_id": "str",
+        "document_name": "str",
+        "chunk_list": [
+          {
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str",
+            "page_start": "NoneType",
+            "page_end": "NoneType",
+            "excerpt": "str",
+            "metadata": {
+              "collection": "str",
+              "record_id": "str",
+              "source": "str",
+              "document_id": "str",
+              "chunk_id": "str",
+              "document_name": "str"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "global:synthesize=True:tracked=True": {
+    "result": {
+      "query": "str",
+      "mode": "str",
+      "answer": "str",
+      "context": "str",
+      "citations": [
+        {
+          "document_id": "str",
+          "chunk_id": "str",
+          "document_name": "str",
+          "page_start": "NoneType",
+          "page_end": "NoneType",
+          "excerpt": "str",
+          "metadata": {
+            "collection": "str",
+            "record_id": "str",
+            "source": "str",
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str"
+          }
+        }
+      ],
+      "metadata": {
+        "selected_level": "int",
+        "random_seed": "int",
+        "reports_available": "int",
+        "reports_used": "int",
+        "map_batches": "int",
+        "map_succeeded": "int",
+        "map_failed": "int",
+        "map_filtered_zero": "int",
+        "reduce_partials_used": "int",
+        "source_report_ids_used": "int",
+        "source_references_extracted": "int",
+        "source_citations_resolved": "int",
+        "source_resolution_errors": [],
+        "elapsed_ms": "int",
+        "token_usage": {
+          "run_id": "str",
+          "totals": {
+            "calls": "int",
+            "input_tokens": "int",
+            "output_tokens": "int",
+            "total_tokens": "int",
+            "estimated_calls": "int"
+          },
+          "stages": {
+            "retrieval.global_map": {
+              "calls": "int",
+              "input_tokens": "int",
+              "output_tokens": "int",
+              "total_tokens": "int",
+              "estimated_calls": "int"
+            },
+            "retrieval.global_reduce": {
+              "calls": "int",
+              "input_tokens": "int",
+              "output_tokens": "int",
+              "total_tokens": "int",
+              "estimated_calls": "int"
+            }
+          }
+        }
+      }
+    },
+    "sources": [
+      {
+        "document_id": "str",
+        "document_name": "str",
+        "chunk_list": [
+          {
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str",
+            "page_start": "NoneType",
+            "page_end": "NoneType",
+            "excerpt": "str",
+            "metadata": {
+              "collection": "str",
+              "record_id": "str",
+              "source": "str",
+              "document_id": "str",
+              "chunk_id": "str",
+              "document_name": "str"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "drift:synthesize=True:tracked=True": {
+    "result": {
+      "query": "str",
+      "mode": "str",
+      "answer": "str",
+      "context": "str",
+      "citations": [
+        {
+          "document_id": "str",
+          "chunk_id": "str",
+          "document_name": "str",
+          "page_start": "NoneType",
+          "page_end": "NoneType",
+          "excerpt": "str",
+          "metadata": {
+            "collection": "str",
+            "record_id": "str",
+            "source": "str",
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str"
+          }
+        }
+      ],
+      "metadata": {
+        "drift_trace": {
+          "primer_report_ids": [
+            "str"
+          ],
+          "generated_questions": [],
+          "actions": [
+            {
+              "id": "str",
+              "parent_id": "NoneType",
+              "depth": "int",
+              "query": "str",
+              "answer": "str",
+              "score": "float",
+              "status": "str"
+            }
+          ],
+          "stopping_reason": "str",
+          "total_llm_calls": "int",
+          "phase_tokens": {
+            "primer": "int",
+            "elapsed_ms": "int",
+            "reduce": "int"
+          },
+          "failures": []
+        },
+        "token_usage": {
+          "run_id": "str",
+          "totals": {
+            "calls": "int",
+            "input_tokens": "int",
+            "output_tokens": "int",
+            "total_tokens": "int",
+            "estimated_calls": "int"
+          },
+          "stages": {
+            "drift.primer": {
+              "calls": "int",
+              "input_tokens": "int",
+              "output_tokens": "int",
+              "total_tokens": "int",
+              "estimated_calls": "int"
+            },
+            "drift.reduce": {
+              "calls": "int",
+              "input_tokens": "int",
+              "output_tokens": "int",
+              "total_tokens": "int",
+              "estimated_calls": "int"
+            }
+          }
+        }
+      }
+    },
+    "sources": [
+      {
+        "document_id": "str",
+        "document_name": "str",
+        "chunk_list": [
+          {
+            "document_id": "str",
+            "chunk_id": "str",
+            "document_name": "str",
+            "page_start": "NoneType",
+            "page_end": "NoneType",
+            "excerpt": "str",
+            "metadata": {
+              "collection": "str",
+              "record_id": "str",
+              "source": "str",
+              "document_id": "str",
+              "chunk_id": "str",
+              "document_name": "str"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

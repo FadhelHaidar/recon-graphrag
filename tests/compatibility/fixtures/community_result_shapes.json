@@ -1,0 +1,87 @@
+{
+  "False": {
+    "communities": "int",
+    "reports": "int",
+    "levels": [
+      "int",
+      "int"
+    ],
+    "level_stats": [
+      {
+        "level": "int",
+        "attempted": "int",
+        "skipped": "int",
+        "succeeded": "int",
+        "failed": "int",
+        "elapsed_seconds": "float",
+        "llm_calls": "int",
+        "input_tokens": "int",
+        "output_tokens": "int"
+      },
+      {
+        "level": "int",
+        "attempted": "int",
+        "skipped": "int",
+        "succeeded": "int",
+        "failed": "int",
+        "elapsed_seconds": "float",
+        "llm_calls": "int",
+        "input_tokens": "int",
+        "output_tokens": "int"
+      }
+    ],
+    "embedded_reports": "int"
+  },
+  "True": {
+    "communities": "int",
+    "reports": "int",
+    "levels": [
+      "int",
+      "int"
+    ],
+    "level_stats": [
+      {
+        "level": "int",
+        "attempted": "int",
+        "skipped": "int",
+        "succeeded": "int",
+        "failed": "int",
+        "elapsed_seconds": "float",
+        "llm_calls": "int",
+        "input_tokens": "int",
+        "output_tokens": "int"
+      },
+      {
+        "level": "int",
+        "attempted": "int",
+        "skipped": "int",
+        "succeeded": "int",
+        "failed": "int",
+        "elapsed_seconds": "float",
+        "llm_calls": "int",
+        "input_tokens": "int",
+        "output_tokens": "int"
+      }
+    ],
+    "embedded_reports": "int",
+    "token_usage": {
+      "run_id": "str",
+      "totals": {
+        "calls": "int",
+        "input_tokens": "int",
+        "output_tokens": "int",
+        "total_tokens": "int",
+        "estimated_calls": "int"
+      },
+      "stages": {
+        "community.report": {
+          "calls": "int",
+          "input_tokens": "int",
+          "output_tokens": "int",
+          "total_tokens": "int",
+          "estimated_calls": "int"
+        }
+      }
+    }
+  }
+}

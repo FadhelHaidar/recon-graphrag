@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from typing import Any
 
-from recon_graphrag.utils.tokens import TokenCounter
+from recon_graphrag.utils.tokens import TiktokenTokenCounter, TokenCounter
 
 
 @dataclass
@@ -26,7 +27,10 @@ class TextChunker:
 
     In both modes each chunk retains ``char_start`` and ``char_end`` in the
     original text. Token mode additionally records ``token_start`` and
-    ``token_end``.
+    ``token_end`` using accumulated caller counts (substring tokenization may
+    differ from the full text). Boundaries preserve codepoints, not grapheme
+    clusters. Overlap is rounded inward when necessary for forward progress;
+    an unrepresentable nonempty chunk budget raises ``ValueError``.
     """
 
     def __init__(
@@ -104,34 +108,50 @@ class TextChunker:
         counter = self.token_counter
         assert counter is not None  # guarded by __init__ validation
 
-        # Fast path for real tokenizers (e.g. tiktoken): encode once and slice
-        # token IDs. The truncate-based fallback re-encodes the whole remaining
-        # tail every iteration (O(n^2) for exact tokenizers).
-        if hasattr(counter, "encode") and hasattr(counter, "decode"):
-            return self._chunk_by_token_ids(counter, text, document_id, metadata)
-        return self._chunk_by_token_truncate(counter, text, document_id, metadata)
+        # Only the built-in exact counter promises a byte-boundary index.
+        # Custom encode/decode methods need not preserve substrings or counts.
+        boundaries: tuple[list[int], list[int]] | None = None
+        if (
+            isinstance(counter, TiktokenTokenCounter)
+            and type(counter) is TiktokenTokenCounter
+        ):
+            try:
+                boundaries = counter._token_boundaries(text)
+            except UnicodeEncodeError:
+                # Python strings can contain lone surrogates, unlike UTF-8.
+                boundaries = None
 
-    def _chunk_by_token_ids(
-        self,
-        counter: TokenCounter,
-        text: str,
-        document_id: str,
-        metadata: dict,
-    ) -> list[TextChunk]:
-        token_ids = counter.encode(text)
-        total_tokens = len(token_ids)
-        if total_tokens == 0:
-            return []
-
-        step = self.chunk_size - self.chunk_overlap
         chunks: list[TextChunk] = []
         char_start = 0
-        index = 0
+        token_start = 0
+        while char_start < len(text):
+            if boundaries is not None:
+                token_offsets, char_offsets = boundaries
+                first_token = bisect_right(token_offsets, char_offsets[char_start]) - 1
+                last_token = min(first_token + self.chunk_size, len(token_offsets) - 1)
+                char_end = bisect_right(char_offsets, token_offsets[last_token]) - 1
+                # Verify using the caller's actual count, not full-text token IDs:
+                # re-encoding a substring can change its tokenization.
+                char_end = max(char_start + 1, char_end)
+                while (
+                    char_end > char_start
+                    and counter.count(text[char_start:char_end]) > self.chunk_size
+                ):
+                    char_end -= 1
+            else:
+                prefix = _token_prefix(counter, text[char_start:], self.chunk_size)
+                char_end = char_start + len(prefix)
 
-        for token_start in range(0, total_tokens, step):
-            token_end = min(token_start + self.chunk_size, total_tokens)
-            chunk_text = counter.decode(token_ids[token_start:token_end])
+            if char_end == char_start:
+                raise ValueError(
+                    f"chunk_size={self.chunk_size} cannot fit a source prefix "
+                    f"at character offset {char_start}"
+                )
+
+            chunk_text = text[char_start:char_end]
+            chunk_tokens = counter.count(chunk_text)
             if chunk_text.strip():
+                index = len(chunks)
                 chunks.append(
                     TextChunk(
                         id=f"{document_id}:chunk:{index}",
@@ -140,73 +160,51 @@ class TextChunker:
                         metadata={
                             **metadata,
                             "char_start": char_start,
-                            "char_end": char_start + len(chunk_text),
+                            "char_end": char_end,
                             "token_start": token_start,
-                            "token_end": token_end,
+                            "token_end": token_start + chunk_tokens,
                         },
                     )
                 )
-                index += 1
-
-            if token_end >= total_tokens:
+            if char_end == len(text):
                 break
-            # Advance char cursor by the decoded step slice (cheap: step tokens).
-            char_start += len(counter.decode(token_ids[token_start:token_start + step]))
+
+            if not self.chunk_overlap:
+                next_start = char_end
+            elif boundaries is not None:
+                token_offsets, char_offsets = boundaries
+                # Round overlap inward to original codepoints, then verify the
+                # suffix budget. Exact overlap may be unrepresentable (emoji).
+                last_token = bisect_left(token_offsets, char_offsets[char_end])
+                overlap_token = max(0, last_token - self.chunk_overlap)
+                next_start = bisect_left(char_offsets, token_offsets[overlap_token])
+                next_start = min(char_end, max(char_start + 1, next_start))
+            else:
+                step = self.chunk_size - self.chunk_overlap
+                advance = _token_prefix(counter, chunk_text, step)
+                next_start = min(char_end, char_start + max(1, len(advance)))
+
+            while (
+                next_start < char_end
+                and counter.count(text[next_start:char_end]) > self.chunk_overlap
+            ):
+                next_start += 1
+            token_start += counter.count(text[char_start:next_start])
+            char_start = next_start
 
         return chunks
 
-    def _chunk_by_token_truncate(
-        self,
-        counter: TokenCounter,
-        text: str,
-        document_id: str,
-        metadata: dict,
-    ) -> list[TextChunk]:
-        total_tokens = counter.count(text)
-        if total_tokens == 0:
-            return []
 
-        step = self.chunk_size - self.chunk_overlap
-        chunks = []
-        char_start = 0
-        token_start = 0
-        index = 0
-
-        while char_start < len(text) and token_start < total_tokens:
-            # Find the text that fits in chunk_size tokens starting from char_start
-            remaining_text = text[char_start:]
-            chunk_text = counter.truncate(remaining_text, self.chunk_size)
-            if not chunk_text or not chunk_text.strip():
-                break
-
-            char_end = char_start + len(chunk_text)
-            token_end = token_start + counter.count(chunk_text)
-
-            chunks.append(
-                TextChunk(
-                    id=f"{document_id}:chunk:{index}",
-                    text=chunk_text,
-                    index=index,
-                    metadata={
-                        **metadata,
-                        "char_start": char_start,
-                        "char_end": char_end,
-                        "token_start": token_start,
-                        "token_end": token_end,
-                    },
-                )
-            )
-
-            if char_end >= len(text):
-                break
-
-            # Advance by step tokens
-            advance_text = counter.truncate(remaining_text, step)
-            char_start += len(advance_text)
-            token_start += step
-            index += 1
-
-        return chunks
+def _token_prefix(counter: TokenCounter, text: str, budget: int) -> str:
+    """Validate custom truncation without assuming monotonic prefix counts."""
+    # Legacy counters may normalize whitespace or decode partial token bytes.
+    # Use their result only as a boundary hint, then slice the original text.
+    end = min(len(counter.truncate(text, budget)), len(text))
+    if not end and counter.count(text) <= budget:
+        return text
+    while end and counter.count(text[:end]) > budget:
+        end -= 1
+    return text[:end]
 
 
 class PageWindowBuilder:

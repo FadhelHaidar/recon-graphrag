@@ -12,6 +12,7 @@ build/
 .claude/
 .kilo/
 .plans/
+plans/
 # Evaluation run outputs (fixtures and README are committed)
 evaluation/runs/*
 !evaluation/runs/.gitkeep

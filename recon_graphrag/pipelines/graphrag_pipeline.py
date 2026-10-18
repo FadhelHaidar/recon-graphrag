@@ -26,6 +26,7 @@ from recon_graphrag.extraction.chunking import (
 )
 from recon_graphrag.extraction.extractor import LLMGraphExtractor
 from recon_graphrag.extraction.description_summarizer import DescriptionSummarizer
+from recon_graphrag.extraction.parser import _PropertyValidationError
 from recon_graphrag.extraction.prompts import SchemaPromptBuilder
 from recon_graphrag.extraction.schema import GraphSchema
 from recon_graphrag.extraction.structured import (
@@ -37,7 +38,11 @@ from recon_graphrag.extraction.structured import (
     rows_to_chunks_and_extractions,
 )
 from recon_graphrag.extraction.assembler import GraphDocumentAssembler
-from recon_graphrag.extraction.types import ExtractedRelationship
+from recon_graphrag.extraction.types import (
+    ExtractedClaim,
+    ExtractedRelationship,
+    GraphExtraction,
+)
 from recon_graphrag.extraction.validator import SchemaValidator
 from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graphdb.base import GraphStore, GraphWriter
@@ -199,6 +204,7 @@ class GraphBuilderPipeline:
         token_counter: TokenCounter | None,
         token_encoding: str,
         finalize: bool,
+        batch_abort: asyncio.Event | None = None,
     ) -> dict:
         document_id = self._make_document_id(text=text, metadata=metadata)
         text_hash = self._hash_text(text)
@@ -229,6 +235,7 @@ class GraphBuilderPipeline:
             max_gleanings=max_gleanings,
             extract_claims=extract_claims,
             finalize=finalize,
+            batch_abort=batch_abort,
         )
 
         logger.info("graph build complete: document_id=%s", document_id)
@@ -269,6 +276,7 @@ class GraphBuilderPipeline:
 
         with run_scope():
             semaphore = asyncio.Semaphore(max(int(document_concurrency), 1))
+            batch_abort = asyncio.Event()
 
             # Extract + write each document concurrently. Whole-graph finalization
             # (resolution, summarization, embedding) runs once afterward instead of
@@ -279,51 +287,74 @@ class GraphBuilderPipeline:
             # window, not call-site, so with document_concurrency > 1 concurrent
             # documents can bleed into each other's counts. Exact when
             # document_concurrency=1 (the default).
-            async def _build_one(envelope: dict) -> dict:
+            async def _build_one(envelope: dict) -> dict | None:
                 async with semaphore:
-                    metadata = envelope.get("metadata") or {}
-                    before = usage_snapshot(self.llm)
-                    if "text" in envelope:
-                        result = await self._ingest_text(
-                            text=envelope["text"],
-                            metadata=metadata,
-                            schema=schema,
-                            extraction_concurrency=extraction_concurrency,
-                            max_gleanings=max_gleanings,
-                            extract_claims=extract_claims,
-                            chunk_size=chunk_size,
-                            chunk_overlap=chunk_overlap,
-                            chunk_unit=chunk_unit,
-                            token_counter=token_counter,
-                            token_encoding=token_encoding,
-                            finalize=False,
-                        )
-                    else:
-                        result = await self._build_from_pages_envelope(
-                            pages=envelope["pages"],
-                            metadata=metadata,
-                            schema=schema,
-                            extraction_concurrency=extraction_concurrency,
-                            max_gleanings=max_gleanings,
-                            extract_claims=extract_claims,
-                            window_size=window_size,
-                            window_overlap=window_overlap,
-                            finalize=False,
-                        )
-                    after = usage_snapshot(self.llm)
-                    if after is not None:
-                        result["token_usage"] = usage_delta(before, after)
-                    return result
+                    if batch_abort.is_set():
+                        return None
+                    try:
+                        return await _ingest_one(envelope)
+                    except BaseException:
+                        # Nested extraction also closes this gate before draining.
+                        batch_abort.set()
+                        raise
+
+            async def _ingest_one(envelope: dict) -> dict:
+                metadata = envelope.get("metadata") or {}
+                before = usage_snapshot(self.llm)
+                if "text" in envelope:
+                    result = await self._ingest_text(
+                        text=envelope["text"],
+                        metadata=metadata,
+                        schema=schema,
+                        extraction_concurrency=extraction_concurrency,
+                        max_gleanings=max_gleanings,
+                        extract_claims=extract_claims,
+                        chunk_size=chunk_size,
+                        chunk_overlap=chunk_overlap,
+                        chunk_unit=chunk_unit,
+                        token_counter=token_counter,
+                        token_encoding=token_encoding,
+                        finalize=False,
+                        batch_abort=batch_abort,
+                    )
+                else:
+                    result = await self._build_from_pages_envelope(
+                        pages=envelope["pages"],
+                        metadata=metadata,
+                        schema=schema,
+                        extraction_concurrency=extraction_concurrency,
+                        max_gleanings=max_gleanings,
+                        extract_claims=extract_claims,
+                        window_size=window_size,
+                        window_overlap=window_overlap,
+                        finalize=False,
+                        batch_abort=batch_abort,
+                    )
+                after = usage_snapshot(self.llm)
+                if after is not None:
+                    result["token_usage"] = usage_delta(before, after)
+                return result
 
             tasks = [
                 asyncio.create_task(_build_one(envelope)) for envelope in documents
             ]
-            results = await asyncio.gather(*tasks)
+            try:
+                results = await asyncio.gather(*tasks)
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
 
-            validation = await self._finalize_graph()
+            completed: list[dict] = []
             for result in results:
+                if result is None:
+                    raise RuntimeError("Document batch aborted before all documents completed")
+                completed.append(result)
+            validation = await self._finalize_graph()
+            for result in completed:
                 result["validation"] = validation
-            return results
+            return completed
 
     async def _build_from_pages_envelope(
         self,
@@ -337,6 +368,7 @@ class GraphBuilderPipeline:
         window_size: int,
         window_overlap: int,
         finalize: bool = True,
+        batch_abort: asyncio.Event | None = None,
     ) -> dict:
         text = "\n\n".join(_page_text(page) for page in pages)
         document_id = self._make_document_id(text=text, metadata=metadata)
@@ -378,6 +410,7 @@ class GraphBuilderPipeline:
             max_gleanings=max_gleanings,
             extract_claims=extract_claims,
             finalize=finalize,
+            batch_abort=batch_abort,
         )
 
         logger.info("graph build complete: document_id=%s", document_id)
@@ -422,6 +455,7 @@ class GraphBuilderPipeline:
 
             if llm_rows:
                 await self._extract_text_columns(
+                    document_id=document_id,
                     chunks=chunks,
                     extractions=extractions,
                     llm_rows=llm_rows,
@@ -513,6 +547,7 @@ class GraphBuilderPipeline:
         extractions: dict,
         llm_rows: dict,
         *,
+        document_id: str,
         schema: GraphSchema,
         extraction_concurrency: int,
         max_gleanings: int,
@@ -524,53 +559,109 @@ class GraphBuilderPipeline:
         """
         pending = [chunk for chunk in chunks if chunk.id in llm_rows]
         semaphore = asyncio.Semaphore(extraction_concurrency)
+        stopped = False
 
         async def _extract_one(chunk):
+            nonlocal stopped
             async with semaphore:
+                if stopped:
+                    return None
                 try:
-                    raw = await self.extractor.extract(
-                        text=chunk.text, schema=schema, max_gleanings=max_gleanings
+                    validated, _ = await self._extract_chunk(
+                        chunk, document_id, schema, max_gleanings, False
                     )
-                    return chunk.id, self.validator.validate(raw, schema), None
-                except Exception as e:
-                    logger.error("extraction failed for row chunk %s: %s", chunk.id, e)
-                    return chunk.id, None, e
+                    return chunk.id, validated
+                except BaseException:
+                    stopped = True
+                    raise
 
         tasks = [asyncio.create_task(_extract_one(chunk)) for chunk in pending]
-        failures = 0
-        with tqdm_asyncio(total=len(tasks), desc="Extracting rows", disable=None) as bar:
-            for future in asyncio.as_completed(tasks):
-                chunk_id, validated, error = await future
-                if error is not None:
-                    failures += 1
-                    bar.update(1)
-                    continue
-
-                target = extractions[chunk_id]
-                target.nodes.extend(validated.nodes)
-                target.relationships.extend(validated.relationships)
-                for anchor_key, anchor_identity, rel_type in llm_rows[chunk_id]:
-                    if not anchor_key:
+        try:
+            with tqdm_asyncio(total=len(tasks), desc="Extracting rows", disable=None) as bar:
+                for future in asyncio.as_completed(tasks):
+                    result = await future
+                    if result is None:  # A sibling failed; its exception follows.
                         continue
-                    for node in validated.nodes:
-                        # Skip self-links: resolution later merges the LLM
-                        # node with the direct anchor when names match.
-                        if node.id.strip().lower() == anchor_identity.lower():
+                    chunk_id, validated = result
+                    target = extractions[chunk_id]
+                    target.nodes.extend(validated.nodes)
+                    target.relationships.extend(validated.relationships)
+                    for anchor_key, anchor_identity, rel_type in llm_rows[chunk_id]:
+                        if not anchor_key:
                             continue
-                        target.relationships.append(
-                            ExtractedRelationship(
-                                source_id=anchor_key,
-                                target_id=node.id,
-                                type=rel_type,
+                        for node in validated.nodes:
+                            # Skip self-links: resolution later merges the LLM
+                            # node with the direct anchor when names match.
+                            if node.id.strip().lower() == anchor_identity.lower():
+                                continue
+                            target.relationships.append(
+                                ExtractedRelationship(
+                                    source_id=anchor_key,
+                                    target_id=node.id,
+                                    type=rel_type,
+                                )
                             )
-                        )
-                bar.update(1)
+                    bar.update(1)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-        if failures:
-            tqdm_asyncio.write(
-                f"row extraction: {failures}/{len(tasks)} LLM passes failed "
-                "(direct-mapped data for those rows is still written)"
+    async def _extract_chunk(
+        self,
+        chunk,
+        document_id: str,
+        schema: GraphSchema,
+        max_gleanings: int,
+        extract_claims: bool,
+    ) -> tuple[GraphExtraction, list[ExtractedClaim]]:
+        # Public IDs may contain source/title metadata. Use an opaque document
+        # fingerprint and chunk ordinal in errors, never text or provider errors.
+        context = (
+            f"document={self._hash_text(document_id)[:16]} "
+            f"chunk={chunk.index + 1}"
+        )
+        try:
+            raw = await self.extractor.extract(
+                text=chunk.text, schema=schema, max_gleanings=max_gleanings
             )
+        except _PropertyValidationError as error:
+            # Only parser-created metadata is trusted across extraction; provider
+            # ValueError strings must never supply field context.
+            raise ValueError(
+                f"Validation failed ({context} field={error.path}: {error.reason})"
+            ) from None
+        except Exception:
+            raise RuntimeError(f"Extraction failed ({context})") from None
+
+        try:
+            validated = self.validator.validate(raw, schema)
+        except ValueError as error:
+            # Only inspect validator errors, not arbitrary provider messages.
+            # C02 emits schema field paths and fixed reasons, never values.
+            path = re.fullmatch(
+                r"((?:nodes|relationships)\[\d+\]\.properties(?:\.[^\r\n]+)?): "
+                r"(expected (?:an object|a finite number|STRING|INTEGER|FLOAT|"
+                r"BOOLEAN|DATE|DATETIME|LIST)|required property is missing or null)",
+                str(error),
+            )
+            field = f" field={path[1]}: {path[2]}" if path else ""
+            raise ValueError(f"Validation failed ({context}{field})") from None
+        except Exception:
+            raise RuntimeError(f"Validation failed ({context})") from None
+
+        claims = []
+        if extract_claims and validated.nodes:
+            try:
+                claims = await self.extractor.extract_claims(
+                    text=chunk.text,
+                    entity_ids=[node.id for node in validated.nodes],
+                    text_unit_id=chunk.id,
+                )
+            except Exception:
+                raise RuntimeError(f"Claims extraction failed ({context})") from None
+        return validated, claims
 
     @staticmethod
     def _require_schema(schema: GraphSchema) -> None:
@@ -635,6 +726,7 @@ class GraphBuilderPipeline:
         max_gleanings: int,
         extract_claims: bool,
         finalize: bool = True,
+        batch_abort: asyncio.Event | None = None,
     ) -> dict:
         extraction = await self._extract_and_write_chunks(
             document_id=document_id,
@@ -645,6 +737,7 @@ class GraphBuilderPipeline:
             extraction_concurrency=extraction_concurrency,
             max_gleanings=max_gleanings,
             extract_claims=extract_claims,
+            batch_abort=batch_abort,
         )
 
         result = {"extraction": extraction}
@@ -726,10 +819,10 @@ class GraphBuilderPipeline:
         extraction_concurrency: int,
         max_gleanings: int,
         extract_claims: bool,
+        batch_abort: asyncio.Event | None = None,
     ) -> dict:
         chunk_extractions = {}
         chunk_claims = {}
-        extraction_errors = {}
         total = len(chunks)
 
         logger.info(
@@ -738,84 +831,53 @@ class GraphBuilderPipeline:
         )
 
         semaphore = asyncio.Semaphore(extraction_concurrency)
+        stopped = False
 
-        async def _extract_one(i: int, chunk):
+        async def _extract_one(chunk):
+            nonlocal stopped
             async with semaphore:
+                if stopped:
+                    return None
                 try:
-                    raw_extraction = await self.extractor.extract(
-                        text=chunk.text,
-                        schema=schema,
-                        max_gleanings=max_gleanings,
+                    validated, claims = await self._extract_chunk(
+                        chunk, document_id, schema, max_gleanings, extract_claims
                     )
-                    validated = self.validator.validate(raw_extraction, schema)
-                    logger.debug(
-                        "[%s/%s] extracted chunk %s: %s nodes, %s rels",
-                        i, total, chunk.id,
-                        len(validated.nodes), len(validated.relationships),
-                    )
+                    return chunk.id, validated, claims
+                except BaseException:
+                    stopped = True
+                    # Close the document gate immediately, not after sibling
+                    # cancellation cleanup (which may await arbitrary work).
+                    if batch_abort is not None:
+                        batch_abort.set()
+                    raise
 
-                    # Optionally extract claims
-                    claims = []
-                    if extract_claims and validated.nodes:
-                        entity_ids = [n.id for n in validated.nodes]
-                        try:
-                            claims = await self.extractor.extract_claims(
-                                text=chunk.text,
-                                entity_ids=entity_ids,
-                                text_unit_id=chunk.id,
-                            )
-                            logger.debug(
-                                "[%s/%s] chunk %s: %s claims",
-                                i, total, chunk.id, len(claims),
-                            )
-                        except Exception as ce:
-                            logger.warning(
-                                "claims extraction failed for chunk %s: %s",
-                                chunk.id, ce,
-                            )
-
-                    return chunk.id, validated, claims, None
-                except Exception as e:
-                    logger.error("extraction failed for chunk %s: %s", chunk.id, e)
-                    return chunk.id, None, [], e
-
-        tasks = [
-            asyncio.create_task(_extract_one(i, chunk))
-            for i, chunk in enumerate(chunks, start=1)
-        ]
-        # Manual as_completed loop (not tqdm_asyncio.gather) so the bar's postfix
-        # shows running entity/relationship totals live on stderr — visible even
-        # when the caller hasn't configured logging. _extract_one swallows all
-        # exceptions into its return tuple, so awaiting a future never raises.
+        tasks = [asyncio.create_task(_extract_one(chunk)) for chunk in chunks]
         node_total = rel_total = 0
-        with tqdm_asyncio(total=total, desc="Extracting", disable=None) as bar:
-            for future in asyncio.as_completed(tasks):
-                chunk_id, validated, claims, error = await future
-                if error is not None:
-                    extraction_errors[chunk_id] = error
-                else:
+        try:
+            with tqdm_asyncio(total=total, desc="Extracting", disable=None) as bar:
+                for future in asyncio.as_completed(tasks):
+                    result = await future
+                    if result is None:  # A sibling failed; its exception follows.
+                        continue
+                    chunk_id, validated, claims = result
                     chunk_extractions[chunk_id] = validated
                     node_total += len(validated.nodes)
                     rel_total += len(validated.relationships)
                     if claims:
                         chunk_claims[chunk_id] = claims
                     bar.set_postfix(entities=node_total, relationships=rel_total)
-                bar.update(1)
+                    bar.update(1)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-        # tqdm.write (not logger.info) so the summary always prints to stderr
-        # alongside the bar, even when the caller hasn't configured logging.
         tqdm_asyncio.write(
             f"extraction complete: {len(chunk_extractions)}/{total} succeeded, "
-            f"{len(extraction_errors)}/{total} failed "
+            f"0/{total} failed "
             f"({node_total} entities, {rel_total} relationships extracted)"
         )
-
-        if chunks and not chunk_extractions:
-            first_chunk_id, first_error = next(iter(extraction_errors.items()))
-            raise RuntimeError(
-                f"Extraction failed for all {len(chunks)} chunk(s). "
-                f"First failure was for {first_chunk_id}: {first_error}"
-            ) from first_error
 
         total_claims = sum(len(c) for c in chunk_claims.values())
         if total_claims:

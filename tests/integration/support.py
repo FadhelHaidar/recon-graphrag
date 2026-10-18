@@ -16,10 +16,13 @@ import os
 import pytest
 from dotenv import load_dotenv
 
-
 ENABLED_VALUES = {"1", "true", "yes"}
 
-PROVIDER_REQUIREMENTS = {
+# A tuple names interchangeable settings for one required value. Keep legacy
+# model requirements even though the factories also provide model defaults.
+EnvRequirement = str | tuple[str, ...]
+
+PROVIDER_REQUIREMENTS: dict[str, dict[str, list[EnvRequirement]]] = {
     "azure_openai": {
         "llm": [
             "AZURE_OPENAI_ENDPOINT",
@@ -37,8 +40,14 @@ PROVIDER_REQUIREMENTS = {
         "embedder": ["OPENROUTER_API_KEY", "OPENROUTER_EMBED_MODEL"],
     },
     "openai": {
-        "llm": ["OPENAI_API_KEY", "OPENAI_LLM_MODEL"],
-        "embedder": ["OPENAI_API_KEY", "OPENAI_EMBED_MODEL"],
+        "llm": [
+            ("LLM_API_KEY", "OPENAI_API_KEY"),
+            ("LLM_MODEL", "OPENAI_LLM_MODEL"),
+        ],
+        "embedder": [
+            ("EMBEDDING_API_KEY", "OPENAI_API_KEY"),
+            ("EMBEDDING_MODEL", "OPENAI_EMBED_MODEL"),
+        ],
     },
     "sentence-transformer": {
         "embedder": [],
@@ -46,9 +55,19 @@ PROVIDER_REQUIREMENTS = {
 }
 
 
+def _missing_env(required_env: list[EnvRequirement]) -> list[str]:
+    """Return variable names only, never credential values."""
+    missing = set()
+    for requirement in required_env:
+        names = (requirement,) if isinstance(requirement, str) else requirement
+        if not any(os.getenv(name) for name in names):
+            missing.add(" or ".join(names))
+    return sorted(missing)
+
+
 def require_integration_env(
     run_flag: str,
-    required_env: list[str],
+    required_env: list[EnvRequirement],
     description: str,
     *,
     fail_on_missing: bool = False,
@@ -59,7 +78,7 @@ def require_integration_env(
     if os.getenv(run_flag, "").lower() not in ENABLED_VALUES:
         pytest.skip(f"Set {run_flag}=1 to run {description}.")
 
-    missing = [name for name in required_env if not os.getenv(name)]
+    missing = _missing_env(required_env)
     if not missing:
         return
 
@@ -80,14 +99,14 @@ def require_selected_provider_env(
     embedder_provider = os.getenv("EMBEDDER_PROVIDER", "azure_openai").lower()
 
     selections = (("llm", llm_provider), ("embedder", embedder_provider))
-    required: set[str] = set()
+    required: list[EnvRequirement] = []
     for role, provider in selections:
         provider_requirements = PROVIDER_REQUIREMENTS.get(provider)
         if provider_requirements is None or role not in provider_requirements:
             pytest.fail(f"Unsupported {role} provider for {description}: {provider}")
-        required.update(provider_requirements[role])
+        required.extend(provider_requirements[role])
 
-    missing = sorted(name for name in required if not os.getenv(name))
+    missing = _missing_env(required)
     if missing:
         message = f"Missing required {description} env vars: {', '.join(missing)}"
         if fail_on_missing:

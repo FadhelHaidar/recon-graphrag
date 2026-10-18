@@ -216,3 +216,41 @@ class TestClaimParser:
         ]
         result = parser.parse(json.dumps(claims_data))
         assert len(result) == 1
+
+
+@pytest.mark.parametrize("kind", ["nodes", "relationships"])
+@pytest.mark.parametrize("properties", [[], [["name", "private value"]], "private value", "", 0, False])
+def test_parse_rejects_nonobject_properties_with_safe_field_path(kind, properties):
+    item = ({"id": "private ID", "label": "Thing"} if kind == "nodes" else
+            {"source_id": "private ID", "target_id": "private ID", "type": "LINK"})
+    item["properties"] = properties
+    with pytest.raises(ValueError) as error:
+        GraphExtractionParser().parse(json.dumps({kind: [item]}))
+    assert str(error.value) == f"{kind}[0].properties: expected an object"
+
+
+@pytest.mark.parametrize("kind", ["nodes", "relationships"])
+@pytest.mark.parametrize("properties", [None, {}])
+def test_parse_preserves_null_and_empty_properties_as_empty_object(kind, properties):
+    item = ({"id": "n", "label": "Thing"} if kind == "nodes" else
+            {"source_id": "n", "target_id": "n", "type": "LINK"})
+    item["properties"] = properties
+    result = GraphExtractionParser().parse(json.dumps({kind: [item]}))
+    assert getattr(result, kind)[0].properties == {}
+
+
+def test_parse_leaves_nested_values_for_schema_filtering_and_validation():
+    properties = {"extra": {"nested": [["private value"]]}}
+    result = GraphExtractionParser().parse(json.dumps({"nodes": [
+        {"id": "n", "label": "Thing", "properties": properties},
+    ]}))
+    assert result.nodes[0].properties == properties
+
+
+def test_parse_property_error_retains_original_index_after_skipped_nodes():
+    with pytest.raises(ValueError) as error:
+        GraphExtractionParser().parse(json.dumps({"nodes": [
+            {"label": "Thing"},
+            {"id": "private ID", "label": "Thing", "properties": "private value"},
+        ]}))
+    assert str(error.value) == "nodes[1].properties: expected an object"

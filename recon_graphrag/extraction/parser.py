@@ -11,6 +11,15 @@ from recon_graphrag.extraction.types import (
 )
 
 
+class _PropertyValidationError(ValueError):
+    """Trusted parser field context, separate from arbitrary provider messages."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.reason = "expected an object"
+        super().__init__(f"{self.path}: {self.reason}")
+
+
 class GraphExtractionParser:
     def parse(self, content: str) -> GraphExtraction:
         payload = self._extract_json(content)
@@ -20,9 +29,9 @@ class GraphExtractionParser:
             ExtractedNode(
                 id=str(node["id"]),
                 label=str(node["label"]),
-                properties=dict(node.get("properties") or {}),
+                properties=self._parse_properties(node, f"nodes[{index}].properties"),
             )
-            for node in (data.get("nodes") or [])
+            for index, node in enumerate(data.get("nodes") or [])
             if node.get("id") and node.get("label")
         ]
 
@@ -31,13 +40,23 @@ class GraphExtractionParser:
                 source_id=str(rel["source_id"]),
                 target_id=str(rel["target_id"]),
                 type=str(rel["type"]),
-                properties=dict(rel.get("properties") or {}),
+                properties=self._parse_properties(
+                    rel, f"relationships[{index}].properties"
+                ),
             )
-            for rel in (data.get("relationships") or [])
+            for index, rel in enumerate(data.get("relationships") or [])
             if rel.get("source_id") and rel.get("target_id") and rel.get("type")
         ]
 
         return GraphExtraction(nodes=nodes, relationships=relationships)
+
+    def _parse_properties(self, item: dict, path: str) -> dict:
+        properties = item.get("properties")
+        if properties is None:
+            return {}
+        if not isinstance(properties, dict):
+            raise _PropertyValidationError(path)
+        return dict(properties)
 
     def _extract_json(self, content: str) -> str:
         content = content.strip()

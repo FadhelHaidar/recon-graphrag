@@ -1,0 +1,2439 @@
+{
+  "exports": [
+    "__version__",
+    "get_git_sha",
+    "GraphBuilderPipeline",
+    "BaseRetriever",
+    "LocalSearchRetriever",
+    "GlobalSearchRetriever",
+    "DriftSearchRetriever",
+    "DriftAction",
+    "DriftQueryState",
+    "DriftSearchConfig",
+    "create_llm",
+    "create_embedder",
+    "BaseLLM",
+    "LLMResponse",
+    "LLMUsage",
+    "BaseEmbedder",
+    "CommunityReportEmbedder",
+    "EntityEmbedder",
+    "ModelParamsEmbedder",
+    "UsageTrackingLLM",
+    "TokenUsageEvent",
+    "TokenUsageLedger",
+    "token_stage",
+    "run_scope",
+    "track_usage",
+    "usage_snapshot",
+    "usage_delta",
+    "render_usage_table",
+    "JsonlUsageSink",
+    "load_usage_events",
+    "summarize_events",
+    "GraphStore",
+    "Neo4jGraphStore",
+    "MemgraphGraphStore",
+    "IndexManager",
+    "GraphSchema",
+    "NodeType",
+    "PropertyType",
+    "RelationshipType",
+    "build_schema",
+    "schema_to_dict",
+    "save_schema_json",
+    "load_schema_json",
+    "analyze_schema",
+    "aanalyze_schema",
+    "SchemaPromptBuilder",
+    "ColumnEntity",
+    "RowMapping",
+    "RowRelationship",
+    "TextColumn",
+    "iter_csv",
+    "iter_excel",
+    "iter_sql",
+    "SearchResult",
+    "IndexConfig",
+    "graph_document_to_dict",
+    "graph_document_from_dict",
+    "save_graph_document_json",
+    "load_graph_document_json",
+    "CommunityDetector",
+    "CommunitySummarizer",
+    "CommunityPipeline",
+    "PipelineConfig"
+  ],
+  "surface": {
+    "__version__": {
+      "type": "str"
+    },
+    "get_git_sha": {
+      "import_path": "recon_graphrag._version.get_git_sha",
+      "signature": "(fallback: 'str' = 'unknown') -> 'str'"
+    },
+    "GraphBuilderPipeline": {
+      "import_path": "recon_graphrag.pipelines.graphrag_pipeline.GraphBuilderPipeline",
+      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', embedder: 'BaseEmbedder', graph_name: 'str' = 'entity-graph', graph_writer: 'Optional[GraphWriter]' = None, perform_entity_resolution: 'bool' = True, entity_resolution_strategy: 'str' = 'normalized', entity_resolution_aliases: 'Optional[dict]' = None, entity_resolution_llm_guidance: 'Optional[str]' = None, entity_resolution_context_properties: 'Optional[dict[str, list[str]] | list[str]]' = None, entity_resolution_conflict_properties: 'Optional[dict[str, list[str]] | list[str]]' = None, entity_resolution_context_mode: 'str' = 'safe_defaults', allow_ai_auto_merge: 'bool' = False, embed_entities: 'bool' = True, summarize_descriptions: 'bool' = True, summarization_concurrency: 'int' = 5, summarization_limit: 'int' = 500, fail_on_resolution_error: 'bool' = False, fail_on_embedding_error: 'bool' = False, extraction_prompt: 'str | None' = None, assessment_prompt: 'str | None' = None, continuation_prompt: 'str | None' = None, claim_prompt: 'str | None' = None, entity_summary_prompt: 'str | None' = None, relationship_summary_prompt: 'str | None' = None, track_token_usage: 'bool' = True)",
+      "methods": {
+        "build_from_csv": "(self, path: 'str | Path', mapping: 'RowMapping', metadata: 'Optional[dict]' = None, *, encoding: 'str' = 'utf-8-sig', **row_kwargs: 'Any') -> 'dict'",
+        "build_from_documents": "(self, documents: 'list[dict]', *, schema: 'GraphSchema', extraction_concurrency: 'int' = 5, document_concurrency: 'int' = 1, max_gleanings: 'int' = 1, extract_claims: 'bool' = False, chunk_size: 'int' = 1200, chunk_overlap: 'int' = 100, chunk_unit: 'str' = 'tokens', token_counter: 'TokenCounter | None' = None, token_encoding: 'str' = 'cl100k_base', window_size: 'int' = 2, window_overlap: 'int' = 1) -> 'list[dict]'",
+        "build_from_excel": "(self, path: 'str | Path', mapping: 'RowMapping', metadata: 'Optional[dict]' = None, *, sheet: 'Optional[str]' = None, **row_kwargs: 'Any') -> 'dict'",
+        "build_from_rows": "(self, rows: 'Iterable[dict]', mapping: 'RowMapping', metadata: 'Optional[dict]' = None, *, extraction_schema: 'Optional[GraphSchema]' = None, extraction_concurrency: 'int' = 5, max_gleanings: 'int' = 1, finalize: 'bool' = True) -> 'dict'",
+        "build_from_sql": "(self, connection: 'Any', query: 'str', mapping: 'RowMapping', metadata: 'Optional[dict]' = None, *, params: 'Any' = None, **row_kwargs: 'Any') -> 'dict'",
+        "build_from_text": "(self, text: 'str', metadata: 'Optional[dict]' = None, *, schema: 'GraphSchema', extraction_concurrency: 'int' = 5, max_gleanings: 'int' = 1, extract_claims: 'bool' = False, chunk_size: 'int' = 1200, chunk_overlap: 'int' = 100, chunk_unit: 'str' = 'tokens', token_counter: 'TokenCounter | None' = None, token_encoding: 'str' = 'cl100k_base') -> 'dict'"
+      }
+    },
+    "BaseRetriever": {
+      "import_path": "recon_graphrag.retrieval.base.BaseRetriever",
+      "signature": "(*args, **kwargs)",
+      "methods": {
+        "search": "(self, query: 'str', **kwargs) -> 'SearchResult'"
+      }
+    },
+    "LocalSearchRetriever": {
+      "import_path": "recon_graphrag.retrieval.search_local.LocalSearchRetriever",
+      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', embedder: 'BaseEmbedder', retrieval_query: 'Optional[str]' = None, answer_prompt: 'Optional[str]' = None, vector_index_name: 'str' = 'entity-embeddings', fulltext_index_name: 'str' = 'entity-names', graph_name: 'str' = 'entity-graph', use_mixed_context: 'bool' = True, top_k_relationships: 'int' = 10, track_token_usage: 'bool' = True)",
+      "methods": {
+        "search": "(self, query: 'str', top_k: 'int' = 10, query_vector: 'list[float] | None' = None, effective_search_ratio: 'int' = 1, query_params: 'dict | None' = None, ranker: 'HybridRanker | str' = 'naive', alpha: 'float | None' = None, synthesize_citation_metadata: 'bool' = False, synthesis_metadata_keys: 'list[str] | None' = None, synthesize_response: 'bool' = True, community_level: 'CommunityLevelSelector' = 'coarsest', token_budget: 'int' = 12000) -> 'SearchResult'"
+      }
+    },
+    "GlobalSearchRetriever": {
+      "import_path": "recon_graphrag.retrieval.search_global.GlobalSearchRetriever",
+      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', map_prompt: 'Optional[str]' = None, reduce_prompt: 'Optional[str]' = None, graph_name: 'str' = 'entity-graph', token_counter: 'TokenCounter | None' = None, map_budget_tokens: 'int' = 12000, reduce_budget_tokens: 'int' = 12000, map_concurrency: 'int' = 5, max_map_calls: 'int | None' = None, allow_general_knowledge: 'bool' = False, track_token_usage: 'bool' = True)",
+      "methods": {
+        "search": "(self, query: 'str', community_level: 'CommunityLevelSelector', random_seed: 'int | None' = 42, synthesize_response: 'bool' = True) -> 'SearchResult'"
+      }
+    },
+    "DriftSearchRetriever": {
+      "import_path": "recon_graphrag.retrieval.search_drift.DriftSearchRetriever",
+      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', embedder: 'BaseEmbedder', retrieval_query: 'Optional[str]' = None, reduce_prompt: 'Optional[str]' = None, vector_index_name: 'str' = 'entity-embeddings', fulltext_index_name: 'str' = 'entity-names', graph_name: 'str' = 'entity-graph', config: 'DriftSearchConfig | None' = None, token_counter: 'TokenCounter | None' = None, track_token_usage: 'bool' = True)",
+      "methods": {
+        "search": "(self, query: 'str', top_k: 'int' = 10, community_level: 'CommunityLevelSelector' = None, query_vector: 'list[float] | None' = None, effective_search_ratio: 'int' = 1, query_params: 'dict | None' = None, ranker: 'HybridRanker | str' = 'naive', alpha: 'float | None' = None, synthesize_citation_metadata: 'bool' = False, synthesis_metadata_keys: 'list[str] | None' = None, synthesize_response: 'bool' = True, conversation_history: 'str' = '') -> 'SearchResult'"
+      }
+    },
+    "DriftAction": {
+      "import_path": "recon_graphrag.retrieval.drift_types.DriftAction",
+      "signature": "(id: 'str', parent_id: 'str | None' = None, depth: 'int' = 0, query: 'str' = '', answer: 'str' = '', score: 'float' = 0.0, status: 'str' = 'pending', context: 'str' = '', citations: 'list' = <factory>, follow_ups: 'list[str]' = <factory>, references: 'list[dict]' = <factory>, report_ids: 'list[str]' = <factory>) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "parent_id",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "depth",
+          "type": "int",
+          "default": "0",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "query",
+          "type": "str",
+          "default": "''",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "answer",
+          "type": "str",
+          "default": "''",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "default": "0.0",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "status",
+          "type": "str",
+          "default": "'pending'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "context",
+          "type": "str",
+          "default": "''",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "citations",
+          "type": "list",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "follow_ups",
+          "type": "list[str]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "references",
+          "type": "list[dict]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "report_ids",
+          "type": "list[str]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "DriftQueryState": {
+      "import_path": "recon_graphrag.retrieval.drift_types.DriftQueryState",
+      "signature": "(query: 'str' = '', primer_reports: 'list[dict]' = <factory>, actions: 'list[DriftAction]' = <factory>, stopping_reason: 'str' = '', total_llm_calls: 'int' = 0, phase_tokens: 'dict' = <factory>, failures: 'list[str]' = <factory>) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "query",
+          "type": "str",
+          "default": "''",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "primer_reports",
+          "type": "list[dict]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "actions",
+          "type": "list[DriftAction]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "stopping_reason",
+          "type": "str",
+          "default": "''",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "total_llm_calls",
+          "type": "int",
+          "default": "0",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "phase_tokens",
+          "type": "dict",
+          "default": "<required>",
+          "factory": "builtins.dict",
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "failures",
+          "type": "list[str]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "DriftSearchConfig": {
+      "import_path": "recon_graphrag.retrieval.drift_types.DriftSearchConfig",
+      "signature": "(primer_top_k: 'int' = 3, max_followups: 'int' = 3, max_depth: 'int' = 3, min_expand_score: 'float' = 20.0, max_llm_calls: 'int' = 20, action_concurrency: 'int' = 3, community_level: 'CommunityLevelSelector' = 'coarsest', reduce_budget_tokens: 'int' = 12000, use_hyde: 'bool' = True, primer_folds: 'int' = 1, action_use_mixed_context: 'bool' = True, action_mixed_context_tokens: 'int' = 12000) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "primer_top_k",
+          "type": "int",
+          "default": "3",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "max_followups",
+          "type": "int",
+          "default": "3",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "max_depth",
+          "type": "int",
+          "default": "3",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "min_expand_score",
+          "type": "float",
+          "default": "20.0",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "max_llm_calls",
+          "type": "int",
+          "default": "20",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "action_concurrency",
+          "type": "int",
+          "default": "3",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "community_level",
+          "type": "CommunityLevelSelector",
+          "default": "'coarsest'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "reduce_budget_tokens",
+          "type": "int",
+          "default": "12000",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "use_hyde",
+          "type": "bool",
+          "default": "True",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "primer_folds",
+          "type": "int",
+          "default": "1",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "action_use_mixed_context",
+          "type": "bool",
+          "default": "True",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "action_mixed_context_tokens",
+          "type": "int",
+          "default": "12000",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "create_llm": {
+      "import_path": "recon_graphrag.llm.factory.create_llm",
+      "signature": "(provider: 'str', **kwargs: 'Any') -> 'BaseLLM'"
+    },
+    "create_embedder": {
+      "import_path": "recon_graphrag.embeddings.factory.create_embedder",
+      "signature": "(provider: 'str', *, model_params: 'dict[str, Any] | None' = None, **kwargs: 'Any') -> 'BaseEmbedder'"
+    },
+    "BaseLLM": {
+      "import_path": "recon_graphrag.llm.base.BaseLLM",
+      "signature": "(*args, **kwargs)",
+      "methods": {
+        "ainvoke": "(self, prompt: 'str', **kwargs: 'Any') -> 'LLMResponse'",
+        "invoke": "(self, prompt: 'str', **kwargs: 'Any') -> 'LLMResponse'"
+      }
+    },
+    "LLMResponse": {
+      "import_path": "recon_graphrag.llm.base.LLMResponse",
+      "signature": "(content: 'str', usage: 'Optional[LLMUsage]' = None) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "content",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "usage",
+          "type": "Optional[LLMUsage]",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "LLMUsage": {
+      "import_path": "recon_graphrag.llm.base.LLMUsage",
+      "signature": "(request_tokens: 'Optional[int]' = None, response_tokens: 'Optional[int]' = None, total_tokens: 'Optional[int]' = None) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "request_tokens",
+          "type": "Optional[int]",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "response_tokens",
+          "type": "Optional[int]",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "total_tokens",
+          "type": "Optional[int]",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "BaseEmbedder": {
+      "import_path": "recon_graphrag.embeddings.base.BaseEmbedder",
+      "signature": "(*args, **kwargs)",
+      "methods": {
+        "async_embed_query": "(self, text: 'str', **kwargs: 'Any') -> 'list[float]'",
+        "embed_query": "(self, text: 'str', **kwargs: 'Any') -> 'list[float]'"
+      }
+    },
+    "CommunityReportEmbedder": {
+      "import_path": "recon_graphrag.embeddings.community_reports.CommunityReportEmbedder",
+      "signature": "(graph_store: 'GraphStore', embedder: 'BaseEmbedder', graph_name: 'str' = 'entity-graph', concurrency: 'int' = 5)",
+      "methods": {
+        "embed_reports": "(self, batch_size: 'int' = 500) -> 'int'"
+      }
+    },
+    "EntityEmbedder": {
+      "import_path": "recon_graphrag.embeddings.entities.EntityEmbedder",
+      "signature": "(graph_store: 'GraphStore', embedder: 'BaseEmbedder', graph_name: 'str' = 'entity-graph', concurrency: 'int' = 10)",
+      "methods": {
+        "embed_entities": "(self, batch_size: 'int' = 500)"
+      }
+    },
+    "ModelParamsEmbedder": {
+      "import_path": "recon_graphrag.embeddings.base.ModelParamsEmbedder",
+      "signature": "(embedder: 'BaseEmbedder', model_params: 'dict[str, Any]')",
+      "methods": {
+        "async_embed_query": "(self, text: 'str', **kwargs: 'Any') -> 'list[float]'",
+        "embed_query": "(self, text: 'str', **kwargs: 'Any') -> 'list[float]'"
+      }
+    },
+    "UsageTrackingLLM": {
+      "import_path": "recon_graphrag.observability.usage.UsageTrackingLLM",
+      "signature": "(inner: 'BaseLLM', ledger: 'Optional[TokenUsageLedger]' = None)",
+      "methods": {
+        "ainvoke": "(self, prompt: 'str', **kwargs: 'Any') -> 'LLMResponse'",
+        "invoke": "(self, prompt: 'str', **kwargs: 'Any') -> 'LLMResponse'"
+      }
+    },
+    "TokenUsageEvent": {
+      "import_path": "recon_graphrag.observability.usage.TokenUsageEvent",
+      "signature": "(ts: 'float', run_id: 'str', stage: 'str', model: 'str | None', input_tokens: 'int', output_tokens: 'int', estimated: 'bool', latency_ms: 'int') -> None",
+      "methods": {
+        "to_dict": "(self) -> 'dict'"
+      },
+      "fields": [
+        {
+          "name": "ts",
+          "type": "float",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "run_id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "stage",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "model",
+          "type": "str | None",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "input_tokens",
+          "type": "int",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "output_tokens",
+          "type": "int",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "estimated",
+          "type": "bool",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "latency_ms",
+          "type": "int",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "TokenUsageLedger": {
+      "import_path": "recon_graphrag.observability.usage.TokenUsageLedger",
+      "signature": "(sinks: 'Optional[list[Callable[[TokenUsageEvent], None]]]' = None)",
+      "methods": {
+        "forget": "(self, run_id: 'str') -> 'None'",
+        "record": "(self, event: 'TokenUsageEvent') -> 'None'",
+        "reset": "(self) -> 'None'",
+        "rollup": "(self) -> 'dict'",
+        "run_summary": "(self, run_id: 'str') -> 'dict | None'"
+      }
+    },
+    "token_stage": {
+      "import_path": "recon_graphrag.observability.usage.token_stage",
+      "signature": "(stage: 'str')",
+      "methods": {}
+    },
+    "run_scope": {
+      "import_path": "recon_graphrag.observability.usage.run_scope",
+      "signature": "(run_id: 'str | None' = None)",
+      "methods": {}
+    },
+    "track_usage": {
+      "import_path": "recon_graphrag.observability.usage.track_usage",
+      "signature": "(llm: 'BaseLLM', *, ledger: 'Optional[TokenUsageLedger]' = None) -> 'BaseLLM'"
+    },
+    "usage_snapshot": {
+      "import_path": "recon_graphrag.observability.usage.usage_snapshot",
+      "signature": "(llm: 'BaseLLM | None') -> 'dict | None'"
+    },
+    "usage_delta": {
+      "import_path": "recon_graphrag.observability.usage.usage_delta",
+      "signature": "(before: 'dict | None', after: 'dict | None') -> 'dict'"
+    },
+    "render_usage_table": {
+      "import_path": "recon_graphrag.observability.report.render_usage_table",
+      "signature": "(summary: 'dict | None') -> 'str'"
+    },
+    "JsonlUsageSink": {
+      "import_path": "recon_graphrag.observability.report.JsonlUsageSink",
+      "signature": "(path: 'str | Path')",
+      "methods": {}
+    },
+    "load_usage_events": {
+      "import_path": "recon_graphrag.observability.report.load_usage_events",
+      "signature": "(path: 'str | Path') -> 'list[TokenUsageEvent]'"
+    },
+    "summarize_events": {
+      "import_path": "recon_graphrag.observability.report.summarize_events",
+      "signature": "(events: 'Iterable[TokenUsageEvent]') -> 'dict'"
+    },
+    "GraphStore": {
+      "import_path": "recon_graphrag.graphdb.base.GraphStore",
+      "signature": "(*args, **kwargs)",
+      "methods": {
+        "backfill_descriptions": "(self) -> 'None'",
+        "create_fulltext_index": "(self, name: 'str', label: 'str', node_properties: 'list[str]') -> 'None'",
+        "create_indexes": "(self, config: 'Optional[IndexConfig]' = None, embedding_dim: 'int' = 1536) -> 'None'",
+        "create_vector_index": "(self, name: 'str', label: 'str', embedding_property: 'str', dimensions: 'int', similarity_fn: 'str' = 'cosine') -> 'None'",
+        "detect_communities": "(self, graph_name: 'str', relationship_types: 'Optional[list[str]]' = None, max_levels: 'int' = 3, gamma: 'float' = 1.0, theta: 'float' = 0.01, tolerance: 'float' = 0.0001, relationship_weight_property: 'Optional[str]' = None, random_seed: 'Optional[int]' = 42, entity_label: 'str' = '__Entity__', community_label: 'str' = 'Community') -> 'list[dict]'",
+        "drop_indexes": "(self, config: 'Optional[IndexConfig]' = None) -> 'None'",
+        "execute_query": "(self, query: 'str', parameters: 'Optional[dict]' = None) -> 'list[dict]'",
+        "fetch_entity_context": "(self, matches: 'list[dict]', retrieval_query: 'Optional[str]' = None, query_params: 'Optional[dict]' = None, mode: 'str' = 'local', graph_name: 'str | None' = None) -> 'list[dict]'",
+        "get_child_community_reports": "(self, graph_name: 'str', community_id: 'str', level: 'int', child_level: 'int') -> 'list[dict]'",
+        "get_chunk_count": "(self) -> 'int'",
+        "get_claims_for_entities": "(self, graph_name: 'str', entity_ids: 'list[str]') -> 'list[dict]'",
+        "get_communities": "(self, graph_name: 'str', level: 'Optional[int]' = None) -> 'list[dict]'",
+        "get_community_ranked_context": "(self, graph_name: 'str', community_id: 'str', level: 'int' = 0) -> 'list[dict]'",
+        "get_community_reports_by_keys": "(self, graph_name: 'str', keys: 'list[dict]', top_k: 'int') -> 'list[dict]'",
+        "get_community_stats": "(self, graph_name: 'str') -> 'list[dict]'",
+        "get_entities_needing_summary": "(self, graph_name: 'str', limit: 'int' = 500) -> 'list[dict]'",
+        "get_entity_count": "(self) -> 'int'",
+        "get_evidence_link_count": "(self) -> 'int'",
+        "get_relationship_count": "(self) -> 'int'",
+        "get_relationships_needing_summary": "(self, graph_name: 'str', limit: 'int' = 500) -> 'list[dict]'",
+        "get_unembedded_community_reports": "(self, graph_name: 'str', limit: 'int' = 500) -> 'list[dict]'",
+        "get_unembedded_entities": "(self, limit: 'int' = 500) -> 'list[dict]'",
+        "keyword_search": "(self, index_name: 'str', query_text: 'str', k: 'int', label: 'Optional[str]' = None, filters: 'Optional[dict]' = None) -> 'list[dict]'",
+        "mark_community_report_failed": "(self, graph_name: 'str', community_id: 'str', level: 'int', error: 'str') -> 'None'",
+        "persist_entity_summaries": "(self, graph_name: 'str', summaries: 'list[dict]') -> 'None'",
+        "persist_relationship_summaries": "(self, graph_name: 'str', summaries: 'list[dict]') -> 'None'",
+        "resolve_chunk_citations": "(self, graph_name: 'str', chunk_ids: 'list[str]') -> 'list[dict]'",
+        "resolve_entities_exact": "(self, graph_name: 'str' = 'entity-graph', resolve_property: 'str' = 'name', dry_run: 'bool' = False) -> 'dict'",
+        "resolve_entities_fuzzy": "(self, graph_name: 'str' = 'entity-graph', resolve_property: 'str' = 'name', dry_run: 'bool' = False, merge_threshold: 'float' = 95.0, review_threshold: 'float' = 85.0, max_candidates_per_entity: 'int' = 20) -> 'dict'",
+        "resolve_entities_hybrid": "(self, graph_name: 'str' = 'entity-graph', resolve_property: 'str' = 'name', dry_run: 'bool' = False, merge_threshold: 'float' = 95.0, review_threshold: 'float' = 85.0, max_candidates_per_entity: 'int' = 20, aliases: 'Optional[dict]' = None, embedder: 'Optional[Any]' = None, llm: 'Optional[Any]' = None, llm_guidance: 'Optional[str]' = None, allow_ai_auto_merge: 'bool' = False, context_properties: 'Optional[dict[str, list[str]] | list[str]]' = None, conflict_properties: 'Optional[dict[str, list[str]] | list[str]]' = None, context_mode: 'str' = 'safe_defaults') -> 'dict'",
+        "resolve_entities_normalized": "(self, graph_name: 'str' = 'entity-graph', resolve_property: 'str' = 'name', dry_run: 'bool' = False) -> 'dict'",
+        "store_community_report": "(self, report: 'CommunityReport', graph_name: 'str') -> 'None'",
+        "upsert_community_report_vectors": "(self, node_ids: 'list[str]', vectors: 'list[list[float]]', graph_name: 'str', levels: 'list[int]') -> 'None'",
+        "upsert_vectors": "(self, node_ids: 'list[str]', embedding_property: 'str', vectors: 'list[list[float]]') -> 'None'",
+        "validate_graph_build": "(self) -> 'dict'",
+        "vector_search": "(self, index_name: 'str', query_vector: 'list[float]', k: 'int', label: 'Optional[str]' = None, filters: 'Optional[dict]' = None) -> 'list[dict]'",
+        "vector_search_community_reports": "(self, query_vector: 'list[float]', graph_name: 'str', top_k: 'int' = 3, level: 'int | None' = None) -> 'list[dict]'",
+        "write_graph_document": "(self, graph_document: 'GraphDocument') -> 'dict'"
+      }
+    },
+    "Neo4jGraphStore": {
+      "import_path": "recon_graphrag.graphdb.neo4j.store.Neo4jGraphStore",
+      "signature": "(driver: 'neo4j.Driver', database: 'Optional[str]' = None)",
+      "methods": {
+        "backfill_descriptions": "(self) -> 'None'",
+        "create_fulltext_index": "(self, name: 'str', label: 'str', node_properties: 'list[str]') -> 'None'",
+        "create_indexes": "(self, config: 'Optional[IndexConfig]' = None, embedding_dim: 'int' = 1536) -> 'None'",
+        "create_vector_index": "(self, name: 'str', label: 'str', embedding_property: 'str', dimensions: 'int', similarity_fn: 'str' = 'cosine') -> 'None'",
+        "detect_communities": "(self, graph_name: 'str', relationship_types: 'Optional[list[str]]' = None, max_levels: 'int' = 3, gamma: 'float' = 1.0, theta: 'float' = 0.01, tolerance: 'float' = 0.0001, relationship_weight_property: 'Optional[str]' = None, random_seed: 'Optional[int]' = 42, entity_label: 'str' = '__Entity__', community_label: 'str' = 'Community') -> 'list[dict]'",
+        "drop_indexes": "(self, config: 'Optional[IndexConfig]' = None) -> 'None'",
+        "execute_query": "(self, query: 'str', parameters: 'Optional[dict]' = None) -> 'list[dict]'",
+        "fetch_entity_context": "(self, matches: 'list[dict]', retrieval_query: 'Optional[str]' = None, query_params: 'Optional[dict]' = None, mode: 'str' = 'local', graph_name: 'str | None' = None) -> 'list[dict]'",
+        "get_child_community_reports": "(self, graph_name: 'str', community_id: 'str', level: 'int', child_level: 'int') -> 'list[dict]'",
+        "get_chunk_count": "(self) -> 'int'",
+        "get_claims_for_entities": "(self, graph_name: 'str', entity_ids: 'list[str]') -> 'list[dict]'",
+        "get_communities": "(self, graph_name: 'str', level: 'int | None' = None) -> 'list[dict]'",
+        "get_community_ranked_context": "(self, graph_name: 'str', community_id: 'str', level: 'int' = 0) -> 'list[dict]'",
+        "get_community_reports_by_keys": "(self, graph_name: 'str', keys: 'list[dict]', top_k: 'int') -> 'list[dict]'",
+        "get_community_stats": "(self, graph_name: 'str') -> 'list[dict]'",
+        "get_entities_needing_summary": "(self, graph_name: 'str', limit: 'int' = 500) -> 'list[dict]'",
+        "get_entity_count": "(self) -> 'int'",
+        "get_evidence_link_count": "(self) -> 'int'",
+        "get_relationship_count": "(self) -> 'int'",
+        "get_relationships_needing_summary": "(self, graph_name: 'str', limit: 'int' = 500) -> 'list[dict]'",
+        "get_unembedded_community_reports": "(self, graph_name: 'str', limit: 'int' = 500) -> 'list[dict]'",
+        "get_unembedded_entities": "(self, limit: 'int' = 500) -> 'list[dict]'",
+        "keyword_search": "(self, index_name: 'str', query_text: 'str', k: 'int', label: 'Optional[str]' = None, filters: 'Optional[dict]' = None) -> 'list[dict]'",
+        "mark_community_report_failed": "(self, graph_name: 'str', community_id: 'str', level: 'int', error: 'str') -> 'None'",
+        "persist_entity_summaries": "(self, graph_name: 'str', summaries: 'list[dict]') -> 'None'",
+        "persist_relationship_summaries": "(self, graph_name: 'str', summaries: 'list[dict]') -> 'None'",
+        "resolve_chunk_citations": "(self, graph_name: 'str', chunk_ids: 'list[str]') -> 'list[dict]'",
+        "resolve_entities_exact": "(self, graph_name: 'str' = 'entity-graph', resolve_property: 'str' = 'name', dry_run: 'bool' = False) -> 'dict'",
+        "resolve_entities_fuzzy": "(self, graph_name: 'str' = 'entity-graph', resolve_property: 'str' = 'name', dry_run: 'bool' = False, merge_threshold: 'float' = 95.0, review_threshold: 'float' = 85.0, max_candidates_per_entity: 'int' = 20) -> 'dict'",
+        "resolve_entities_hybrid": "(self, graph_name: 'str' = 'entity-graph', resolve_property: 'str' = 'name', dry_run: 'bool' = False, merge_threshold: 'float' = 95.0, review_threshold: 'float' = 85.0, max_candidates_per_entity: 'int' = 20, aliases: 'Optional[dict]' = None, embedder=None, llm=None, llm_guidance: 'Optional[str]' = None, allow_ai_auto_merge: 'bool' = False, context_properties: 'Optional[dict[str, list[str]] | list[str]]' = None, conflict_properties: 'Optional[dict[str, list[str]] | list[str]]' = None, context_mode: 'str' = 'safe_defaults') -> 'dict'",
+        "resolve_entities_normalized": "(self, graph_name: 'str' = 'entity-graph', resolve_property: 'str' = 'name', dry_run: 'bool' = False) -> 'dict'",
+        "store_community_report": "(self, report: 'CommunityReport', graph_name: 'str') -> 'None'",
+        "upsert_community_report_vectors": "(self, node_ids: 'list[str]', vectors: 'list[list[float]]', graph_name: 'str', levels: 'list[int]') -> 'None'",
+        "upsert_vectors": "(self, node_ids: 'list[str]', embedding_property: 'str', vectors: 'list[list[float]]') -> 'None'",
+        "validate_graph_build": "(self) -> 'dict'",
+        "vector_search": "(self, index_name: 'str', query_vector: 'list[float]', k: 'int', label: 'Optional[str]' = None, filters: 'Optional[dict]' = None) -> 'list[dict]'",
+        "vector_search_community_reports": "(self, query_vector: 'list[float]', graph_name: 'str', top_k: 'int' = 3, level: 'int | None' = None) -> 'list[dict]'",
+        "write_graph_document": "(self, graph_document: 'GraphDocument') -> 'dict'"
+      }
+    },
+    "MemgraphGraphStore": {
+      "import_path": "recon_graphrag.graphdb.memgraph.store.MemgraphGraphStore",
+      "signature": "(driver: 'neo4j.Driver', database: 'Optional[str]' = None)",
+      "methods": {
+        "backfill_descriptions": "(self) -> 'None'",
+        "create_fulltext_index": "(self, name: 'str', label: 'str', node_properties: 'list[str]') -> 'None'",
+        "create_indexes": "(self, config: 'Optional[IndexConfig]' = None, embedding_dim: 'int' = 1536) -> 'None'",
+        "create_vector_index": "(self, name: 'str', label: 'str', embedding_property: 'str', dimensions: 'int', similarity_fn: 'str' = 'cosine') -> 'None'",
+        "detect_communities": "(self, graph_name: 'str' = 'entity-graph', relationship_types: 'Optional[list[str]]' = None, max_levels: 'int' = 3, gamma: 'float' = 1.0, theta: 'float' = 0.01, tolerance: 'float' = 0.0001, relationship_weight_property: 'Optional[str]' = None, random_seed: 'Optional[int]' = 42, entity_label: 'str' = '__Entity__', community_label: 'str' = 'Community') -> 'list[dict]'",
+        "drop_indexes": "(self, config: 'Optional[IndexConfig]' = None) -> 'None'",
+        "execute_query": "(self, query: 'str', parameters: 'Optional[dict]' = None) -> 'list[dict]'",
+        "fetch_entity_context": "(self, matches: 'list[dict]', retrieval_query: 'Optional[str]' = None, query_params: 'Optional[dict]' = None, mode: 'str' = 'local', graph_name: 'str | None' = None) -> 'list[dict]'",
+        "get_child_community_reports": "(self, graph_name: 'str', community_id: 'str', level: 'int', child_level: 'int') -> 'list[dict]'",
+        "get_chunk_count": "(self) -> 'int'",
+        "get_claims_for_entities": "(self, graph_name: 'str', entity_ids: 'list[str]') -> 'list[dict]'",
+        "get_communities": "(self, graph_name: 'str', level: 'int | None' = None) -> 'list[dict]'",
+        "get_community_ranked_context": "(self, graph_name: 'str', community_id: 'str', level: 'int' = 0) -> 'list[dict]'",
+        "get_community_reports_by_keys": "(self, graph_name: 'str', keys: 'list[dict]', top_k: 'int') -> 'list[dict]'",
+        "get_community_stats": "(self, graph_name: 'str') -> 'list[dict]'",
+        "get_entities_needing_summary": "(self, graph_name: 'str', limit: 'int' = 500) -> 'list[dict]'",
+        "get_entity_count": "(self) -> 'int'",
+        "get_evidence_link_count": "(self) -> 'int'",
+        "get_relationship_count": "(self) -> 'int'",
+        "get_relationships_needing_summary": "(self, graph_name: 'str', limit: 'int' = 500) -> 'list[dict]'",
+        "get_unembedded_community_reports": "(self, graph_name: 'str', limit: 'int' = 500) -> 'list[dict]'",
+        "get_unembedded_entities": "(self, limit: 'int' = 500) -> 'list[dict]'",
+        "keyword_search": "(self, index_name: 'str', query_text: 'str', k: 'int', label: 'Optional[str]' = None, filters: 'Optional[dict]' = None) -> 'list[dict]'",
+        "mark_community_report_failed": "(self, graph_name: 'str', community_id: 'str', level: 'int', error: 'str') -> 'None'",
+        "persist_entity_summaries": "(self, graph_name: 'str', summaries: 'list[dict]') -> 'None'",
+        "persist_relationship_summaries": "(self, graph_name: 'str', summaries: 'list[dict]') -> 'None'",
+        "resolve_chunk_citations": "(self, graph_name: 'str', chunk_ids: 'list[str]') -> 'list[dict]'",
+        "resolve_entities_exact": "(self, graph_name: 'str' = 'entity-graph', resolve_property: 'str' = 'name', dry_run: 'bool' = False) -> 'dict'",
+        "resolve_entities_fuzzy": "(self, graph_name: 'str' = 'entity-graph', resolve_property: 'str' = 'name', dry_run: 'bool' = False, merge_threshold: 'float' = 95.0, review_threshold: 'float' = 85.0, max_candidates_per_entity: 'int' = 20) -> 'dict'",
+        "resolve_entities_hybrid": "(self, graph_name: 'str' = 'entity-graph', resolve_property: 'str' = 'name', dry_run: 'bool' = False, merge_threshold: 'float' = 95.0, review_threshold: 'float' = 85.0, max_candidates_per_entity: 'int' = 20, aliases: 'Optional[dict]' = None, embedder=None, llm=None, llm_guidance: 'Optional[str]' = None, allow_ai_auto_merge: 'bool' = False, context_properties: 'Optional[dict[str, list[str]] | list[str]]' = None, conflict_properties: 'Optional[dict[str, list[str]] | list[str]]' = None, context_mode: 'str' = 'safe_defaults') -> 'dict'",
+        "resolve_entities_normalized": "(self, graph_name: 'str' = 'entity-graph', resolve_property: 'str' = 'name', dry_run: 'bool' = False) -> 'dict'",
+        "store_community_report": "(self, report: 'CommunityReport', graph_name: 'str') -> 'None'",
+        "upsert_community_report_vectors": "(self, node_ids: 'list[str]', vectors: 'list[list[float]]', graph_name: 'str', levels: 'list[int]') -> 'None'",
+        "upsert_vectors": "(self, node_ids: 'list[str]', embedding_property: 'str', vectors: 'list[list[float]]') -> 'None'",
+        "validate_graph_build": "(self) -> 'dict'",
+        "vector_search": "(self, index_name: 'str', query_vector: 'list[float]', k: 'int', label: 'Optional[str]' = None, filters: 'Optional[dict]' = None) -> 'list[dict]'",
+        "vector_search_community_reports": "(self, query_vector: 'list[float]', graph_name: 'str', top_k: 'int' = 3, level: 'int | None' = None) -> 'list[dict]'",
+        "write_graph_document": "(self, graph_document: 'GraphDocument') -> 'dict'"
+      }
+    },
+    "IndexManager": {
+      "import_path": "recon_graphrag.graphdb.index_manager.IndexManager",
+      "signature": "(graph_store, *args, **kwargs)"
+    },
+    "GraphSchema": {
+      "import_path": "recon_graphrag.extraction.schema.GraphSchema",
+      "signature": "(node_types: 'list[NodeType]', relationship_types: 'list[RelationshipType]', patterns: 'list[tuple[str, str, str]]' = <factory>) -> None",
+      "methods": {
+        "get_node_type": "(self, label: 'str') -> 'Optional[NodeType]'",
+        "get_relationship_type": "(self, label: 'str') -> 'Optional[RelationshipType]'",
+        "is_valid_pattern": "(self, source_label: 'str', relationship_label: 'str', target_label: 'str') -> 'bool'",
+        "node_labels": "(self) -> 'set[str]'",
+        "pattern_set": "(self) -> 'set[tuple[str, str, str]]'",
+        "relationship_labels": "(self) -> 'set[str]'",
+        "validate": "(self) -> 'None'"
+      },
+      "fields": [
+        {
+          "name": "node_types",
+          "type": "list[NodeType]",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "relationship_types",
+          "type": "list[RelationshipType]",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "patterns",
+          "type": "list[tuple[str, str, str]]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": true
+    },
+    "NodeType": {
+      "import_path": "recon_graphrag.extraction.schema.NodeType",
+      "signature": "(label: 'str', description: 'str' = '', properties: 'list[PropertyType]' = <factory>, identity_property: 'str' = 'name') -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "label",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "description",
+          "type": "str",
+          "default": "''",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "properties",
+          "type": "list[PropertyType]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "identity_property",
+          "type": "str",
+          "default": "'name'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": true
+    },
+    "PropertyType": {
+      "import_path": "recon_graphrag.extraction.schema.PropertyType",
+      "signature": "(name: 'str', type: 'PropertyDataType' = 'STRING', description: 'str' = '', required: 'bool' = False) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "name",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "type",
+          "type": "PropertyDataType",
+          "default": "'STRING'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "description",
+          "type": "str",
+          "default": "''",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "required",
+          "type": "bool",
+          "default": "False",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": true
+    },
+    "RelationshipType": {
+      "import_path": "recon_graphrag.extraction.schema.RelationshipType",
+      "signature": "(label: 'str', description: 'str' = '', properties: 'list[PropertyType]' = <factory>) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "label",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "description",
+          "type": "str",
+          "default": "''",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "properties",
+          "type": "list[PropertyType]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": true
+    },
+    "build_schema": {
+      "import_path": "recon_graphrag.extraction.schema.build_schema",
+      "signature": "(node_types: 'list[dict]', relationship_types: 'list[dict]', patterns: 'list[tuple[str, str, str]]') -> 'GraphSchema'"
+    },
+    "schema_to_dict": {
+      "import_path": "recon_graphrag.extraction.schema.schema_to_dict",
+      "signature": "(schema: 'GraphSchema') -> 'dict'"
+    },
+    "save_schema_json": {
+      "import_path": "recon_graphrag.extraction.schema.save_schema_json",
+      "signature": "(schema: 'GraphSchema', path: 'str | Path') -> 'None'"
+    },
+    "load_schema_json": {
+      "import_path": "recon_graphrag.extraction.schema.load_schema_json",
+      "signature": "(path: 'str | Path') -> 'GraphSchema'"
+    },
+    "analyze_schema": {
+      "import_path": "recon_graphrag.extraction.schema_analyzer.analyze_schema",
+      "signature": "(llm: 'BaseLLM', texts: 'str | Iterable[str]', *, hint: 'str' = '', max_sample_tokens: 'int' = 2000, max_batches: 'int' = 10, token_counter: 'TokenCounter | None' = None) -> 'GraphSchema'"
+    },
+    "aanalyze_schema": {
+      "import_path": "recon_graphrag.extraction.schema_analyzer.aanalyze_schema",
+      "signature": "(llm: 'BaseLLM', texts: 'str | Iterable[str]', *, hint: 'str' = '', max_sample_tokens: 'int' = 2000, max_batches: 'int' = 10, token_counter: 'TokenCounter | None' = None) -> 'GraphSchema'"
+    },
+    "SchemaPromptBuilder": {
+      "import_path": "recon_graphrag.extraction.prompts.SchemaPromptBuilder",
+      "signature": "(extraction_prompt: str | None = None, assessment_prompt: str | None = None, continuation_prompt: str | None = None, claim_prompt: str | None = None, entity_summary_prompt: str | None = None, relationship_summary_prompt: str | None = None)",
+      "methods": {
+        "build_assessment_prompt": "(self, text: str, schema: recon_graphrag.extraction.schema.GraphSchema, current: recon_graphrag.extraction.types.GraphExtraction) -> str",
+        "build_claim_prompt": "(self, text: str, entity_ids: list[str]) -> str",
+        "build_continuation_prompt": "(self, text: str, schema: recon_graphrag.extraction.schema.GraphSchema, current: recon_graphrag.extraction.types.GraphExtraction) -> str",
+        "build_entity_summary_prompt": "(self, descriptions: list[str], entity_name: str, entity_type: str, properties: dict | None = None) -> str",
+        "build_prompt": "(self, text: str, schema: recon_graphrag.extraction.schema.GraphSchema) -> str",
+        "build_relationship_summary_prompt": "(self, descriptions: list[str], source: str, target: str, rel_type: str) -> str"
+      }
+    },
+    "ColumnEntity": {
+      "import_path": "recon_graphrag.extraction.structured.ColumnEntity",
+      "signature": "(label: 'str', identity_column: 'str', properties: 'dict[str, str]' = <factory>, types: 'dict[str, PropertyDataType]' = <factory>, description_template: 'str | None' = None) -> None",
+      "methods": {
+        "scoped_key": "(self, identity_value: 'str') -> 'str'"
+      },
+      "fields": [
+        {
+          "name": "label",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "identity_column",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "properties",
+          "type": "dict[str, str]",
+          "default": "<required>",
+          "factory": "builtins.dict",
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "types",
+          "type": "dict[str, PropertyDataType]",
+          "default": "<required>",
+          "factory": "builtins.dict",
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "description_template",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": true
+    },
+    "RowMapping": {
+      "import_path": "recon_graphrag.extraction.structured.RowMapping",
+      "signature": "(entities: 'list[ColumnEntity]', relationships: 'list[RowRelationship]' = <factory>, text_columns: 'list[TextColumn]' = <factory>, record_id_column: 'str | None' = None, metadata_columns: 'list[str]' = <factory>) -> None",
+      "methods": {
+        "resolution_context": "(self) -> 'dict[str, list[str]]'",
+        "to_schema": "(self) -> 'GraphSchema'",
+        "validate": "(self) -> 'None'"
+      },
+      "fields": [
+        {
+          "name": "entities",
+          "type": "list[ColumnEntity]",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "relationships",
+          "type": "list[RowRelationship]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "text_columns",
+          "type": "list[TextColumn]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "record_id_column",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "metadata_columns",
+          "type": "list[str]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": true
+    },
+    "RowRelationship": {
+      "import_path": "recon_graphrag.extraction.structured.RowRelationship",
+      "signature": "(source_label: 'str', type: 'str', target_label: 'str', properties: 'dict[str, str]' = <factory>) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "source_label",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "type",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "target_label",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "properties",
+          "type": "dict[str, str]",
+          "default": "<required>",
+          "factory": "builtins.dict",
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": true
+    },
+    "TextColumn": {
+      "import_path": "recon_graphrag.extraction.structured.TextColumn",
+      "signature": "(column: 'str', anchor_label: 'str | None' = None, relationship: 'str' = 'MENTIONS') -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "column",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "anchor_label",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "relationship",
+          "type": "str",
+          "default": "'MENTIONS'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": true
+    },
+    "iter_csv": {
+      "import_path": "recon_graphrag.extraction.structured.iter_csv",
+      "signature": "(path: 'str | Path', encoding: 'str' = 'utf-8-sig', **fmtparams: 'Any') -> 'Iterator[dict]'"
+    },
+    "iter_excel": {
+      "import_path": "recon_graphrag.extraction.structured.iter_excel",
+      "signature": "(path: 'str | Path', sheet: 'str | None' = None) -> 'Iterator[dict]'"
+    },
+    "iter_sql": {
+      "import_path": "recon_graphrag.extraction.structured.iter_sql",
+      "signature": "(connection: 'Any', query: 'str', params: 'Any' = None) -> 'Iterator[dict]'"
+    },
+    "SearchResult": {
+      "import_path": "recon_graphrag.models.types.SearchResult",
+      "signature": "(query: 'str', mode: 'str', answer: 'str', context: 'str' = '', citations: 'list[Citation]' = <factory>, metadata: 'dict' = <factory>) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "query",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "mode",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "answer",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "context",
+          "type": "str",
+          "default": "''",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "citations",
+          "type": "list[Citation]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "metadata",
+          "type": "dict",
+          "default": "<required>",
+          "factory": "builtins.dict",
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "IndexConfig": {
+      "import_path": "recon_graphrag.models.types.IndexConfig",
+      "signature": "(entity_vector_index: 'str' = 'entity-embeddings', entity_fulltext_index: 'str' = 'entity-names', community_vector_index: 'str' = 'community-report-embeddings', entity_label: 'str' = '__Entity__', community_label: 'str' = 'Community', community_report_embedding_property: 'str' = 'report_embedding') -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "entity_vector_index",
+          "type": "str",
+          "default": "'entity-embeddings'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "entity_fulltext_index",
+          "type": "str",
+          "default": "'entity-names'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "community_vector_index",
+          "type": "str",
+          "default": "'community-report-embeddings'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "entity_label",
+          "type": "str",
+          "default": "'__Entity__'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "community_label",
+          "type": "str",
+          "default": "'Community'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "community_report_embedding_property",
+          "type": "str",
+          "default": "'report_embedding'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "graph_document_to_dict": {
+      "import_path": "recon_graphrag.extraction.artifacts.graph_document_to_dict",
+      "signature": "(graph_document: 'GraphDocument') -> 'dict[str, Any]'"
+    },
+    "graph_document_from_dict": {
+      "import_path": "recon_graphrag.extraction.artifacts.graph_document_from_dict",
+      "signature": "(payload: 'dict[str, Any]') -> 'GraphDocument'"
+    },
+    "save_graph_document_json": {
+      "import_path": "recon_graphrag.extraction.artifacts.save_graph_document_json",
+      "signature": "(graph_document: 'GraphDocument', path: 'str | Path') -> 'None'"
+    },
+    "load_graph_document_json": {
+      "import_path": "recon_graphrag.extraction.artifacts.load_graph_document_json",
+      "signature": "(path: 'str | Path') -> 'GraphDocument'"
+    },
+    "CommunityDetector": {
+      "import_path": "recon_graphrag.communities.neo4j.detection.CommunityDetector",
+      "signature": "(graph_store: 'GraphStore', relationship_types: 'Optional[list[str]]' = None, max_levels: 'int' = 3, gamma: 'float' = 1.0, theta: 'float' = 0.01, tolerance: 'float' = 0.0001, graph_name: 'str' = 'entity-graph', relationship_weight_property: 'Optional[str]' = None, random_seed: 'Optional[int]' = 42, entity_label: 'str' = '__Entity__', community_label: 'str' = 'Community')",
+      "methods": {
+        "detect": "(self) -> 'list[dict[str, Any]]'"
+      }
+    },
+    "CommunitySummarizer": {
+      "import_path": "recon_graphrag.communities.summarization.CommunitySummarizer",
+      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', graph_name: 'str' = 'entity-graph', report_rubric: 'ReportRubric | None' = None, concurrency: 'int' = 5, max_context_tokens: 'int | None' = None, token_counter: 'TokenCounter | None' = None, max_report_words: 'int | None' = 2000, report_prompt: 'str | None' = None)",
+      "methods": {
+        "generate_all": "(self, level: 'int' = 0, skip_existing: 'bool' = False) -> 'tuple[list[dict], BuildStats]'",
+        "generate_report": "(self, community_id: 'str', level: 'int' = 0, context: 'CommunityContext | None' = None, input_fingerprint: 'str | None' = None) -> 'CommunityReport'"
+      }
+    },
+    "CommunityPipeline": {
+      "import_path": "recon_graphrag.communities.pipeline.CommunityPipeline",
+      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', relationship_types: 'Optional[list[str]]' = None, max_levels: 'int' = 3, gamma: 'float' = 1.0, theta: 'float' = 0.01, tolerance: 'float' = 0.0001, graph_name: 'str' = 'entity-graph', relationship_weight_property: 'str' = 'weight', random_seed: 'Optional[int]' = 42, report_rubric: 'ReportRubric | None' = None, report_prompt: 'str | None' = None, summarize_concurrency: 'int' = 10, skip_existing: 'bool' = False, max_context_tokens: 'int' = 8000, token_counter: 'TokenCounter | None' = None, max_report_words: 'int | None' = 2000, embedder: 'BaseEmbedder | None' = None, embed_community_reports: 'bool' = True, track_token_usage: 'bool' = True)",
+      "methods": {
+        "build": "(self, level: 'Optional[int]' = None) -> 'dict'"
+      }
+    },
+    "PipelineConfig": {
+      "import_path": "recon_graphrag.config.settings.PipelineConfig",
+      "signature": "(chunk_size: 'int' = 1200, chunk_overlap: 'int' = 100, chunk_unit: 'str' = 'tokens', embedding_dim: 'int | None' = None, extraction_concurrency: 'int' = 5, max_gleanings: 'int' = 1, extract_claims: 'bool' = False, use_mixed_context: 'bool' = False, token_counter: 'TokenCounter | None' = None) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "chunk_size",
+          "type": "int",
+          "default": "1200",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "chunk_overlap",
+          "type": "int",
+          "default": "100",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "chunk_unit",
+          "type": "str",
+          "default": "'tokens'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "embedding_dim",
+          "type": "int | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "extraction_concurrency",
+          "type": "int",
+          "default": "5",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "max_gleanings",
+          "type": "int",
+          "default": "1",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "extract_claims",
+          "type": "bool",
+          "default": "False",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "use_mixed_context",
+          "type": "bool",
+          "default": "False",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "token_counter",
+          "type": "TokenCounter | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "recon_graphrag.extraction.types.ExtractedNode": {
+      "import_path": "recon_graphrag.extraction.types.ExtractedNode",
+      "signature": "(id: 'str', label: 'str', properties: 'dict[str, Any]' = <factory>) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "label",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "properties",
+          "type": "dict[str, Any]",
+          "default": "<required>",
+          "factory": "builtins.dict",
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "recon_graphrag.extraction.types.ExtractedRelationship": {
+      "import_path": "recon_graphrag.extraction.types.ExtractedRelationship",
+      "signature": "(source_id: 'str', target_id: 'str', type: 'str', properties: 'dict[str, Any]' = <factory>) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "source_id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "target_id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "type",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "properties",
+          "type": "dict[str, Any]",
+          "default": "<required>",
+          "factory": "builtins.dict",
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "recon_graphrag.extraction.types.ExtractedClaim": {
+      "import_path": "recon_graphrag.extraction.types.ExtractedClaim",
+      "signature": "(subject_entity_id: 'str', claim_type: 'str', description: 'str', status: 'str' = 'active', start_date: 'str | None' = None, end_date: 'str | None' = None, object_entity_id: 'str | None' = None, source_text: 'str | None' = None, text_unit_id: 'str | None' = None) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "subject_entity_id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "claim_type",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "description",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "status",
+          "type": "str",
+          "default": "'active'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "start_date",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "end_date",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "object_entity_id",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "source_text",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "text_unit_id",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "recon_graphrag.extraction.types.GraphExtraction": {
+      "import_path": "recon_graphrag.extraction.types.GraphExtraction",
+      "signature": "(nodes: 'list[ExtractedNode]' = <factory>, relationships: 'list[ExtractedRelationship]' = <factory>) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "nodes",
+          "type": "list[ExtractedNode]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "relationships",
+          "type": "list[ExtractedRelationship]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "recon_graphrag.extraction.types.DocumentRecord": {
+      "import_path": "recon_graphrag.extraction.types.DocumentRecord",
+      "signature": "(id: 'str', text_hash: 'str', metadata: 'dict[str, Any]' = <factory>, graph_name: 'str' = 'entity-graph') -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "text_hash",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "metadata",
+          "type": "dict[str, Any]",
+          "default": "<required>",
+          "factory": "builtins.dict",
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "graph_name",
+          "type": "str",
+          "default": "'entity-graph'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "recon_graphrag.extraction.types.ChunkRecord": {
+      "import_path": "recon_graphrag.extraction.types.ChunkRecord",
+      "signature": "(id: 'str', document_id: 'str', text: 'str', index: 'int', metadata: 'dict[str, Any]' = <factory>, graph_name: 'str' = 'entity-graph') -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "document_id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "text",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "index",
+          "type": "int",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "metadata",
+          "type": "dict[str, Any]",
+          "default": "<required>",
+          "factory": "builtins.dict",
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "graph_name",
+          "type": "str",
+          "default": "'entity-graph'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "recon_graphrag.extraction.types.EntityRecord": {
+      "import_path": "recon_graphrag.extraction.types.EntityRecord",
+      "signature": "(id: 'str', type: 'str', properties: 'dict[str, Any]' = <factory>, graph_name: 'str' = 'entity-graph', canonical_key: 'str | None' = None, human_readable_id: 'str | None' = None, description_observations: 'list[DescriptionObservation]' = <factory>) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "type",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "properties",
+          "type": "dict[str, Any]",
+          "default": "<required>",
+          "factory": "builtins.dict",
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "graph_name",
+          "type": "str",
+          "default": "'entity-graph'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "canonical_key",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "human_readable_id",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "description_observations",
+          "type": "list[DescriptionObservation]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "recon_graphrag.extraction.types.RelationshipRecord": {
+      "import_path": "recon_graphrag.extraction.types.RelationshipRecord",
+      "signature": "(id: 'str', source_id: 'str', target_id: 'str', type: 'str', properties: 'dict[str, Any]' = <factory>, graph_name: 'str' = 'entity-graph', observation_count: 'int' = 1, strength: 'float | None' = None) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "source_id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "target_id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "type",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "properties",
+          "type": "dict[str, Any]",
+          "default": "<required>",
+          "factory": "builtins.dict",
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "graph_name",
+          "type": "str",
+          "default": "'entity-graph'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "observation_count",
+          "type": "int",
+          "default": "1",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "strength",
+          "type": "float | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "recon_graphrag.extraction.types.EvidenceLink": {
+      "import_path": "recon_graphrag.extraction.types.EvidenceLink",
+      "signature": "(chunk_id: 'str', entity_id: 'str', graph_name: 'str' = 'entity-graph') -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "chunk_id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "entity_id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "graph_name",
+          "type": "str",
+          "default": "'entity-graph'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "recon_graphrag.extraction.types.GraphDocument": {
+      "import_path": "recon_graphrag.extraction.types.GraphDocument",
+      "signature": "(document: 'DocumentRecord', chunks: 'list[ChunkRecord]', entities: 'list[EntityRecord]', relationships: 'list[RelationshipRecord]', evidence_links: 'list[EvidenceLink]', claims: 'list[ClaimRecord]' = <factory>) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "document",
+          "type": "DocumentRecord",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "chunks",
+          "type": "list[ChunkRecord]",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "entities",
+          "type": "list[EntityRecord]",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "relationships",
+          "type": "list[RelationshipRecord]",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "evidence_links",
+          "type": "list[EvidenceLink]",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "claims",
+          "type": "list[ClaimRecord]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "recon_graphrag.models.artifacts.SourceReference": {
+      "import_path": "recon_graphrag.models.artifacts.SourceReference",
+      "signature": "(document_id: 'str', chunk_id: 'str', document_name: 'str | None' = None, page_start: 'int | None' = None, page_end: 'int | None' = None, char_start: 'int | None' = None, char_end: 'int | None' = None) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "document_id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "chunk_id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "document_name",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "page_start",
+          "type": "int | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "page_end",
+          "type": "int | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "char_start",
+          "type": "int | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "char_end",
+          "type": "int | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": true
+    },
+    "recon_graphrag.models.artifacts.Citation": {
+      "import_path": "recon_graphrag.models.artifacts.Citation",
+      "signature": "(document_id: 'str', chunk_id: 'str', document_name: 'str | None' = None, page_start: 'int | None' = None, page_end: 'int | None' = None, excerpt: 'str | None' = None, metadata: 'dict[str, Any]' = <factory>) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "document_id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "chunk_id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "document_name",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "page_start",
+          "type": "int | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "page_end",
+          "type": "int | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "excerpt",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "metadata",
+          "type": "dict[str, Any]",
+          "default": "<required>",
+          "factory": "builtins.dict",
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": true
+    },
+    "recon_graphrag.models.artifacts.DocumentSource": {
+      "import_path": "recon_graphrag.models.artifacts.DocumentSource",
+      "signature": "(document_id: 'str', document_name: 'str | None', chunk_list: 'list[Citation]' = <factory>) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "document_id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "document_name",
+          "type": "str | None",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "chunk_list",
+          "type": "list[Citation]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "recon_graphrag.models.artifacts.DescriptionObservation": {
+      "import_path": "recon_graphrag.models.artifacts.DescriptionObservation",
+      "signature": "(entity_id: 'str', description: 'str', source: 'SourceReference', created_at: 'str | None' = None) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "entity_id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "description",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "source",
+          "type": "SourceReference",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "created_at",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "recon_graphrag.models.artifacts.ClaimRecord": {
+      "import_path": "recon_graphrag.models.artifacts.ClaimRecord",
+      "signature": "(id: 'str', entity_id: 'str', claim_type: 'str', description: 'str', source: 'SourceReference', status: 'str' = 'active', graph_name: 'str' = 'entity-graph', created_at: 'str | None' = None, start_date: 'str | None' = None, end_date: 'str | None' = None, object_entity_id: 'str | None' = None, source_text: 'str | None' = None, text_unit_id: 'str | None' = None) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "entity_id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "claim_type",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "description",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "source",
+          "type": "SourceReference",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "status",
+          "type": "str",
+          "default": "'active'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "graph_name",
+          "type": "str",
+          "default": "'entity-graph'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "created_at",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "start_date",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "end_date",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "object_entity_id",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "source_text",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "text_unit_id",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "recon_graphrag.models.artifacts.FindingReference": {
+      "import_path": "recon_graphrag.models.artifacts.FindingReference",
+      "signature": "(target_id: 'str', target_type: 'str') -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "target_id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "target_type",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": true
+    },
+    "recon_graphrag.models.artifacts.CommunityFinding": {
+      "import_path": "recon_graphrag.models.artifacts.CommunityFinding",
+      "signature": "(id: 'str', description: 'str', references: 'list[FindingReference]' = <factory>, rank: 'float' = 0.0) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "description",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "references",
+          "type": "list[FindingReference]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "rank",
+          "type": "float",
+          "default": "0.0",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "recon_graphrag.models.artifacts.ArtifactVersion": {
+      "import_path": "recon_graphrag.models.artifacts.ArtifactVersion",
+      "signature": "(schema_version: 'str' = '1.1', prompt_version: 'str' = '0.1', input_fingerprint: 'str | None' = None, created_at: 'str | None' = None) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "schema_version",
+          "type": "str",
+          "default": "'1.1'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "prompt_version",
+          "type": "str",
+          "default": "'0.1'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "input_fingerprint",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "created_at",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "recon_graphrag.models.artifacts.CommunityReport": {
+      "import_path": "recon_graphrag.models.artifacts.CommunityReport",
+      "signature": "(id: 'str', community_id: 'str', level: 'int', findings: 'list[CommunityFinding]' = <factory>, summary: 'str' = '', title: 'str' = '', rating: 'float | None' = None, rating_explanation: 'str | None' = None, version: 'ArtifactVersion' = <factory>, context_tokens_used: 'int | None' = None, context_truncated: 'bool' = False) -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "community_id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "level",
+          "type": "int",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "findings",
+          "type": "list[CommunityFinding]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "summary",
+          "type": "str",
+          "default": "''",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "title",
+          "type": "str",
+          "default": "''",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "rating",
+          "type": "float | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "rating_explanation",
+          "type": "str | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "version",
+          "type": "ArtifactVersion",
+          "default": "<required>",
+          "factory": "recon_graphrag.models.artifacts.ArtifactVersion",
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "context_tokens_used",
+          "type": "int | None",
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "context_truncated",
+          "type": "bool",
+          "default": "False",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "recon_graphrag.graphdb.base.GraphWriter": {
+      "import_path": "recon_graphrag.graphdb.base.GraphWriter",
+      "signature": "(*args, **kwargs)",
+      "methods": {
+        "write_graph_document": "(self, graph_document: 'GraphDocument') -> 'dict'"
+      }
+    },
+    "recon_graphrag.utils.tokens.TokenCounter": {
+      "import_path": "recon_graphrag.utils.tokens.TokenCounter",
+      "signature": "(*args, **kwargs)",
+      "methods": {
+        "count": "(self, text: 'str') -> 'int'",
+        "truncate": "(self, text: 'str', max_tokens: 'int') -> 'str'"
+      }
+    },
+    "recon_graphrag.extraction.chunking.TextChunker": {
+      "import_path": "recon_graphrag.extraction.chunking.TextChunker",
+      "signature": "(chunk_size: 'int' = 1000, chunk_overlap: 'int' = 200, unit: 'str' = 'characters', token_counter: 'TokenCounter | None' = None)",
+      "methods": {
+        "chunk_text": "(self, text: 'str', document_id: 'str', metadata: 'dict | None' = None) -> 'list[TextChunk]'"
+      }
+    },
+    "recon_graphrag.extraction.chunking.TextChunk": {
+      "import_path": "recon_graphrag.extraction.chunking.TextChunk",
+      "signature": "(id: 'str', text: 'str', index: 'int', metadata: 'dict') -> None",
+      "methods": {},
+      "fields": [
+        {
+          "name": "id",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "text",
+          "type": "str",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "index",
+          "type": "int",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        },
+        {
+          "name": "metadata",
+          "type": "dict",
+          "default": "<required>",
+          "factory": null,
+          "init": true,
+          "kw_only": false
+        }
+      ],
+      "frozen": false
+    },
+    "recon_graphrag.extraction.chunking.PageWindowBuilder": {
+      "import_path": "recon_graphrag.extraction.chunking.PageWindowBuilder",
+      "signature": "(window_size: 'int' = 2, window_overlap: 'int' = 1)",
+      "methods": {
+        "build_windows": "(self, pages: 'list[str | dict]', document_id: 'str', metadata: 'dict | None' = None) -> 'list[TextChunk]'"
+      }
+    }
+  }
+}
