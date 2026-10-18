@@ -1,0 +1,1 @@
+"""Public compatibility characterization tests."""
