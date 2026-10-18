@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, fields
+from dataclasses import asdict, fields, replace
 from inspect import signature
 
 import pytest
@@ -430,9 +430,8 @@ class TestPackCommunityContext:
 
         packed = pack_community_context(ctx, max_tokens=500, counter=counter)
 
-        # Recount from actual text — allow ±1 token rounding difference
-        actual_tokens = counter.count(packed.text)
-        assert abs(packed.used_tokens - actual_tokens) <= 1
+        assert packed.used_tokens == counter.count(packed.text)
+        assert packed.used_tokens <= packed.max_tokens
 
 
 class TestBuildPackedReferenceIds:
@@ -596,21 +595,25 @@ _LEGACY_ISOLATE = "- [Entity] Charlie: Intern"
 @pytest.mark.parametrize(
     "budget,text,used,edges,isolates,excluded_entities,truncated,refs",
     [
-        (10_000, f"{_LEGACY_FIRST_EDGE}\n{_LEGACY_SECOND_EDGE}\n{_LEGACY_ISOLATE}",
-         460, 2, 1, 0, False,
+        (10_000, f"{_LEGACY_FIRST_EDGE}\n{_LEGACY_SECOND_EDGE}\n{_LEGACY_ISOLATE}" + (
+            "\n\nClaims:\n"
+            "  [claim:edge] (role; status=active, dates=2020..?, object=e2) Alice is CEO Source: source\n"
+            "  [claim:iso] (role; status=active) Charlie is intern\n"
+            "  [claim:drop] (role; status=active) Huge owns Acme"
+         ), 668, 2, 1, 0, False,
          ["e1", "e2", "e4", "e1:WORKS_AT:e2", "e4:OWNS:e2", "e3",
           "claim:edge", "claim:iso", "claim:drop"]),
-        (150, f"{_LEGACY_FIRST_EDGE}\n{_LEGACY_ISOLATE}", 119, 1, 1, 1, True,
-         ["e1", "e2", "e1:WORKS_AT:e2", "e3", "claim:edge", "claim:iso"]),
+        (150, f"{_LEGACY_FIRST_EDGE}\n{_LEGACY_ISOLATE}", 120, 1, 1, 1, True,
+         ["e1", "e2", "e1:WORKS_AT:e2", "e3"]),
         (93, _LEGACY_FIRST_EDGE, 93, 1, 0, 2, True,
-         ["e1", "e2", "e1:WORKS_AT:e2", "claim:edge"]),
-        (92, "- [Person] Alice: CEO\n" + _LEGACY_ISOLATE, 47, 0, 2, 2, True,
-         ["e1", "e3", "claim:edge", "claim:iso"]),
+         ["e1", "e2", "e1:WORKS_AT:e2"]),
+        (92, "- [Person] Alice: CEO\n" + _LEGACY_ISOLATE, 48, 0, 2, 2, True,
+         ["e1", "e3"]),
         (0, "", 0, 0, 0, 3, False, []),
         (-1, "", 0, 0, 0, 3, False, []),
     ],
 )
-def test_private_evidence_selection_preserves_legacy_packing(
+def test_private_evidence_selection_authorizes_only_rendered_records(
     budget, text, used, edges, isolates, excluded_entities, truncated, refs,
 ):
     context = _legacy_selection_context()
@@ -628,8 +631,7 @@ def test_private_evidence_selection_preserves_legacy_packing(
     assert _build_selected_reference_ids(selection) == refs
     assert build_packed_reference_ids(context, packed) == refs
     assert selection.edges == tuple(context.edges[:edges])
-    assert selection.rendered_claims == ()
-    assert [claim.id for claim in selection.legacy_authorized_claims] == [
+    assert [claim.id for claim in selection.rendered_claims] == [
         ref for ref in refs if ref.startswith("claim:")
     ]
     assert asdict(context) == original
@@ -640,13 +642,12 @@ def test_private_selection_keeps_custom_counter_dispatch_and_selected_records():
     context = _legacy_selection_context()
     counter = _RecordingCharacterCounter()
     selection = _pack_community_evidence(context, 150, counter)
-    assert counter.counted == [
-        _LEGACY_FIRST_EDGE, _LEGACY_SECOND_EDGE, _LEGACY_ISOLATE,
-        "- [Entity] Huge: " + "X" * 300,
-    ]
+    assert selection.packed.text in counter.counted
+    assert selection.packed.used_tokens == counter.count(selection.packed.text)
+    assert any("Claims:" in text for text in counter.counted)
     assert selection.isolated_entities == (context.entities[1],)
     assert selection.edges[0] is context.edges[0]
-    assert selection.legacy_authorized_claims == tuple(context.claims[:2])
+    assert selection.rendered_claims == ()
 
 
 def test_private_selection_preserves_new_self_loop_duplicate_rendering():
@@ -690,3 +691,168 @@ def test_packed_context_public_shape_signatures_and_module_imports_are_unchanged
     )
     assert summarization.pack_community_context is pack_community_context
     assert summarization.build_packed_reference_ids is build_packed_reference_ids
+
+
+@pytest.mark.parametrize("start_date,end_date,dates", [
+    ("2020", "2021", "2020..2021"), ("2020", None, "2020..?"), (None, "2021", "?..2021"),
+])
+def test_packed_claim_only_fact_reuses_full_format_and_preview_with_isolated_subject(
+    start_date, end_date, dates,
+):
+    claim = ClaimContext(
+        "claim:full", "subject", "ownership", "Only this claim states the ownership.",
+        status="disputed", start_date=start_date, end_date=end_date,
+        object_entity_id="object:not-admitted",
+        source_text="S" * 201, text_unit_id="chunk:not-admitted",
+    )
+    minimal = ClaimContext("claim:minimal", "subject", "role", "Second fact.")
+    context = CommunityContext(
+        "c1", 0, entities=[EntityContext("subject", "Alice", "Person")],
+        claims=[claim, minimal],
+    )
+    expected = (
+        "- [Entity] Alice: Person\n\nClaims:\n"
+        f"  [claim:full] (ownership; status=disputed, dates={dates}, object=object:not-admitted) "
+        "Only this claim states the ownership. Source: " + "S" * 200 + "\n"
+        "  [claim:minimal] (role; status=active) Second fact."
+    )
+    selection = _pack_community_evidence(context, len(expected), _RecordingCharacterCounter())
+    assert selection.packed.text == expected == render_community_context(context)
+    assert selection.packed.used_tokens == len(expected)
+    assert selection.packed.truncated is False
+    assert selection.packed.included_edges == 0
+    assert selection.rendered_claims == (claim, minimal)
+    assert _build_selected_reference_ids(selection) == ["subject", "claim:full", "claim:minimal"]
+    assert build_packed_reference_ids(context, selection.packed) == [
+        "subject", "claim:full", "claim:minimal",
+    ]
+    # Neither an object mention nor a chunk ID grants additional authority.
+    assert "object:not-admitted" not in _build_selected_reference_ids(selection)
+    assert "chunk:not-admitted" not in expected
+
+
+@pytest.mark.parametrize("offset,admitted", [(0, True), (-1, False)])
+def test_atomic_claim_budget_includes_first_heading_and_separators(offset, admitted):
+    context = CommunityContext(
+        "c1", 0, entities=[EntityContext("subject", "Alice", "CEO")],
+        claims=[ClaimContext("claim:1", "subject", "role", "Claim-only fact")],
+    )
+    full = render_community_context(context)
+    budget = len(full) + offset
+    selection = _pack_community_evidence(context, budget, _RecordingCharacterCounter())
+    expected = full if admitted else "- [Entity] Alice: CEO"
+    assert selection.packed.text == expected
+    assert selection.packed.used_tokens == len(expected) <= budget
+    assert selection.packed.truncated is (not admitted)
+    assert bool(selection.rendered_claims) is admitted
+    assert build_packed_reference_ids(context, selection.packed) == (
+        ["subject", "claim:1"] if admitted else ["subject"]
+    )
+    if not admitted:
+        assert "Claims:" not in expected
+        assert "claim:1" not in expected
+
+
+def test_oversized_claim_stops_eligible_prefix_without_partial_authorization():
+    context = CommunityContext(
+        "c1", 0, entities=[EntityContext("subject", "Alice", "CEO")],
+        claims=[
+            ClaimContext("claim:huge", "subject", "role", "H" * 1000),
+            ClaimContext("claim:small", "subject", "role", "Small"),
+        ],
+    )
+    selection = _pack_community_evidence(context, 200, _RecordingCharacterCounter())
+    assert selection.packed.text == "- [Entity] Alice: CEO"
+    assert selection.packed.truncated is True
+    assert selection.rendered_claims == ()
+    assert build_packed_reference_ids(context, selection.packed) == ["subject"]
+
+
+def test_claim_eligibility_excludes_dropped_subject_but_keeps_later_admitted_subject():
+    context = CommunityContext(
+        "c1", 0,
+        entities=[EntityContext("subject", "Alice", "CEO"),
+                  EntityContext("dropped", "Huge", "H" * 1000)],
+        claims=[
+            ClaimContext("claim:dropped", "dropped", "role", "Dropped subject"),
+            ClaimContext("claim:unknown", "unknown", "role", "Unknown subject"),
+            ClaimContext("claim:admitted", "subject", "role", "Claim-only fact"),
+        ],
+    )
+    selection = _pack_community_evidence(context, 200, _RecordingCharacterCounter())
+    assert [claim.id for claim in selection.rendered_claims] == ["claim:admitted"]
+    assert build_packed_reference_ids(context, selection.packed) == ["subject", "claim:admitted"]
+    assert "claim:dropped" not in selection.packed.text
+    assert "claim:unknown" not in selection.packed.text
+
+
+@pytest.mark.parametrize("field", ["description", "source_text"])
+def test_packed_reference_recovery_does_not_authorize_claim_blocks_embedded_in_claims(field):
+    hidden = ClaimContext("claim:hidden", "subject", "role", "Hidden fact")
+    hidden_block = "  [claim:hidden] (role; status=active) Hidden fact"
+    shown = ClaimContext("claim:shown", "subject", "role", "Shown fact")
+    shown = replace(shown, **{field: "Multiline\n\nClaims:\n" + hidden_block})
+    context = CommunityContext(
+        "c1", 0, entities=[EntityContext("subject", "Alice", "CEO")],
+        claims=[shown, hidden],
+    )
+    # The hidden claim's entire canonical block occurs in the rendered claim.
+    expected = render_community_context(replace(context, claims=[shown]))
+    selection = _pack_community_evidence(context, len(expected), _RecordingCharacterCounter())
+    assert selection.packed.text == expected
+    assert hidden_block in expected
+    assert selection.rendered_claims == (shown,)
+    assert build_packed_reference_ids(context, selection.packed) == ["subject", "claim:shown"]
+    # Whole-text recovery also rejects partial/corrupt suffixes, not just IDs.
+    for suffix in ("\n" + hidden_block[:-1], "\n[claim:hidden]", "\ntrailing garbage"):
+        assert build_packed_reference_ids(
+            context, replace(selection.packed, text=expected + suffix),
+        ) == []
+
+
+def test_packed_reference_recovery_does_not_authorize_claim_in_entity_description():
+    context = CommunityContext(
+        "c1", 0,
+        entities=[EntityContext(
+            "subject", "Alice", "CEO\n\nClaims:\n  [claim:hidden] (role; status=active) Hidden fact",
+        )],
+        claims=[ClaimContext("claim:hidden", "subject", "role", "Hidden fact")],
+    )
+    graph_text = render_community_context(replace(context, claims=[]))
+    selection = _pack_community_evidence(context, len(graph_text), _RecordingCharacterCounter())
+    assert selection.packed.text == graph_text
+    assert build_packed_reference_ids(context, selection.packed) == ["subject"]
+
+
+class _SeparatorSensitiveCounter(_RecordingCharacterCounter):
+    def count(self, text: str) -> int:
+        self.counted.append(text)
+        return len(text) + 31 * text.count("\n")
+
+
+def test_nonadditive_counter_counts_composed_edges_entities_claims_and_final_text():
+    context = _legacy_selection_context()
+    counter = _SeparatorSensitiveCounter()
+    for budget in (93, 150, 500, 1000, 2000):
+        selection = _pack_community_evidence(context, budget, counter)
+        packed = selection.packed
+        assert packed.used_tokens == counter.count(packed.text) <= budget
+        assert build_packed_reference_ids(context, packed) == _build_selected_reference_ids(selection)
+        # The complete composed rendering, not independent units, was counted.
+        assert packed.text in counter.counted
+    assert any("Claims:" in text and "--[WORKS_AT]-->" in text for text in counter.counted)
+
+
+def test_impossible_fixed_parent_prefix_returns_safe_empty_selection():
+    context = CommunityContext(
+        "c1", 0, entities=[EntityContext("subject", "Alice", "CEO")],
+        claims=[ClaimContext("claim:1", "subject", "role", "Fact")],
+    )
+    selection = _pack_community_evidence(
+        context, 10, _RecordingCharacterCounter(), prefix_text="Fixed child text exceeds budget",
+    )
+    assert selection.packed.text == ""
+    assert selection.packed.used_tokens == 0
+    assert selection.packed.truncated is False
+    assert _build_selected_reference_ids(selection) == []
+    assert build_packed_reference_ids(context, selection.packed) == []
