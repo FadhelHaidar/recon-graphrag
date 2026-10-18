@@ -131,3 +131,46 @@ class TestPipelineConfig:
     def test_negative_overlap_raises(self):
         with pytest.raises(ValueError):
             PipelineConfig(chunk_overlap=-1)
+
+
+class TestTiktokenTokenCounter:
+    @pytest.mark.parametrize("text", ["🚀" * 500, "漢字東京 日本語测试" * 4, "e\u0301a\u0308" * 5, "🙂🚀字e\u0301" * 8, "literal \ufffd value"])
+    @pytest.mark.parametrize("budget", [0, 1, 2, 3, 5, 11, 1200])
+    def test_truncate_preserves_original_unicode_prefix_and_budget(self, text, budget):
+        from recon_graphrag.utils.tokens import TiktokenTokenCounter
+
+        counter = TiktokenTokenCounter()
+        prefix = counter.truncate(text, budget)
+        assert text.startswith(prefix)
+        assert counter.count(prefix) <= budget
+        if "\ufffd" not in text:
+            assert "\ufffd" not in prefix
+        if counter.count(text) <= budget:
+            assert prefix == text
+
+    def test_truncate_emoji_mid_token_returns_empty(self):
+        from recon_graphrag.utils.tokens import TiktokenTokenCounter
+
+        counter = TiktokenTokenCounter()
+        assert counter.count("🚀") == 3
+        assert counter.truncate("🚀", 1) == ""
+        assert counter.truncate("🚀", 2) == ""
+        assert counter.truncate("🚀", 3) == "🚀"
+
+    def test_truncate_negative_and_empty(self):
+        from recon_graphrag.utils.tokens import TiktokenTokenCounter
+
+        counter = TiktokenTokenCounter()
+        assert counter.truncate("", 10) == ""
+        with pytest.raises(ValueError, match="max_tokens must be >= 0"):
+            counter.truncate("🚀", -1)
+
+    def test_pack_items_exact_truncation_does_not_corrupt_unicode(self):
+        from recon_graphrag.utils.tokens import TiktokenTokenCounter
+
+        counter = TiktokenTokenCounter()
+        text = "🚀" * 20
+        result = pack_items([PackItem("rocket", text)], 4, counter, truncate_oversized=True)
+        assert result.included == [PackItem("rocket", "🚀")]
+        assert result.used_tokens == 3
+        assert result.truncated_item_ids == ["rocket"]

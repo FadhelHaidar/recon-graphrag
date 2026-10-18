@@ -165,7 +165,31 @@ class TiktokenTokenCounter:
         if not text:
             return ""
         encoded = self._encoding.encode(text)
-        return self._encoding.decode(encoded[:max_tokens])
+        if len(encoded) <= max_tokens:
+            return text
+        # Token boundaries can bisect a UTF-8 codepoint. Decode only to locate
+        # an original-string boundary; never return a lossy decoded token slice.
+        prefix_bytes = self._encoding.decode_bytes(encoded[:max_tokens])
+        end = len(prefix_bytes.decode("utf-8", errors="ignore"))
+        end = min(end, len(text))
+        # A standalone substring can tokenize differently from the full text.
+        while end and self.count(text[:end]) > max_tokens:
+            end -= 1
+        return text[:end]
+
+    def _token_boundaries(self, text: str) -> tuple[list[int], list[int]]:
+        """Index token and original codepoint boundaries in UTF-8 bytes."""
+        # Reject lone surrogates here so the chunker can use its generic path.
+        text.encode("utf-8")
+        token_offsets = [0]
+        for token in self.encode(text):
+            token_offsets.append(
+                token_offsets[-1] + len(self._encoding.decode_single_token_bytes(token))
+            )
+        char_offsets = [0]
+        for char in text:
+            char_offsets.append(char_offsets[-1] + len(char.encode("utf-8")))
+        return token_offsets, char_offsets
 
     def encode(self, text: str) -> list[int]:
         return self._encoding.encode(text)
