@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.10.1](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.10.0...v0.10.1) (2026-10-18)
+
+
+### Features
+
+* **testing:** configure OpenAI reasoning options in integration factories ([227bd9d](https://github.com/FadhelHaidar/recon-graphrag/commit/227bd9d4a5a4b6196e2b61581eef9711d53bd10b))
+
+
+### Bug Fixes
+
+* **extraction:** enforce declared property contracts ([18ab7b8](https://github.com/FadhelHaidar/recon-graphrag/commit/18ab7b82a43635f7174b6f6d50251870fe25f6ab))
+* **extraction:** preserve Unicode token chunk boundaries ([a7dc679](https://github.com/FadhelHaidar/recon-graphrag/commit/a7dc679c5b03edc24a8c07deaafe3a793f352798))
+* **extraction:** propagate required pass failures and drain tasks ([b299a1f](https://github.com/FadhelHaidar/recon-graphrag/commit/b299a1f7eba2f99b1fa0e645d82cfaa796492ed2))
+* **pipelines:** reject incomplete documents before persistence ([2fedefb](https://github.com/FadhelHaidar/recon-graphrag/commit/2fedefbb3505c0093df8478b7aa0bc32df600dcc))
+
 ## [0.10.0](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.9.1...v0.10.0) (2026-07-17)
 
 
