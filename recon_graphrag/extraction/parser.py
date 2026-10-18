@@ -11,6 +11,15 @@ from recon_graphrag.extraction.types import (
 )
 
 
+class _PropertyValidationError(ValueError):
+    """Trusted parser field context, separate from arbitrary provider messages."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.reason = "expected an object"
+        super().__init__(f"{self.path}: {self.reason}")
+
+
 class GraphExtractionParser:
     def parse(self, content: str) -> GraphExtraction:
         payload = self._extract_json(content)
@@ -46,7 +55,7 @@ class GraphExtractionParser:
         if properties is None:
             return {}
         if not isinstance(properties, dict):
-            raise ValueError(f"{path}: expected an object")
+            raise _PropertyValidationError(path)
         return dict(properties)
 
     def _extract_json(self, content: str) -> str:

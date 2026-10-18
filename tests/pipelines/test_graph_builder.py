@@ -1,5 +1,6 @@
 """Tests for GraphBuilderPipeline."""
 
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import asyncio
@@ -13,6 +14,7 @@ from recon_graphrag.extraction.schema import (
     RelationshipType,
 )
 from recon_graphrag.extraction.chunking import TextChunker
+from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.memgraph.store import MemgraphGraphStore
 from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
 from recon_graphrag.extraction.description_summarizer import DescriptionSummarizer
@@ -659,50 +661,46 @@ async def test_concurrency_limit_respected(
 
 
 @pytest.mark.asyncio
-async def test_partial_extraction_failure_continues(
-    movie_schema, fake_embedder, fake_writer
+@pytest.mark.parametrize("all_fail", [False, True], ids=["one-of-two", "all"])
+async def test_incomplete_extraction_never_calls_writer(
+    movie_schema, fake_embedder, fake_writer, all_fail
 ):
-    store = FakeGraphStore()
     llm = MagicMock()
-    call_count = 0
+    responses = [
+        RuntimeError("private provider error"),
+        RuntimeError("private provider error") if all_fail else
+        MagicMock(content='{"nodes": [], "relationships": []}', usage=None),
+    ]
+    if not all_fail:
+        responses.reverse()  # One completed chunk must still not be written.
+    started = 0
+    both_started = asyncio.Event()
 
-    async def fail_second_extraction(prompt):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 2:
-            raise RuntimeError("provider error")
-        return MagicMock(content='{"nodes": [], "relationships": []}', usage=None)
+    async def invoke(prompt):
+        nonlocal started
+        index = started
+        started += 1
+        if started == 2:
+            both_started.set()
+        await both_started.wait()
+        response = responses[index]
+        if isinstance(response, Exception):
+            raise response
+        return response
 
-    llm.ainvoke = AsyncMock(side_effect=fail_second_extraction)
-
+    llm.ainvoke = AsyncMock(side_effect=invoke)
+    # Type-only cast preserves the partial duck store's runtime capabilities.
     pipeline = GraphBuilderPipeline(
-        graph_store=store,
-        llm=llm,
-        embedder=fake_embedder,
-        graph_writer=fake_writer,
-        perform_entity_resolution=False,
-        embed_entities=False,
+        cast(GraphStore, FakeGraphStore()), llm, fake_embedder, graph_writer=fake_writer,
+        perform_entity_resolution=False, embed_entities=False,
     )
-
-    text = "Alice directed Inception in 2010 with Christopher Nolan. " * 3
-    chunker = TextChunker(chunk_size=15, chunk_overlap=5)
-    expected_chunks = len(
-        chunker.chunk_text(text, document_id="doc:test", metadata={})
-    )
-    result = await pipeline.build_from_text(
-        text,
-        metadata={"source": "test"},
-        schema=movie_schema,
-        extraction_concurrency=3,
-        max_gleanings=0,
-        chunk_size=15,
-        chunk_overlap=5,
-        chunk_unit="characters",
-    )
-
-    assert result["extraction"]["chunks"] == expected_chunks
-    assert llm.ainvoke.await_count == expected_chunks
-    assert fake_writer.write_graph_document.call_count == 1
+    with pytest.raises(RuntimeError, match=r"Extraction failed .*document=.*chunk="):
+        await pipeline.build_from_documents(
+            [{"pages": ["first", "second"]}], schema=movie_schema,
+            window_size=1, window_overlap=0, max_gleanings=0,
+        )
+    assert llm.ainvoke.await_count == 2
+    fake_writer.write_graph_document.assert_not_called()
 
 
 def test_build_from_text_stamps_graph_name_on_all_records():
@@ -926,3 +924,259 @@ def test_token_usage_tracking_default_on(fake_embedder, fake_writer):
     )
     assert already_wrapped_pipeline.llm is pre_wrapped
 
+
+
+@pytest.fixture
+def extraction_safety_pipeline(fake_llm, fake_embedder, fake_writer):
+    # Type-only cast preserves the partial duck store's runtime capabilities.
+    return GraphBuilderPipeline(
+        cast(GraphStore, FakeGraphStore()), fake_llm, fake_embedder, graph_writer=fake_writer,
+        perform_entity_resolution=False, embed_entities=False,
+        summarize_descriptions=False, track_token_usage=False,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["initial", "assessment", "continuation", "claims"])
+@pytest.mark.parametrize("provider_error_text", [
+    "nodes[0].properties: expected an object",
+    "nodes[0].properties.private_source: raw provider secret",
+])
+async def test_required_extraction_pass_failure_is_safe_and_prevents_write(
+    extraction_safety_pipeline, movie_schema, fake_writer, failure, caplog,
+    provider_error_text,
+):
+    import traceback
+
+    pipeline = extraction_safety_pipeline
+    initial = MagicMock(content='{"nodes": [{"id": "p", "label": "Person"}]}')
+    prefix = {
+        "initial": [], "assessment": [initial],
+        "continuation": [initial, MagicMock(content="yes")],
+        "claims": [initial],
+    }[failure]
+    # Even a provider error matching a parser error must not be copied.
+    pipeline.llm.ainvoke = AsyncMock(side_effect=[*prefix, ValueError(provider_error_text)])
+    with pytest.raises(RuntimeError) as caught:
+        await pipeline.build_from_text(
+            "sensitive source text", metadata={"source": "private-source-name"},
+            schema=movie_schema, max_gleanings=0 if failure == "claims" else 1,
+            extract_claims=failure == "claims",
+        )
+    displayed = "".join(traceback.format_exception(caught.value))
+    assert "document=" in str(caught.value)
+    assert "chunk=1" in str(caught.value)
+    expected = "Claims extraction failed" if failure == "claims" else "Extraction failed"
+    assert expected in str(caught.value)
+    assert "field=" not in str(caught.value)
+    for private in (provider_error_text, "sensitive source text", "private-source-name", "private_source"):
+        assert private not in displayed
+        assert private not in caplog.text
+    fake_writer.write_graph_document.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["name", "unit-price", "年齢"])
+async def test_validation_failure_has_safe_document_chunk_and_field_context(
+    extraction_safety_pipeline, fake_writer, field
+):
+    import json
+
+    pipeline = extraction_safety_pipeline
+    schema = GraphSchema([NodeType("Person", properties=[PropertyType(field, "INTEGER")])], [])
+    pipeline.llm.ainvoke = AsyncMock(return_value=MagicMock(content=json.dumps({
+        "nodes": [{"id": "p", "label": "Person", "properties": {field: {"private": "value"}}}],
+    })))
+    with pytest.raises(ValueError) as caught:
+        await pipeline.build_from_text("source", schema=schema, max_gleanings=0)
+    assert "document=" in str(caught.value)
+    assert f"chunk=1 field=nodes[0].properties.{field}: expected INTEGER" in str(caught.value)
+    assert "private" not in str(caught.value)
+    fake_writer.write_graph_document.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("concurrency", [1, 3])
+async def test_failed_batch_retains_only_fully_committed_document(
+    extraction_safety_pipeline, movie_schema, fake_writer, concurrency
+):
+    pipeline = extraction_safety_pipeline
+    committed = asyncio.Event()
+    original_write = fake_writer.write_graph_document.side_effect
+
+    def write(document):
+        committed.set()
+        return {"documents": 1, "extension_stat": 9}
+
+    fake_writer.write_graph_document.side_effect = write
+
+    async def extract(*, text, **kwargs):
+        from recon_graphrag.extraction.types import GraphExtraction
+        if text == "complete":
+            return GraphExtraction()
+        await committed.wait()
+        raise RuntimeError("private error")
+
+    pipeline.extractor.extract = AsyncMock(side_effect=extract)
+    pipeline._finalize_graph = AsyncMock()
+    with pytest.raises(RuntimeError, match="Extraction failed"):
+        await pipeline.build_from_documents(
+            [{"text": "complete"}, {"text": "incomplete"}], schema=movie_schema,
+            document_concurrency=concurrency, max_gleanings=0,
+        )
+    fake_writer.write_graph_document.assert_called_once()
+    assert fake_writer.write_graph_document.call_args.args[0].chunks[0].text == "complete"
+    pipeline._finalize_graph.assert_not_awaited()
+    fake_writer.write_graph_document.side_effect = original_write
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["chunks", "documents"])
+@pytest.mark.parametrize("stop", ["failure", "cancel", "provider-cancel"])
+async def test_owned_extraction_tasks_are_drained_and_queued_calls_stop(
+    extraction_safety_pipeline, movie_schema, fake_writer, scope, stop
+):
+    pipeline = extraction_safety_pipeline
+    both_started = asyncio.Event()
+    trigger = asyncio.Event()
+    cleaned = asyncio.Event()
+    provider_tasks = []
+
+    async def invoke(prompt):
+        provider_tasks.append(asyncio.current_task())
+        if len(provider_tasks) == 1:
+            await trigger.wait()
+            if stop == "provider-cancel":
+                raise asyncio.CancelledError
+            raise RuntimeError("private provider error")
+        both_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            # Awaited cleanup must finish before the build raises/returns.
+            await asyncio.sleep(0)
+            cleaned.set()
+
+    pipeline.llm.ainvoke = AsyncMock(side_effect=invoke)
+    if scope == "chunks":
+        documents = [{"pages": ["first", "second", "queued"]}]
+    else:
+        documents = [{"text": text} for text in ("first", "second", "queued")]
+    build = asyncio.create_task(pipeline.build_from_documents(
+        documents, schema=movie_schema, max_gleanings=0,
+        extraction_concurrency=2, document_concurrency=2,
+        window_size=1, window_overlap=0,
+    ))
+    await asyncio.wait_for(both_started.wait(), timeout=2)
+    if stop == "cancel":
+        build.cancel()
+    else:
+        trigger.set()
+    expected = RuntimeError if stop == "failure" else asyncio.CancelledError
+    with pytest.raises(expected):
+        await asyncio.wait_for(build, timeout=2)
+    assert cleaned.is_set()
+    assert len(provider_tasks) == 2  # Third chunk/document stayed queued.
+    assert all(task.done() for task in provider_tasks)
+    fake_writer.write_graph_document.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["nodes", "relationships"])
+@pytest.mark.parametrize("extraction_stage", ["initial", "continuation"])
+async def test_parser_property_failure_preserves_safe_field_context(
+    extraction_safety_pipeline, movie_schema, fake_writer, kind, extraction_stage
+):
+    import json
+
+    pipeline = extraction_safety_pipeline
+    item = (
+        {"id": "private-id", "label": "Person"} if kind == "nodes" else
+        {"source_id": "private-id", "target_id": "private-id", "type": "DIRECTED"}
+    )
+    invalid = MagicMock(content=json.dumps({kind: [{**item, "properties": []}]}))
+    prefix = [] if extraction_stage == "initial" else [
+        MagicMock(content='{"nodes": []}'), MagicMock(content="yes"),
+    ]
+    pipeline.llm.ainvoke = AsyncMock(side_effect=[*prefix, invalid])
+    with pytest.raises(ValueError) as caught:
+        await pipeline.build_from_text(
+            "private-source-text", metadata={"source": "private-source-name"},
+            schema=movie_schema, max_gleanings=0 if extraction_stage == "initial" else 1,
+        )
+    message = str(caught.value)
+    assert "Validation failed (document=" in message
+    assert f"chunk=1 field={kind}[0].properties: expected an object" in message
+    for private in ("private-id", "private-source-text", "private-source-name"):
+        assert private not in message
+    fake_writer.write_graph_document.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_batch_gate_closes_before_failed_document_finishes_chunk_cleanup(
+    extraction_safety_pipeline, movie_schema, fake_writer, monkeypatch
+):
+    from recon_graphrag.extraction.types import GraphExtraction
+
+    pipeline = extraction_safety_pipeline
+    sibling_started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    cleanup_release = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+    completed_document_finished = asyncio.Event()
+    provider_tasks = []
+    submitted = []
+    ingest_text = pipeline._ingest_text
+
+    async def ingest(*args, **kwargs):
+        if kwargs["text"] == "B":
+            # B's document task releases the semaphore before this callback.
+            # C gets its turn at the batch gate before the event waiter resumes.
+            task = asyncio.current_task()
+            assert task is not None
+            task.add_done_callback(lambda _: completed_document_finished.set())
+        return await ingest_text(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "_ingest_text", ingest)
+
+    async def extract(*, text, **kwargs):
+        provider_tasks.append(asyncio.current_task())
+        submitted.append(text)
+        if text == "A-fails":
+            await sibling_started.wait()
+            raise RuntimeError("private provider error")
+        if text == "A-drains":
+            sibling_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup_started.set()
+                await cleanup_release.wait()
+                cleanup_finished.set()
+        if text == "B":
+            await cleanup_started.wait()
+        return GraphExtraction()
+
+    pipeline.extractor.extract = AsyncMock(side_effect=extract)
+    pipeline._finalize_graph = AsyncMock()
+    build = asyncio.create_task(pipeline.build_from_documents(
+        [{"pages": ["A-fails", "A-drains"]}, {"text": "B"}, {"text": "C"}],
+        schema=movie_schema, document_concurrency=2, extraction_concurrency=2,
+        max_gleanings=0, window_size=1, window_overlap=0,
+    ))
+    try:
+        await asyncio.wait_for(completed_document_finished.wait(), timeout=2)
+        assert cleanup_started.is_set()
+        assert not cleanup_finished.is_set()
+        assert not build.done()
+        assert submitted == ["A-fails", "A-drains", "B"]
+        fake_writer.write_graph_document.assert_called_once()
+        assert fake_writer.write_graph_document.call_args.args[0].chunks[0].text == "B"
+    finally:
+        cleanup_release.set()
+        with pytest.raises(RuntimeError, match="Extraction failed"):
+            await asyncio.wait_for(build, timeout=2)
+    assert cleanup_finished.is_set()
+    assert all(task.done() for task in provider_tasks)
+    fake_writer.write_graph_document.assert_called_once()
+    pipeline._finalize_graph.assert_not_awaited()

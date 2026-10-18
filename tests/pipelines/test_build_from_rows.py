@@ -256,3 +256,138 @@ async def test_invalid_mapping_raises_before_any_work(mapping, fake_writer):
     with pytest.raises(ValueError, match="unknown label"):
         await pipeline.build_from_rows([{"a": "x"}], bad)
     fake_writer.write_graph_document.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["initial", "validation", "continuation"])
+async def test_row_text_failure_prevents_direct_and_extracted_row_writes(
+    mapping, fake_writer, failure
+):
+    mapping = RowMapping(
+        entities=mapping.entities, relationships=mapping.relationships,
+        text_columns=[TextColumn("notes", anchor_label="Product")],
+    )
+    valid = MagicMock(content='{"nodes": [], "relationships": []}')
+    invalid = MagicMock(content='{"nodes": [{"id": "p", "label": "Product", "properties": {"name": []}}]}')
+    responses = {
+        "initial": [valid, RuntimeError("private provider error")],
+        "validation": [valid, invalid],
+        "continuation": [
+            valid, MagicMock(content="no"), valid,
+            MagicMock(content="yes"), MagicMock(content="invalid json"),
+        ],
+    }[failure]
+    llm = MagicMock(ainvoke=AsyncMock(side_effect=responses))
+    pipeline = _make_pipeline(llm, fake_writer)
+    error = ValueError if failure == "validation" else RuntimeError
+    with pytest.raises(error, match=r"document=.*chunk=3"):
+        # Neither the direct-only nor the successfully extracted text row may
+        # be written when the last row's required text extraction fails.
+        await pipeline.build_from_rows(
+            [ROWS[1], ROWS[0], ROWS[0]], mapping, metadata={"source": "private-source"},
+            extraction_concurrency=1,
+            max_gleanings=1 if failure == "continuation" else 0,
+        )
+    fake_writer.write_graph_document.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop", ["failure", "cancel", "provider-cancel"])
+async def test_row_text_tasks_are_drained_without_queued_provider_calls(
+    mapping, fake_writer, stop
+):
+    import asyncio
+
+    mapping = RowMapping(
+        entities=mapping.entities,
+        text_columns=[TextColumn("notes", anchor_label="Product")],
+    )
+    started = asyncio.Event()
+    trigger = asyncio.Event()
+    cleaned = asyncio.Event()
+    provider_tasks = []
+
+    async def invoke(prompt):
+        provider_tasks.append(asyncio.current_task())
+        if len(provider_tasks) == 1:
+            await trigger.wait()
+            if stop == "provider-cancel":
+                raise asyncio.CancelledError
+            raise RuntimeError("private provider error")
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0)
+            cleaned.set()
+
+    pipeline = _make_pipeline(MagicMock(ainvoke=AsyncMock(side_effect=invoke)), fake_writer)
+    build = asyncio.create_task(pipeline.build_from_rows(
+        [ROWS[0]] * 3, mapping, extraction_concurrency=2, max_gleanings=0,
+    ))
+    await asyncio.wait_for(started.wait(), timeout=2)
+    if stop == "cancel":
+        build.cancel()
+    else:
+        trigger.set()
+    error = RuntimeError if stop == "failure" else asyncio.CancelledError
+    with pytest.raises(error):
+        await asyncio.wait_for(build, timeout=2)
+    assert cleaned.is_set()
+    assert len(provider_tasks) == 2
+    assert all(task.done() for task in provider_tasks)
+    fake_writer.write_graph_document.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["nodes", "relationships"])
+async def test_row_text_parser_property_failure_preserves_safe_field_context(
+    mapping, fake_writer, kind
+):
+    import json
+
+    mapping = RowMapping(
+        entities=mapping.entities, relationships=mapping.relationships,
+        text_columns=[TextColumn("notes", anchor_label="Product")],
+    )
+    item = (
+        {"id": "private-id", "label": "Product"} if kind == "nodes" else
+        {"source_id": "private-id", "target_id": "private-id", "type": "SUPPLIES"}
+    )
+    invalid = MagicMock(content=json.dumps({kind: [{**item, "properties": []}]}))
+    llm = MagicMock(ainvoke=AsyncMock(side_effect=[
+        MagicMock(content='{"nodes": []}'), invalid,
+    ]))
+    pipeline = _make_pipeline(llm, fake_writer)
+    with pytest.raises(ValueError) as caught:
+        await pipeline.build_from_rows(
+            [ROWS[1], ROWS[0], ROWS[0]], mapping,
+            metadata={"source": "private-source-name"},
+            extraction_concurrency=1, max_gleanings=0,
+        )
+    message = str(caught.value)
+    assert "Validation failed (document=" in message
+    assert f"chunk=3 field={kind}[0].properties: expected an object" in message
+    assert "private-id" not in message
+    assert "private-source-name" not in message
+    fake_writer.write_graph_document.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_row_text_provider_value_error_cannot_supply_parser_field_context(
+    mapping, fake_writer
+):
+    import traceback
+
+    mapping = RowMapping(
+        entities=mapping.entities,
+        text_columns=[TextColumn("notes", anchor_label="Product")],
+    )
+    provider_message = "nodes[0].properties: expected an object"
+    llm = MagicMock(ainvoke=AsyncMock(side_effect=ValueError(provider_message)))
+    pipeline = _make_pipeline(llm, fake_writer)
+    with pytest.raises(RuntimeError, match=r"Extraction failed .*document=.*chunk=1") as caught:
+        await pipeline.build_from_rows([ROWS[0]], mapping, max_gleanings=0)
+    assert provider_message not in "".join(traceback.format_exception(caught.value))
+    assert "field=" not in str(caught.value)
+    fake_writer.write_graph_document.assert_not_called()
