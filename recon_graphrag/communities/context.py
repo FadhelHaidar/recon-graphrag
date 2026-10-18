@@ -81,6 +81,21 @@ class PackedCommunityContext:
     truncated: bool
 
 
+@dataclass(frozen=True)
+class _CommunityEvidenceSelection:
+    """Packed direct evidence; edge endpoints supply non-isolated entities.
+
+    Legacy subject-based claim authorization is separate from rendered claims
+    until claim admission is activated. Child report narratives grant no IDs.
+    """
+
+    packed: PackedCommunityContext
+    edges: tuple[EdgeContext, ...]
+    isolated_entities: tuple[EntityContext, ...]
+    rendered_claims: tuple[ClaimContext, ...] = ()
+    legacy_authorized_claims: tuple[ClaimContext, ...] = ()
+
+
 def render_community_context(context: CommunityContext) -> str:
     """Render community context as structured text for summarization.
 
@@ -154,20 +169,33 @@ def pack_community_context(
     Returns:
         PackedCommunityContext with rendered text and telemetry.
     """
+    return _pack_community_evidence(context, max_tokens, counter).packed
+
+
+def _pack_community_evidence(
+    context: CommunityContext,
+    max_tokens: int,
+    counter: TokenCounter | None = None,
+) -> _CommunityEvidenceSelection:
+    """Pack direct evidence while retaining the records selected for rendering."""
     counter = counter or ApproximateTokenCounter()
 
     if max_tokens <= 0:
-        return PackedCommunityContext(
-            community_id=context.community_id,
-            level=context.level,
-            text="",
-            used_tokens=0,
-            max_tokens=max_tokens,
-            included_edges=0,
-            excluded_edges=len(context.edges),
-            included_entities=0,
-            excluded_entities=len(context.entities),
-            truncated=False,
+        return _CommunityEvidenceSelection(
+            packed=PackedCommunityContext(
+                community_id=context.community_id,
+                level=context.level,
+                text="",
+                used_tokens=0,
+                max_tokens=max_tokens,
+                included_edges=0,
+                excluded_edges=len(context.edges),
+                included_entities=0,
+                excluded_entities=len(context.entities),
+                truncated=False,
+            ),
+            edges=(),
+            isolated_entities=(),
         )
 
     lines: list[str] = []
@@ -176,6 +204,7 @@ def pack_community_context(
     truncated = False
     included_edges = 0
     included_entities = 0
+    selected_isolates: list[EntityContext] = []
 
     for edge in context.edges:
         unit_lines: list[str] = []
@@ -228,6 +257,7 @@ def pack_community_context(
             used_tokens += entity_tokens
             seen_entities.add(entity.id)
             included_entities += 1
+            selected_isolates.append(entity)
         else:
             truncated = True
             break
@@ -235,19 +265,43 @@ def pack_community_context(
     total_entities = len({e.id for e in _all_entities(context)})
     excluded_entities = total_entities - len(seen_entities)
 
-    return PackedCommunityContext(
-        community_id=context.community_id,
-        level=context.level,
-        text="\n".join(lines),
-        used_tokens=used_tokens,
-        max_tokens=max_tokens,
-        included_edges=included_edges,
-        excluded_edges=excluded_edges,
-        included_entities=included_entities,
-        excluded_entities=excluded_entities,
-        truncated=truncated,
+    return _CommunityEvidenceSelection(
+        packed=PackedCommunityContext(
+            community_id=context.community_id,
+            level=context.level,
+            text="\n".join(lines),
+            used_tokens=used_tokens,
+            max_tokens=max_tokens,
+            included_edges=included_edges,
+            excluded_edges=excluded_edges,
+            included_entities=included_entities,
+            excluded_entities=excluded_entities,
+            truncated=truncated,
+        ),
+        edges=tuple(context.edges[:included_edges]),
+        isolated_entities=tuple(selected_isolates),
+        legacy_authorized_claims=tuple(
+            claim for claim in context.claims if claim.entity_id in seen_entities
+        ),
     )
 
+
+def _build_selected_reference_ids(selection: _CommunityEvidenceSelection) -> list[str]:
+    """Retain packed reference ordering, including legacy unrendered claims."""
+    ids: list[str] = []
+    seen_entities: set[str] = set()
+    for edge in selection.edges:
+        for entity in (edge.source, edge.target):
+            if entity.id not in seen_entities:
+                ids.append(entity.id)
+                seen_entities.add(entity.id)
+    for edge in selection.edges:
+        ids.append(f"{edge.source.id}:{edge.relationship_type}:{edge.target.id}")
+    for entity in selection.isolated_entities:
+        ids.append(entity.id)
+    ids.extend(claim.id for claim in selection.rendered_claims)
+    ids.extend(claim.id for claim in selection.legacy_authorized_claims)
+    return ids
 
 
 def _all_entities(context: CommunityContext) -> list[EntityContext]:
@@ -458,7 +512,7 @@ def build_packed_reference_ids(
         seen_entities.add(entity.id)
         included_entity_count += 1
 
-    # Claims are rendered for entities that survived packing.
+    # Legacy authorization: these claims are not yet rendered by the packer.
     if seen_entities:
         for claim in context.claims:
             if claim.entity_id in seen_entities:

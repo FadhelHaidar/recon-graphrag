@@ -24,10 +24,12 @@ from tqdm.asyncio import tqdm_asyncio
 
 from recon_graphrag.communities.context import (
     CommunityContext,
+    _build_selected_reference_ids,
+    _pack_community_evidence,
     enrich_context_with_claims,
     build_reference_ids,
-    build_packed_reference_ids,
-    pack_community_context,
+    build_packed_reference_ids,  # noqa: F401 - preserve module import compatibility
+    pack_community_context,  # noqa: F401 - preserve module import compatibility
     parse_community_context,
     render_community_context,
 )
@@ -263,17 +265,18 @@ class CommunitySummarizer:
                 ) = self._build_parent_context(context, child_rows, self.max_context_tokens)
                 valid_ids = set(reference_ids)
             else:
-                packed = pack_community_context(
+                selection = _pack_community_evidence(
                     context,
                     max_tokens=self.max_context_tokens,
                     counter=self.token_counter,
                 )
+                packed = selection.packed
                 context_text = packed.text
                 context_tokens_used = packed.used_tokens
                 context_truncated = packed.truncated
-                # Use allowlist from packed context so findings can only
-                # reference items the LLM actually saw.
-                reference_ids = build_packed_reference_ids(context, packed)
+                # The selection distinguishes rendered evidence from claims
+                # still authorized by the legacy subject-based policy.
+                reference_ids = _build_selected_reference_ids(selection)
                 valid_ids = set(reference_ids)
         else:
             context_text = render_community_context(context)
@@ -417,7 +420,10 @@ class CommunitySummarizer:
             child_items, child_budget, counter, truncate_oversized=True
         )
         remaining = max(max_tokens - packed_children.used_tokens, 0)
-        packed_direct = pack_community_context(context, max_tokens=remaining, counter=counter)
+        direct_selection = _pack_community_evidence(
+            context, max_tokens=remaining, counter=counter
+        )
+        packed_direct = direct_selection.packed
         context_text = "\n\n".join(
             part
             for part in (
@@ -426,7 +432,7 @@ class CommunitySummarizer:
             )
             if part
         )
-        reference_ids = build_packed_reference_ids(context, packed_direct)
+        reference_ids = _build_selected_reference_ids(direct_selection)
         return (
             context_text,
             packed_children.used_tokens + packed_direct.used_tokens,

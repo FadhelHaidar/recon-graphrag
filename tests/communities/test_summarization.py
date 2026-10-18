@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import json
+from typing import cast
 
 import pytest
 
-from recon_graphrag.llm.base import LLMResponse
+from recon_graphrag.graphdb.base import GraphStore
+from recon_graphrag.llm.base import BaseLLM, LLMResponse
+from recon_graphrag.communities.context import ClaimContext, EntityContext
+from recon_graphrag.communities.reports import build_report_prompt
 from recon_graphrag.communities.summarization import CommunitySummarizer
 
 
@@ -202,3 +206,102 @@ async def test_custom_report_prompt_appears_in_llm_prompt():
     assert llm.prompts
     assert "You are a security analyst. Identify risks in this community." in llm.prompts[0]
 
+
+
+class _CharacterCounter:
+    def count(self, text: str) -> int:
+        return len(text)
+
+    def truncate(self, text: str, max_tokens: int) -> str:
+        return text[:max_tokens]
+
+
+class _LegacyClaimReportLLM(CapturingValidReportLLM):
+    async def ainvoke(self, prompt):
+        response = await super().ainvoke(prompt)
+        payload = json.loads(response.content)
+        payload["findings"][0]["references"] = [
+            {"target_id": claim_id, "target_type": "claim"}
+            for claim_id in ("claim:alice", "claim:charlie", "claim:child")
+        ]
+        return LLMResponse(content=json.dumps(payload))
+
+
+_LEGACY_DIRECT_EDGE = (
+    "- [Person] Alice: CEO\n- [Organization] Acme: Company\n"
+    "  Alice --[WORKS_AT]--> Acme: Alice works at Acme"
+)
+_LEGACY_DIRECT_ISOLATE = "- [Entity] Charlie: Intern"
+_LEGACY_DIRECT_TEXT = _LEGACY_DIRECT_EDGE + "\n" + _LEGACY_DIRECT_ISOLATE
+_LEGACY_CHILD_ONE = (
+    "--- Sub-community child:1 (level 1) ---\nChild narrative cites claim:child."
+)
+_LEGACY_CHILD_TWO = "--- Sub-community child:2 (level 1) ---\nDiscardable child narrative."
+_LEGACY_PACKED_IDS = [
+    "person:alice", "org:acme", "person:alice:WORKS_AT:org:acme", "person:charlie",
+    "claim:alice", "claim:charlie",
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "budget,parent,text,used,truncated,refs",
+    [
+        (None, False, _LEGACY_DIRECT_TEXT + (
+            "\n\nClaims:\n"
+            "  [claim:alice] (role; status=active, dates=2020..?) Alice is CEO Source: Reviewed source\n"
+            "  [claim:charlie] (role; status=active) Charlie is intern"
+        ), None, False, [
+            "person:alice", "org:acme", "person:charlie", "person:alice:WORKS_AT:org:acme",
+            "claim:alice", "claim:charlie",
+        ]),
+        (1000, False, _LEGACY_DIRECT_TEXT, 128, False, _LEGACY_PACKED_IDS),
+        (0, False, "", 0, False, []),
+        (1000, True, f"{_LEGACY_CHILD_ONE}\n\n{_LEGACY_CHILD_TWO}\n\n{_LEGACY_DIRECT_TEXT}",
+         270, False, _LEGACY_PACKED_IDS),
+        (180, True, _LEGACY_CHILD_ONE + (
+            "\n\n--- Sub-community child:2 (level 1\n\n" + _LEGACY_DIRECT_ISOLATE
+        ), 134, True, ["person:charlie", "claim:charlie"]),
+        (40, True, "--- Sub-community child:", 24, True, []),
+        (0, True, "", 0, False, []),
+    ],
+)
+async def test_private_selection_preserves_report_prompt_telemetry_and_legacy_claims(
+    budget, parent, text, used, truncated, refs,
+):
+    class ParentStore(FakeReportGraphStore):
+        def get_child_community_reports(self, graph_name, community_id, level, child_level):
+            if not parent:
+                return []
+            return [
+                {"id": "child:1", "level": 1, "report_text": "Child narrative cites claim:child.",
+                 "context_tokens_used": 100},
+                {"id": "child:2", "level": 1, "report_text": "Discardable child narrative.",
+                 "context_tokens_used": 50},
+            ]
+
+    llm = _LegacyClaimReportLLM()
+    summarizer = CommunitySummarizer(
+        cast(GraphStore, ParentStore()), llm=cast(BaseLLM, llm),
+        max_context_tokens=budget, token_counter=_CharacterCounter(),
+    )
+    context = summarizer._fetch_community_context_obj("community:1", 0)
+    context.entities.append(EntityContext("person:charlie", "Charlie", "Intern"))
+    context.claims.extend([
+        ClaimContext("claim:alice", "person:alice", "role", "Alice is CEO",
+                     source_text="Reviewed source", start_date="2020"),
+        ClaimContext("claim:charlie", "person:charlie", "role", "Charlie is intern"),
+    ])
+    report = await summarizer.generate_report(
+        "community:1", context=context, input_fingerprint="unchanged-fingerprint",
+    )
+    assert llm.prompts == [build_report_prompt("community:1", 0, text, refs)]
+    assert llm.calls == 1
+    assert report.context_tokens_used == used
+    assert report.context_truncated is truncated
+    assert report.version.input_fingerprint == "unchanged-fingerprint"
+    # Legacy direct claims stay authorized even when absent from the context.
+    # A child's narrative never authorizes its claim IDs, even when retained.
+    assert [ref.target_id for finding in report.findings for ref in finding.references] == [
+        claim_id for claim_id in ("claim:alice", "claim:charlie") if claim_id in refs
+    ]

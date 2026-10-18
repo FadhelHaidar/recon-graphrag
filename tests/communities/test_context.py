@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict, fields
+from inspect import signature
+
 import pytest
 
 from recon_graphrag.communities.context import (
@@ -9,6 +12,9 @@ from recon_graphrag.communities.context import (
     CommunityContext,
     EdgeContext,
     EntityContext,
+    PackedCommunityContext,
+    _build_selected_reference_ids,
+    _pack_community_evidence,
     build_packed_reference_ids,
     build_reference_ids,
     pack_community_context,
@@ -543,3 +549,144 @@ class TestBuildPackedReferenceIds:
 
         assert packed_ids <= full_ids
         assert len(packed_ids) < len(full_ids)
+
+
+class _RecordingCharacterCounter:
+    def __init__(self):
+        self.counted = []
+
+    def count(self, text: str) -> int:
+        self.counted.append(text)
+        return len(text)
+
+    def truncate(self, text: str, max_tokens: int) -> str:
+        raise AssertionError("Direct packing must not truncate evidence")
+
+
+def _legacy_selection_context():
+    alice = EntityContext("e1", "Alice", "CEO", ["Person"])
+    acme = EntityContext("e2", "Acme", "Company", ["Organization"])
+    charlie = EntityContext("e3", "Charlie", "Intern")
+    huge = EntityContext("e4", "Huge", "X" * 300)
+    return CommunityContext(
+        "c1", 2,
+        entities=[alice, charlie, huge],
+        edges=[
+            EdgeContext(alice, acme, "WORKS_AT", "since 2020"),
+            EdgeContext(huge, acme, "OWNS"),
+        ],
+        claims=[
+            ClaimContext("claim:edge", "e1", "role", "Alice is CEO",
+                         object_entity_id="e2", source_text="source", start_date="2020"),
+            ClaimContext("claim:iso", "e3", "role", "Charlie is intern"),
+            ClaimContext("claim:drop", "e4", "role", "Huge owns Acme"),
+            ClaimContext("claim:unknown", "missing", "role", "Unknown"),
+        ],
+    )
+
+
+_LEGACY_FIRST_EDGE = (
+    "- [Person] Alice: CEO\n- [Organization] Acme: Company\n"
+    "  Alice --[WORKS_AT]--> Acme: since 2020"
+)
+_LEGACY_SECOND_EDGE = "- [Entity] Huge: " + "X" * 300 + "\n  Huge --[OWNS]--> Acme"
+_LEGACY_ISOLATE = "- [Entity] Charlie: Intern"
+
+
+@pytest.mark.parametrize(
+    "budget,text,used,edges,isolates,excluded_entities,truncated,refs",
+    [
+        (10_000, f"{_LEGACY_FIRST_EDGE}\n{_LEGACY_SECOND_EDGE}\n{_LEGACY_ISOLATE}",
+         460, 2, 1, 0, False,
+         ["e1", "e2", "e4", "e1:WORKS_AT:e2", "e4:OWNS:e2", "e3",
+          "claim:edge", "claim:iso", "claim:drop"]),
+        (150, f"{_LEGACY_FIRST_EDGE}\n{_LEGACY_ISOLATE}", 119, 1, 1, 1, True,
+         ["e1", "e2", "e1:WORKS_AT:e2", "e3", "claim:edge", "claim:iso"]),
+        (93, _LEGACY_FIRST_EDGE, 93, 1, 0, 2, True,
+         ["e1", "e2", "e1:WORKS_AT:e2", "claim:edge"]),
+        (92, "- [Person] Alice: CEO\n" + _LEGACY_ISOLATE, 47, 0, 2, 2, True,
+         ["e1", "e3", "claim:edge", "claim:iso"]),
+        (0, "", 0, 0, 0, 3, False, []),
+        (-1, "", 0, 0, 0, 3, False, []),
+    ],
+)
+def test_private_evidence_selection_preserves_legacy_packing(
+    budget, text, used, edges, isolates, excluded_entities, truncated, refs,
+):
+    context = _legacy_selection_context()
+    original = asdict(context)
+    selection = _pack_community_evidence(context, budget, _RecordingCharacterCounter())
+    packed = pack_community_context(context, budget, _RecordingCharacterCounter())
+    assert selection.packed == packed
+    assert asdict(packed) == {
+        "community_id": "c1", "level": 2, "text": text,
+        "used_tokens": used, "max_tokens": budget,
+        "included_edges": edges, "excluded_edges": 2 - edges,
+        "included_entities": isolates, "excluded_entities": excluded_entities,
+        "truncated": truncated,
+    }
+    assert _build_selected_reference_ids(selection) == refs
+    assert build_packed_reference_ids(context, packed) == refs
+    assert selection.edges == tuple(context.edges[:edges])
+    assert selection.rendered_claims == ()
+    assert [claim.id for claim in selection.legacy_authorized_claims] == [
+        ref for ref in refs if ref.startswith("claim:")
+    ]
+    assert asdict(context) == original
+    assert tuple(vars(packed)) == tuple(field.name for field in fields(PackedCommunityContext))
+
+
+def test_private_selection_keeps_custom_counter_dispatch_and_selected_records():
+    context = _legacy_selection_context()
+    counter = _RecordingCharacterCounter()
+    selection = _pack_community_evidence(context, 150, counter)
+    assert counter.counted == [
+        _LEGACY_FIRST_EDGE, _LEGACY_SECOND_EDGE, _LEGACY_ISOLATE,
+        "- [Entity] Huge: " + "X" * 300,
+    ]
+    assert selection.isolated_entities == (context.entities[1],)
+    assert selection.edges[0] is context.edges[0]
+    assert selection.legacy_authorized_claims == tuple(context.claims[:2])
+
+
+def test_private_selection_preserves_new_self_loop_duplicate_rendering():
+    entity = EntityContext("e1", "Alice", "CEO")
+    context = CommunityContext("c1", 0, edges=[EdgeContext(entity, entity, "KNOWS")])
+    selection = _pack_community_evidence(context, 1000, _RecordingCharacterCounter())
+    assert selection.packed.text == (
+        "- [Entity] Alice: CEO\n- [Entity] Alice: CEO\n  Alice --[KNOWS]--> Alice"
+    )
+    assert _build_selected_reference_ids(selection) == ["e1", "e1:KNOWS:e1"]
+
+
+def test_no_budget_rendering_and_reference_order_remain_unchanged():
+    context = _legacy_selection_context()
+    assert render_community_context(context) == (
+        f"{_LEGACY_FIRST_EDGE}\n{_LEGACY_SECOND_EDGE}\n{_LEGACY_ISOLATE}\n\nClaims:\n"
+        "  [claim:edge] (role; status=active, dates=2020..?, object=e2) Alice is CEO Source: source\n"
+        "  [claim:iso] (role; status=active) Charlie is intern\n"
+        "  [claim:drop] (role; status=active) Huge owns Acme\n"
+        "  [claim:unknown] (role; status=active) Unknown"
+    )
+    assert build_reference_ids(context) == [
+        "e1", "e2", "e4", "e3", "e1:WORKS_AT:e2", "e4:OWNS:e2",
+        "claim:edge", "claim:iso", "claim:drop", "claim:unknown",
+    ]
+
+
+def test_packed_context_public_shape_signatures_and_module_imports_are_unchanged():
+    from recon_graphrag.communities import summarization
+
+    assert [field.name for field in fields(PackedCommunityContext)] == [
+        "community_id", "level", "text", "used_tokens", "max_tokens",
+        "included_edges", "excluded_edges", "included_entities", "excluded_entities", "truncated",
+    ]
+    assert str(signature(pack_community_context)) == (
+        "(context: 'CommunityContext', max_tokens: 'int', "
+        "counter: 'TokenCounter | None' = None) -> 'PackedCommunityContext'"
+    )
+    assert str(signature(build_packed_reference_ids)) == (
+        "(context: 'CommunityContext', packed: 'PackedCommunityContext') -> 'list[str]'"
+    )
+    assert summarization.pack_community_context is pack_community_context
+    assert summarization.build_packed_reference_ids is build_packed_reference_ids
