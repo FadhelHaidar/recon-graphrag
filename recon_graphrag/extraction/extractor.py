@@ -161,6 +161,7 @@ class LLMGraphExtractor:
             same order as ``chunks``.
         """
         semaphore = asyncio.Semaphore(max(int(concurrency), 1))
+        stopped = False
 
         def _chunk_id_and_text(chunk: Any) -> tuple[str, str]:
             if isinstance(chunk, dict):
@@ -171,23 +172,43 @@ class LLMGraphExtractor:
 
         async def _extract_one(
             chunk: Any,
-        ) -> tuple[str, GraphExtraction, list[ExtractedClaim]]:
-            chunk_id, text = _chunk_id_and_text(chunk)
+        ) -> tuple[str, GraphExtraction, list[ExtractedClaim]] | None:
+            nonlocal stopped
             async with semaphore:
-                extraction = await self.extract(
-                    text=text,
-                    schema=schema,
-                    max_gleanings=max_gleanings,
-                )
-                claims: list[ExtractedClaim] = []
-                if extract_claims and extraction.nodes:
-                    entity_ids = [n.id for n in extraction.nodes]
-                    claims = await self.extract_claims(
+                if stopped:
+                    return None
+                try:
+                    chunk_id, text = _chunk_id_and_text(chunk)
+                    extraction = await self.extract(
                         text=text,
-                        entity_ids=entity_ids,
-                        text_unit_id=chunk_id,
+                        schema=schema,
+                        max_gleanings=max_gleanings,
                     )
-                return chunk_id, extraction, claims
+                    claims: list[ExtractedClaim] = []
+                    if extract_claims and extraction.nodes:
+                        entity_ids = [n.id for n in extraction.nodes]
+                        claims = await self.extract_claims(
+                            text=text,
+                            entity_ids=entity_ids,
+                            text_unit_id=chunk_id,
+                        )
+                    return chunk_id, extraction, claims
+                except BaseException:
+                    stopped = True
+                    raise
 
         tasks = [asyncio.create_task(_extract_one(chunk)) for chunk in chunks]
-        return await asyncio.gather(*tasks)
+        try:
+            results = await asyncio.gather(*tasks)
+            completed: list[tuple[str, GraphExtraction, list[ExtractedClaim]]] = []
+            for result in results:
+                # A stopped gate always accompanies a task that raises.
+                if result is None:
+                    raise RuntimeError("Extraction aborted before all chunks completed")
+                completed.append(result)
+            return completed
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)

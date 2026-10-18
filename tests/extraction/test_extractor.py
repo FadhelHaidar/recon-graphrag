@@ -419,3 +419,46 @@ async def test_extractor_uses_custom_claim_prompt():
     )
 
     assert llm.ainvoke.call_args[0][0] == "CUSTOM-CLAIM"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop", ["failure", "cancel", "provider-cancel"])
+async def test_extract_all_drains_owned_tasks_and_stops_queued_provider_calls(stop):
+    import asyncio
+
+    started = asyncio.Event()
+    trigger = asyncio.Event()
+    cleaned = asyncio.Event()
+    provider_tasks = []
+
+    async def invoke(prompt):
+        provider_tasks.append(asyncio.current_task())
+        if len(provider_tasks) == 1:
+            await trigger.wait()
+            if stop == "provider-cancel":
+                raise asyncio.CancelledError
+            raise RuntimeError("provider error")
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0)
+            cleaned.set()
+
+    llm = MagicMock(ainvoke=AsyncMock(side_effect=invoke))
+    extractor = LLMGraphExtractor(llm)
+    build = asyncio.create_task(extractor.extract_all(
+        [{"id": f"c{i}", "text": str(i)} for i in range(3)],
+        _make_schema(), concurrency=2,
+    ))
+    await asyncio.wait_for(started.wait(), timeout=2)
+    if stop == "cancel":
+        build.cancel()
+    else:
+        trigger.set()
+    error = RuntimeError if stop == "failure" else asyncio.CancelledError
+    with pytest.raises(error):
+        await asyncio.wait_for(build, timeout=2)
+    assert cleaned.is_set()
+    assert len(provider_tasks) == 2
+    assert all(task.done() for task in provider_tasks)
