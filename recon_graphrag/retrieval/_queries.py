@@ -188,7 +188,7 @@ LIMIT $top_k
 
 # ------------------------------------------------------------------
 # Community summarization — degree-ranked context (Phase 4A).
-# ``__IDFUNC__`` is replaced with the backend internal-id function.
+# Outgoing matches preserve actual endpoints, including reciprocal edges and loops.
 # ------------------------------------------------------------------
 _RANKED_CONTEXT_CORE = """
 MATCH (c:Community {
@@ -196,9 +196,8 @@ MATCH (c:Community {
     id: $cid,
     level: $level
 })<-[:IN_COMMUNITY]-(e:__Entity__)
-OPTIONAL MATCH (e)-[r]-(other:__Entity__)
+OPTIONAL MATCH (e)-[r]->(other:__Entity__)
 WHERE (other)-[:IN_COMMUNITY]->(c)
-  AND __IDFUNC__(e) < __IDFUNC__(other)
 WITH e, r, other,
      SIZE([(e)-[r1]-()
        WHERE NOT type(r1) IN ['IN_COMMUNITY', 'FROM_CHUNK', 'SOURCED_FROM']
@@ -235,5 +234,5 @@ def drift_retrieval_query(*, order_by_score: bool) -> str:
 
 
 def ranked_context_query(*, id_func: str) -> str:
-    """Degree-ranked community context query for the given internal-id function."""
-    return _RANKED_CONTEXT_CORE.replace("__IDFUNC__", id_func)
+    """Degree-ranked community context; id_func is retained for compatibility."""
+    return _RANKED_CONTEXT_CORE

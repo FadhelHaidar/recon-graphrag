@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import pytest
+
 from recon_graphrag.communities.context import (
+    ClaimContext,
     CommunityContext,
     EdgeContext,
     EntityContext,
-    ClaimContext,
     build_packed_reference_ids,
     build_reference_ids,
     pack_community_context,
@@ -115,6 +117,73 @@ class TestParseCommunityContext:
         ctx = parse_community_context("c1", 0, [])
         assert ctx.entities == []
         assert ctx.edges == []
+
+
+@pytest.mark.parametrize(
+    "endpoints",
+    [
+        [("e9", "e1")],
+        [("e9", "e1"), ("e1", "e9")],
+        [("e9", "e9")],
+    ],
+    ids=["source-after-target", "reciprocal-same-type", "self-loop"],
+)
+def test_directed_query_rows_preserve_facts_and_references(endpoints):
+    # e9 represents the larger backend internal ID, e1 the smaller. The query
+    # must emit actual endpoints, not orient rows by that internal ordering.
+    entities = {
+        "e9": {"name": "Alice", "description": "CEO", "degree": 5},
+        "e1": {"name": "Bob", "description": "Engineer", "degree": 3},
+    }
+    rows = [
+        {
+            "e_id": source,
+            "e_name": entities[source]["name"],
+            "e_description": entities[source]["description"],
+            "e_labels": ["__Entity__", "Person"],
+            "e_degree": entities[source]["degree"],
+            "other_id": target,
+            "other_name": entities[target]["name"],
+            "other_description": entities[target]["description"],
+            "other_labels": ["__Entity__", "Person"],
+            "other_degree": entities[target]["degree"],
+            "rel_type": "KNOWS",
+            "rel_description": f"{source} knows {target}",
+            "observation_count": 2,
+            "combined_degree": entities[source]["degree"] + entities[target]["degree"],
+        }
+        for source, target in endpoints
+    ]
+    context = parse_community_context("c1", 0, rows)
+    assert context.entities == []
+    assert [(edge.source.id, edge.target.id) for edge in context.edges] == endpoints
+    for edge, row in zip(context.edges, rows, strict=True):
+        assert edge.source.name == row["e_name"]
+        assert edge.target.name == row["other_name"]
+        assert edge.source.degree == row["e_degree"]
+        assert edge.target.degree == row["other_degree"]
+        assert edge.description == row["rel_description"]
+        assert edge.observation_count == 2
+        assert edge.combined_degree == row["combined_degree"]
+
+    packed = pack_community_context(context, max_tokens=10_000)
+    assert packed.included_edges == len(endpoints)
+    assert not packed.truncated
+    expected_keys = {f"{source}:KNOWS:{target}" for source, target in endpoints}
+    expected_entities = {entity for pair in endpoints for entity in pair}
+    for references in (build_reference_ids(context), build_packed_reference_ids(context, packed)):
+        assert set(references) == expected_entities | expected_keys
+        assert len(references) == len(expected_entities) + len(expected_keys)
+    for text in (render_community_context(context), packed.text):
+        assert text.count("--[KNOWS]-->") == len(endpoints)
+        for source, target in endpoints:
+            arrow = f"{entities[source]['name']} --[KNOWS]--> {entities[target]['name']}"
+            assert arrow in text
+        if endpoints == [("e9", "e1")]:
+            assert "Bob --[KNOWS]--> Alice" not in text
+    # Full rendering lists a loop's entity only once, while retaining its edge.
+    if endpoints == [("e9", "e9")]:
+        assert render_community_context(context).count("- [Person] Alice: CEO") == 1
 
 
 class TestRenderCommunityContext:

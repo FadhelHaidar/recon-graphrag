@@ -129,8 +129,11 @@ class TestBuildReferenceIds:
         assert "person:bob" in ids
         assert "org:acme" in ids
         assert "claim:1" in ids
-        # Relationship keys
-        assert any("WORKS_AT" in rid for rid in ids)
+        # Relationship references preserve actual source -> target direction.
+        assert "person:alice:WORKS_AT:org:acme" in ids
+        assert "person:bob:WORKS_AT:org:acme" in ids
+        assert "org:acme:WORKS_AT:person:alice" not in ids
+        assert "org:acme:WORKS_AT:person:bob" not in ids
 
 
 # ---------------------------------------------------------------------------
