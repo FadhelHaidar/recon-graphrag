@@ -46,7 +46,7 @@ from recon_graphrag.retrieval.drift_types import (
 )
 from recon_graphrag.retrieval.hybrid import HybridEntityRetriever, HybridRanker
 from recon_graphrag.retrieval.search_local import _source_chunk_ids_from_result
-from recon_graphrag.retrieval.mixed_context import MixedContextBuilder
+from recon_graphrag.retrieval.mixed_context import MixedContextBuilder, MixedContextResult
 from recon_graphrag.utils.tokens import (
     ApproximateTokenCounter,
     TokenCounter,
@@ -684,19 +684,21 @@ class DriftSearchRetriever:
             return
 
         # Build context
-        chunk_ids = _source_chunk_ids_from_result(retriever_result)
-        if chunk_ids:
-            try:
-                action.citations = resolve_chunk_citations(
-                    self.graph_store, self.graph_name, chunk_ids
-                )
-            except Exception:
-                pass
         if config.action_use_mixed_context:
-            local_context = self._build_action_mixed_context(retriever_result)
+            mixed = self._build_action_mixed_context(retriever_result)
+            local_context = mixed.context
+            action.citations = list(mixed.citations)
         else:
             from recon_graphrag.retrieval.search_local import _format_entity_context
 
+            chunk_ids = _source_chunk_ids_from_result(retriever_result)
+            if chunk_ids:
+                try:
+                    action.citations = resolve_chunk_citations(
+                        self.graph_store, self.graph_name, chunk_ids
+                    )
+                except Exception:
+                    pass
             local_context = _format_entity_context(
                 retriever_result,
                 citations=(action.citations if synthesize_citation_metadata else None),
@@ -738,7 +740,9 @@ class DriftSearchRetriever:
             action.score = float(data.get("score", 0))
             action.follow_ups = data.get("follow_ups", [])[: config.max_followups]
             action.references = data.get("references", [])
-            if action.references:
+            # Mixed citations already resolve all admitted evidence; generated
+            # references remain in the action but cannot expand that evidence set.
+            if action.references and not config.action_use_mixed_context:
                 try:
                     ref_citations = resolve_reference_citations(
                         self.graph_store, self.graph_name, action.references
@@ -755,13 +759,14 @@ class DriftSearchRetriever:
             action.status = "failed"
             state.failures.append(f"action LLM failed for {action.id}: {e}")
 
-    def _build_action_mixed_context(self, retriever_result) -> str:
+    def _build_action_mixed_context(self, retriever_result) -> MixedContextResult:
         """Build mixed context for a DRIFT action using MixedContextBuilder."""
         if self._mixed_context_builder is None:
             self._mixed_context_builder = MixedContextBuilder(
                 graph_store=self.graph_store,
                 embedder=self.embedder,
                 graph_name=self.graph_name,
+                counter=self.counter,
             )
 
         entity_matches = []
@@ -775,12 +780,11 @@ class DriftSearchRetriever:
             entity_id = content.get("entity_id") or content.get("title", "")
             entity_matches.append({"id": entity_id, "score": score})
 
-        mixed = self._mixed_context_builder.build_context(
+        return self._mixed_context_builder.build_context(
             entity_matches=entity_matches,
             entity_context_rows=entity_context_rows,
             token_budget=self.config.action_mixed_context_tokens,
         )
-        return mixed.context
 
     # ------------------------------------------------------------------
     # Phase 3: Reduction

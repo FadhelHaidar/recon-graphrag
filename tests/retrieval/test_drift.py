@@ -5,14 +5,23 @@ Tests for iterative DRIFT behavior and limits.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from recon_graphrag.llm import LLMResponse
 from recon_graphrag.models.artifacts import Citation
 from recon_graphrag.retrieval.search_drift import DriftSearchRetriever
-from recon_graphrag.retrieval.drift_types import DriftSearchConfig
+from recon_graphrag.retrieval.drift_types import (
+    DriftAction,
+    DriftQueryState,
+    DriftSearchConfig,
+)
+from recon_graphrag.retrieval.mixed_context import MixedContextResult
+from recon_graphrag.utils.tokens import ApproximateTokenCounter
 
 
 # ---------------------------------------------------------------------------
@@ -573,3 +582,288 @@ class TestDriftLimitsAndRepair:
             if call[0] == "vector_search_community_reports"
         )
         assert report_call[1]["level"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Packed action evidence and retained-action reduction
+# ---------------------------------------------------------------------------
+
+
+class PreciseCitationStore(FakeGraphStore):
+    """Resolve only requested IDs; unrelated graph evidence stays distinguishable."""
+
+    def resolve_chunk_citations(self, graph_name, chunk_ids):
+        self.calls.append(("resolve_chunk_citations", {"chunk_ids": list(chunk_ids)}))
+        return [
+            {
+                "document_id": "doc:admission",
+                "chunk_id": cid,
+                "document_metadata": {"collection": "admission-test"},
+            }
+            for cid in chunk_ids
+        ]
+
+    def execute_query(self, query, parameters=None):
+        params = parameters or {}
+        self.calls.append(("execute_query", {"params": params}))
+        for key in ("entity_ids", "claim_ids", "relationship_keys"):
+            if key in params:
+                return [{"chunk_id": f"provenance:{target}"} for target in params[key]]
+        return []
+
+
+def admission_citation(chunk_id):
+    return Citation(document_id="doc:admission", chunk_id=chunk_id)
+
+
+@pytest.fixture
+def action_harness():
+    def create(*, references=None, config=None, store=None, counter=None):
+        store = store or PreciseCitationStore()
+        llm = FakeLLM([json.dumps({
+            "answer": "Admitted answer.", "score": 90, "follow_ups": [],
+            "references": references or [],
+        })])
+        retriever = DriftSearchRetriever(
+            Mock(wraps=store), Mock(wraps=llm), Mock(wraps=FakeEmbedder()),
+            config=config, token_counter=counter, track_token_usage=False,
+        )
+        rows = [{
+            "entity_id": "entity:kept", "title": "Kept entity",
+            "source_text": ["Kept source.", "Dropped source."],
+            "source_chunk_ids": ["chunk:kept", "chunk:dropped"], "score": 1.0,
+        }]
+        retrieval = SimpleNamespace(items=[SimpleNamespace(content=row) for row in rows])
+        retriever._retriever = Mock(search=AsyncMock(return_value=retrieval))
+        action = DriftAction(id="follow-up", query="Follow up?")
+        state = DriftQueryState(query="query", actions=[action])
+        return retriever, action, state, store, llm, retrieval
+
+    return create
+
+
+async def process_admission_action(retriever, action, state, *, metadata=False):
+    await retriever._process_action(
+        action, "query", state, retriever.config, 2, 1, None, "naive", None, "",
+        metadata, ["collection"], asyncio.Lock(), retriever.config.max_llm_calls,
+    )
+    assert action.status == "completed", state.failures
+
+
+def stub_mixed_context(retriever, *, citations, context="Packed context only."):
+    mixed = MixedContextResult(
+        context=context, citations=citations,
+        included_entity_ids=["entity:kept"] if context else [],
+        included_chunk_ids=[], included_community_ids=[], included_claim_ids=[],
+        used_tokens=10, max_tokens=100,
+    )
+    retriever._mixed_context_builder = Mock(build_context=Mock(return_value=mixed))
+    return mixed
+
+
+@pytest.mark.asyncio
+async def test_mixed_action_uses_packed_citations_not_retrieval_chunks(action_harness):
+    retriever, action, state, store, llm, _ = action_harness()
+    kept = admission_citation("chunk:kept")
+    mixed = stub_mixed_context(retriever, citations=[kept])
+
+    await process_admission_action(retriever, action, state)
+    result = await retriever._reduction_phase("query", state, False, "", asyncio.Lock())
+
+    assert action.context == mixed.context
+    assert mixed.context in llm.prompts[0]
+    assert "Dropped source." not in llm.prompts[0]
+    assert action.citations == result.citations == [kept]
+    assert store.calls == []  # No raw chunk or generated-reference resolution.
+
+
+@pytest.mark.parametrize("target_type", ["entity", "claim", "relationship"])
+@pytest.mark.parametrize("target_id", ["dropped", "never-retrieved"])
+@pytest.mark.asyncio
+async def test_mixed_action_reference_cannot_readmit_dropped_evidence(
+    action_harness, target_type, target_id,
+):
+    references = [{"target_type": target_type, "target_id": target_id}]
+    retriever, action, state, store, _, _ = action_harness(references=references)
+    kept = admission_citation("graph-provenance:not-a-packed-text-unit")
+    stub_mixed_context(retriever, citations=[kept])
+
+    await process_admission_action(retriever, action, state)
+
+    assert action.references == references
+    assert action.citations == [kept]
+    assert store.calls == []  # Even a valid typed target must not query the graph.
+
+
+@pytest.mark.asyncio
+async def test_mixed_action_empty_admission_has_no_citations(action_harness):
+    config = DriftSearchConfig(action_mixed_context_tokens=0)
+    retriever, action, state, store, _, _ = action_harness(
+        config=config, references=[{"target_type": "entity", "target_id": "dropped"}],
+    )
+    stub_mixed_context(retriever, citations=[], context="")
+
+    await process_admission_action(retriever, action, state)
+
+    assert action.context == ""
+    assert action.citations == []
+    assert store.calls == []
+    retriever._mixed_context_builder.build_context.assert_called_once()
+    assert retriever._mixed_context_builder.build_context.call_args.kwargs["token_budget"] == 0
+
+
+class MixedAdmissionStore(PreciseCitationStore):
+    """Real builder queries return both short admissible and oversized evidence."""
+
+    def execute_query(self, query, parameters=None):
+        params = parameters or {}
+        if "linked_entities" in query:
+            self.calls.append(("text_unit_candidates", params))
+            return [
+                {"chunk_id": "chunk:kept", "text": "Kept source.", "linked_entities": ["entity:kept"]},
+                {"chunk_id": "chunk:dropped", "text": "DROPPED " * 100, "linked_entities": []},
+            ]
+        if "IN_COMMUNITY" in query:
+            self.calls.append(("community_candidates", params))
+            return []
+        return super().execute_query(query, parameters)
+
+    def get_claims_for_entities(self, graph_name, entity_ids):
+        return [
+            {"claim_id": "claim:kept", "entity_id": "entity:kept", "description": "Kept claim."},
+            {"claim_id": "claim:dropped", "entity_id": "entity:kept", "description": "DROPPED " * 100},
+        ]
+
+
+@pytest.mark.asyncio
+async def test_drift_mixed_builder_uses_custom_counter_and_retains_graph_provenance(action_harness):
+    counter = ApproximateTokenCounter(ratio=1)
+    retriever, action, state, store, llm, retrieval = action_harness(
+        store=MixedAdmissionStore(), counter=counter,
+        config=DriftSearchConfig(action_mixed_context_tokens=600),
+        references=[{"target_type": "claim", "target_id": "claim:dropped"}],
+    )
+    kept_row = retrieval.items[0].content
+    kept_row.update({
+        "entity_name": "Kept", "entity_description": "Kept entity.",
+        "relationship_records": [
+            {"source_id": "entity:kept", "target_id": "other", "rel": "KEPT", "weight": 2},
+            {"source_id": "entity:kept", "target_id": "other", "rel": "DROPPED", "description": "DROPPED " * 100},
+        ],
+    })
+    retrieval.items.append(SimpleNamespace(content={
+        "entity_id": "entity:dropped", "entity_description": "DROPPED " * 100,
+    }))
+
+    await process_admission_action(retriever, action, state)
+
+    assert retriever._mixed_context_builder.counter is counter
+    assert counter.count(action.context) <= 600
+    assert "DROPPED" not in action.context
+    assert "Kept claim." in action.context
+    assert "--[KEPT]-->" in action.context
+    assert action.context in llm.prompts[0]
+    assert {c.chunk_id for c in action.citations} == {
+        "chunk:kept", "provenance:entity:kept", "provenance:claim:kept",
+        "provenance:entity:kept:KEPT:other",
+    }
+    # Graph-fact provenance survives even without corresponding text-unit items.
+    lookups = [details["params"] for name, details in store.calls if name == "execute_query"]
+    assert [p["entity_ids"] for p in lookups if "entity_ids" in p] == [["entity:kept"]]
+    assert [p["claim_ids"] for p in lookups if "claim_ids" in p] == [["claim:kept"]]
+    assert [p["relationship_keys"] for p in lookups if "relationship_keys" in p] == [["entity:kept:KEPT:other"]]
+    chunk_lookups = [p["chunk_ids"] for name, p in store.calls if name == "resolve_chunk_citations"]
+    assert chunk_lookups == [
+        ["chunk:kept"], ["provenance:entity:kept"], ["provenance:claim:kept"],
+        ["provenance:entity:kept:KEPT:other"],
+    ]
+
+
+@pytest.mark.parametrize("metadata", [False, True])
+@pytest.mark.asyncio
+async def test_nonmixed_action_citation_behavior_unchanged(action_harness, metadata):
+    references = [{"target_type": kind, "target_id": kind} for kind in ("entity", "claim", "relationship")]
+    retriever, action, state, store, llm, _ = action_harness(
+        config=DriftSearchConfig(action_use_mixed_context=False), references=references,
+    )
+
+    await process_admission_action(retriever, action, state, metadata=metadata)
+
+    assert action.references == references
+    assert {c.chunk_id for c in action.citations} == {
+        "chunk:kept", "chunk:dropped", "provenance:entity",
+        "provenance:claim", "provenance:relationship",
+    }
+    assert ("admission-test" in action.context) is metadata
+    assert action.context in llm.prompts[0]
+    assert retriever._mixed_context_builder is None
+    assert store.calls[0] == ("resolve_chunk_citations", {"chunk_ids": ["chunk:kept", "chunk:dropped"]})
+
+
+@pytest.mark.parametrize("synthesize", [False, True])
+@pytest.mark.asyncio
+async def test_reduction_unions_only_retained_actions(action_harness, synthesize):
+    retriever, _, state, store, llm, _ = action_harness(counter=ApproximateTokenCounter(ratio=1))
+    shared = admission_citation("shared")
+    state.actions = [
+        DriftAction(id="dropped", query="Dropped?", answer="Dropped answer.", score=20,
+                    status="completed", citations=[shared, admission_citation("dropped")]),
+        DriftAction(id="kept", query="Kept?", answer="Kept answer.", score=90,
+                    status="completed", citations=[shared, admission_citation("kept"), shared]),
+        DriftAction(id="also-kept", query="Also?", answer="Also kept.", score=80,
+                    status="completed", citations=[shared, admission_citation("also-kept")]),
+        DriftAction(id="failed", answer="Failed.", score=100, status="failed",
+                    citations=[admission_citation("failed")]),
+        DriftAction(id="pending", answer="Pending.", score=100,
+                    citations=[admission_citation("pending")]),
+        DriftAction(id="empty", score=100, status="completed",
+                    citations=[admission_citation("empty")]),
+    ]
+    first = "[Score 90] Q: Kept?\nA: Kept answer."
+    second = "[Score 80] Q: Also?\nA: Also kept."
+    expected = first + "\n\n" + second
+    retriever.config.reduce_budget_tokens = len(first) + len(second)
+
+    result = await retriever._reduction_phase("query", state, synthesize, "", asyncio.Lock())
+
+    assert result.context == expected
+    assert result.citations == [shared, admission_citation("kept"), admission_citation("also-kept")]
+    assert store.calls == []
+    if synthesize:
+        assert expected in llm.prompts[0]
+        assert "Dropped answer." not in llm.prompts[0]
+    else:
+        assert llm.prompts == []
+        assert result.answer == ""
+
+
+@pytest.mark.parametrize("retain_primer", [False, True])
+@pytest.mark.parametrize("synthesize", [False, True])
+@pytest.mark.asyncio
+async def test_reduction_only_retained_primer_resolves_selected_report_citations(
+    action_harness, retain_primer, synthesize,
+):
+    retriever, _, state, store, _, _ = action_harness(counter=ApproximateTokenCounter(ratio=1))
+    state.actions = [
+        DriftAction(id="kept", query="Kept?", answer="Kept.", score=90, status="completed"),
+        DriftAction(id="primer", query="Primer?", answer="Primer answer.", score=20,
+                    status="completed", report_ids=["report:selected"],
+                    references=[{"target_type": "entity", "target_id": "primer-direct"}]),
+    ]
+    state.primer_reports = [
+        {"id": f"report:{name}", "report_json": json.dumps({"findings": [{"references": [
+            {"target_type": "entity", "target_id": name},
+        ]}]})}
+        for name in ("selected", "unselected")
+    ]
+    retriever.config.reduce_budget_tokens = 1000 if retain_primer else len("[Score 90] Q: Kept?\nA: Kept.")
+
+    result = await retriever._reduction_phase("query", state, synthesize, "", asyncio.Lock())
+
+    assert ("Primer answer." in result.context) is retain_primer
+    if retain_primer:
+        assert {c.chunk_id for c in result.citations} == {"provenance:primer-direct", "provenance:selected"}
+        assert store.calls[0][1]["params"]["entity_ids"] == ["primer-direct", "selected"]
+    else:
+        assert result.citations == []
+        assert store.calls == []
