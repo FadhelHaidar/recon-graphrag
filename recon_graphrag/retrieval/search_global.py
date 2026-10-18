@@ -220,6 +220,10 @@ class GlobalSearchRetriever:
                 return scored partial answers in context with ``answer=""``.
                 Map LLM calls still run for relevance scoring and reference
                 extraction.
+
+        Returned context contains all scored retrieval partials for compatibility.
+        When synthesizing, citations and reduction diagnostics describe only the
+        prefix admitted to the reduction prompt, not all returned context.
         """
         with run_scope():
             start = time.monotonic()
@@ -318,7 +322,7 @@ class GlobalSearchRetriever:
             # 7. Sort by helpfulness DESC
             scored.sort(key=lambda p: (-p.helpfulness, p.batch_id))
 
-            # Build context from scored reports
+            # Preserve all scored retrieval context, even if reduction admits less.
             context_parts = []
             for p in scored:
                 context_parts.append(
@@ -326,11 +330,9 @@ class GlobalSearchRetriever:
                 )
             context = "\n\n---\n\n".join(context_parts)
 
-            # Resolve citations from explicit map references and report-derived refs.
-            citations = self._resolve_source_citations(diag, scored, resolved_level)
-
             # 8. Reduce phase (skip when synthesize_response=False)
             if not synthesize_response:
+                citations = self._resolve_source_citations(diag, scored, resolved_level)
                 diag.reduce_partials_used = 0
                 diag.elapsed_ms = int((time.monotonic() - start) * 1000)
                 metadata = _diag_to_dict(diag)
@@ -348,8 +350,12 @@ class GlobalSearchRetriever:
                     citations=citations,
                 )
 
-            answer = await self._reduce_phase(query, scored, use_general_knowledge=use_general_knowledge)
-            diag.reduce_partials_used = len(scored)
+            prompt, retained = self._prepare_reduce_prompt(
+                query, scored, use_general_knowledge=use_general_knowledge
+            )
+            citations = self._resolve_source_citations(diag, retained, resolved_level)
+            answer = await self._invoke_reduce_prompt(prompt)
+            diag.reduce_partials_used = len(retained)
 
             diag.elapsed_ms = int((time.monotonic() - start) * 1000)
 
@@ -741,36 +747,54 @@ class GlobalSearchRetriever:
         self, query: str, partials: list[PartialAnswer], *, use_general_knowledge: bool = False,
     ) -> str:
         """Synthesize partial answers into final answer."""
-        counter = self.token_counter
-
-        # Build partial answer text, respecting token budget
-        parts: list[str] = []
-        used_tokens = 0
-        prompt_overhead = counter.count(
-            self.reduce_prompt.format(query=query, partial_text="")
+        prompt, _ = self._prepare_reduce_prompt(
+            query, partials, use_general_knowledge=use_general_knowledge
         )
-        available = self.reduce_budget_tokens - prompt_overhead
+        return await self._invoke_reduce_prompt(prompt)
 
-        for p in partials:
-            refs = ", ".join(
-                f"{r['target_type']}:{r['target_id']}" for r in p.references
-            )
-            text = f"[Score {p.helpfulness}] {p.answer}"
-            if refs:
-                text += f"\nReferences: {refs}"
-            tokens = counter.count(text)
-            if used_tokens + tokens > available and parts:
-                break
-            parts.append(text)
-            used_tokens += tokens
-
-        partial_text = "\n\n".join(parts)
+    def _prepare_reduce_prompt(
+        self, query: str, partials: list[PartialAnswer], *, use_general_knowledge: bool = False,
+    ) -> tuple[str, list[PartialAnswer]]:
+        """Render a fitting prompt and its admitted prefix without changing inputs."""
         reduce_prompt = self.reduce_prompt
         if use_general_knowledge:
-            reduce_prompt = reduce_prompt + GENERAL_KNOWLEDGE_INSTRUCTION
-        prompt = reduce_prompt.format(
-            query=query, partial_text=partial_text
-        )
+            reduce_prompt += GENERAL_KNOWLEDGE_INSTRUCTION
+        prompt = reduce_prompt.format(query=query, partial_text="")
+        fixed_count = self.token_counter.count(prompt)
+        if fixed_count > self.reduce_budget_tokens:
+            raise ValueError(
+                f"Global reduction fixed prompt count {fixed_count} exceeds "
+                f"reduce_budget_tokens={self.reduce_budget_tokens}"
+            )
+
+        parts: list[str] = []
+        retained: list[PartialAnswer] = []
+        for partial in partials:
+            refs = ", ".join(
+                f"{r['target_type']}:{r['target_id']}" for r in partial.references
+            )
+            text = f"[Score {partial.helpfulness}] {partial.answer}"
+            if refs:
+                text += f"\nReferences: {refs}"
+            candidate = reduce_prompt.format(
+                query=query, partial_text="\n\n".join([*parts, text])
+            )
+            # Count complete renders: counters need not be additive at boundaries.
+            if self.token_counter.count(candidate) > self.reduce_budget_tokens:
+                break
+            parts.append(text)
+            retained.append(partial)
+            prompt = candidate
+        return prompt, retained
+
+    async def _invoke_reduce_prompt(self, prompt: str) -> str:
+        """Submit precisely the prepared string, failing closed on final recount."""
         with token_stage("retrieval.global_reduce"):
+            final_count = self.token_counter.count(prompt)
+            if final_count > self.reduce_budget_tokens:
+                raise ValueError(
+                    f"Global reduction final prompt count {final_count} exceeds "
+                    f"reduce_budget_tokens={self.reduce_budget_tokens}"
+                )
             response = await self.llm.ainvoke(prompt)
         return response.content
