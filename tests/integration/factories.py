@@ -3,6 +3,8 @@
 Duplicated from examples/config.py so that integration tests do not depend on
 the examples package. Environment variable names and defaults are intentionally
 compatible with examples/config.py and aligned with tests/integration/support.py.
+For the selected OpenAI provider, nonempty LLM_*/EMBEDDING_* profile values
+independently override legacy settings; unset URLs retain SDK defaults.
 """
 
 import os
@@ -63,8 +65,13 @@ def get_llm(provider: str | None = None):
     if provider == "openai":
         return create_llm(
             "openai",
-            model_name=os.getenv("OPENAI_LLM_MODEL", "gpt-4o-mini"),
-            api_key=os.getenv("OPENAI_API_KEY"),
+            model_name=(
+                os.getenv("LLM_MODEL")
+                or os.getenv("OPENAI_LLM_MODEL")
+                or "gpt-4o-mini"
+            ),
+            base_url=os.getenv("LLM_BASE_URL") or None,
+            api_key=os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY"),
         )
 
     if provider == "azure_openai":
@@ -102,8 +109,13 @@ def get_embedder(provider: str | None = None):
     if provider == "openai":
         return create_embedder(
             "openai",
-            model=os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small"),
-            api_key=os.getenv("OPENAI_API_KEY"),
+            model=(
+                os.getenv("EMBEDDING_MODEL")
+                or os.getenv("OPENAI_EMBED_MODEL")
+                or "text-embedding-3-small"
+            ),
+            base_url=os.getenv("EMBEDDING_BASE_URL") or None,
+            api_key=os.getenv("EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY"),
         )
 
     if provider == "sentence-transformer":
