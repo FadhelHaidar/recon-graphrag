@@ -7,6 +7,7 @@
       "include-component-in-tag": false,
       "include-v-in-tag": true,
       "bump-minor-pre-major": true,
+      "release-as": "0.10.1",
       "extra-files": [
         {
           "type": "toml",
