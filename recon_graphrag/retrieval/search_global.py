@@ -12,6 +12,7 @@ import json
 import random as _random
 import re
 import time
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -120,6 +121,18 @@ class PartialAnswer:
     references: list[dict] = field(default_factory=list)
     batch_report_ids: list[str] = field(default_factory=list)
     error: str | None = None
+
+
+class _PreparedReducePartials(list[PartialAnswer]):
+    """Carry an admitted prompt through the hook; delegation must preserve inputs."""
+
+    def __init__(
+        self, partials: list[PartialAnswer], prompt: str, query: str,
+        use_general_knowledge: bool,
+    ):
+        super().__init__(partials)
+        self.prompt = prompt
+        self.inputs = deepcopy((query, partials, use_general_knowledge))
 
 
 @dataclass
@@ -354,7 +367,10 @@ class GlobalSearchRetriever:
                 query, scored, use_general_knowledge=use_general_knowledge
             )
             citations = self._resolve_source_citations(diag, retained, resolved_level)
-            answer = await self._invoke_reduce_prompt(prompt)
+            answer = await self._reduce_phase(
+                query, _PreparedReducePartials(retained, prompt, query, use_general_knowledge),
+                use_general_knowledge=use_general_knowledge,
+            )
             diag.reduce_partials_used = len(retained)
 
             diag.elapsed_ms = int((time.monotonic() - start) * 1000)
@@ -747,9 +763,15 @@ class GlobalSearchRetriever:
         self, query: str, partials: list[PartialAnswer], *, use_general_knowledge: bool = False,
     ) -> str:
         """Synthesize partial answers into final answer."""
-        prompt, _ = self._prepare_reduce_prompt(
-            query, partials, use_general_knowledge=use_general_knowledge
-        )
+        if isinstance(partials, _PreparedReducePartials):
+            # Hook mutations would invalidate the already resolved citation set.
+            if (query, partials, use_general_knowledge) != partials.inputs:
+                raise ValueError("Global reduction hook changed admitted inputs")
+            prompt = partials.prompt
+        else:
+            prompt, _ = self._prepare_reduce_prompt(
+                query, partials, use_general_knowledge=use_general_knowledge
+            )
         return await self._invoke_reduce_prompt(prompt)
 
     def _prepare_reduce_prompt(

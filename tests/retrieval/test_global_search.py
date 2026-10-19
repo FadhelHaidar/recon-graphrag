@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import MagicMock
 
@@ -13,7 +14,7 @@ from recon_graphrag.retrieval.search_global import (
     MapBatch,
     PartialAnswer,
 )
-
+from tests.protocol_fakes import AsyncOnlyLLM, UnsupportedGraphStore
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -70,21 +71,21 @@ def _make_report_with_text_ref(
     }
 
 
-class FakeGraphStore:
+class FakeGraphStore(UnsupportedGraphStore):
     def __init__(self, reports: list[dict] | None = None):
         self._reports = _make_reports() if reports is None else reports
         self.resolve_calls: list[tuple[str, list[str]]] = []
 
-    def execute_query(self, query, params=None):
-        params = params or {}
+    def execute_query(self, query, parameters=None):
+        parameters = parameters or {}
         if "FROM_CHUNK" in query:
-            assert params["graph_name"] == "entity-graph"
+            assert parameters["graph_name"] == "entity-graph"
             return [{"chunk_id": "chunk:1"}]
         if "MATCH (c:Claim" in query:
             return [{"chunk_id": "chunk:claim:1"}]
         if "source_chunk_ids" in query or "relationship_key" in query:
             return [{"chunk_id": "chunk:rel:1"}]
-        level = params.get("level") if params else None
+        level = parameters.get("level") if parameters else None
         if level is not None:
             rows = []
             for r in self._reports:
@@ -113,13 +114,13 @@ class FakeGraphStore:
         return rows
 
 
-class FakeLLM:
+class FakeLLM(AsyncOnlyLLM):
     def __init__(self, map_responses: list[str] | None = None, reduce_response: str = "Final answer."):
         self._map_responses = map_responses or [_make_map_response()]
         self._reduce_response = reduce_response
         self._map_call_count = 0
 
-    async def ainvoke(self, prompt):
+    async def ainvoke(self, prompt, **kwargs):
         # Distinguish map vs reduce by prompt content
         if "Synthesize" in prompt or "Partial Answers" in prompt:
             return MagicMock(content=self._reduce_response)
@@ -428,7 +429,7 @@ class TestResolveUsedReportIds:
                 batch_id="0",
                 answer="a",
                 helpfulness=80,
-                report_ids=None,
+                report_ids=None,  # pyright: ignore[reportArgumentType] - exercise legacy missing IDs
                 batch_report_ids=["report:0:0"],
             ),
         ]
@@ -774,7 +775,7 @@ class RecordingReductionLLM:
         self.map_prompts: list[str] = []
         self.reduce_prompts: list[str] = []
 
-    async def ainvoke(self, prompt: str):
+    async def ainvoke(self, prompt: str, **kwargs):
         if prompt.startswith("MAP|"):
             self.map_prompts.append(prompt)
             return MagicMock(content=self.map_responses.pop(0))
@@ -789,10 +790,11 @@ def _reduction_search(
     counter: ReductionCharacterCounter | None = None,
     store: FakeGraphStore | None = None,
     map_responses: list[str] | None = None,
+    retriever_type: type[GlobalSearchRetriever] = GlobalSearchRetriever,
 ) -> tuple[GlobalSearchRetriever, RecordingReductionLLM]:
     llm = RecordingReductionLLM(map_responses)
     # These deliberate partial doubles implement only the exercised store/LLM seams.
-    search = GlobalSearchRetriever(
+    search = retriever_type(
         MagicMock(wraps=store if store is not None else FakeGraphStore()),
         MagicMock(wraps=llm),
         map_prompt="MAP|{query}|{batch_text}",
@@ -921,21 +923,23 @@ class RetainedCitationStore(FakeGraphStore):
         super().__init__(reports)
         self.report_lookups: list[list[str]] = []
 
-    def execute_query(self, query, params=None):
-        params = params or {}
-        if "report_ids" in params:
-            self.report_lookups.append(params["report_ids"])
-            return [r for r in self._reports if r["id"] in params["report_ids"]]
-        if "entity_ids" in params:
-            return [{"chunk_id": f"chunk:{rid}"} for rid in params["entity_ids"]]
-        if "claim_ids" in params:
-            return [{"chunk_id": f"chunk:{rid}"} for rid in params["claim_ids"]]
-        return super().execute_query(query, params)
+    def execute_query(self, query, parameters=None):
+        parameters = parameters or {}
+        if "report_ids" in parameters:
+            self.report_lookups.append(parameters["report_ids"])
+            return [r for r in self._reports if r["id"] in parameters["report_ids"]]
+        if "entity_ids" in parameters:
+            return [{"chunk_id": f"chunk:{rid}"} for rid in parameters["entity_ids"]]
+        if "claim_ids" in parameters:
+            return [{"chunk_id": f"chunk:{rid}"} for rid in parameters["claim_ids"]]
+        return super().execute_query(query, parameters)
 
 
 class TestRetainedReductionEvidence:
     @staticmethod
-    def make_search(budget, *, source="explicit", score=90):
+    def make_search(
+        budget, *, source="explicit", score=90, retriever_type=GlobalSearchRetriever,
+    ):
         report_factory = _make_report_with_text_ref if source == "text" else _make_report_with_json_ref
         store = RetainedCitationStore([
             report_factory("report:0:0", "kept", "claim"),
@@ -950,7 +954,9 @@ class TestRetainedReductionEvidence:
                 "references": ([{"target_type": "entity", "target_id": target}]
                                if source == "explicit" else []),
             }))
-        search, llm = _reduction_search(budget, store=store, map_responses=responses)
+        search, llm = _reduction_search(
+            budget, store=store, map_responses=responses, retriever_type=retriever_type,
+        )
         search._create_batches = MagicMock(return_value=[
             MapBatch(str(i), [f"report:{i}:0"], f"report {i}", 10) for i in range(2)
         ])
@@ -981,6 +987,101 @@ class TestRetainedReductionEvidence:
         assert result.context == (
             "[Batch 0] (score: 90)\nkept\n\n---\n\n[Batch 1] (score: 89)\ndropped"
         )  # Retrieval context is intentionally broader than synthesis evidence.
+
+    async def test_search_dispatches_to_reduce_override_with_admitted_partials(self):
+        calls = []
+
+        class CustomReducer(GlobalSearchRetriever):
+            async def _reduce_phase(self, query, partials, *, use_general_knowledge=False):
+                calls.append((query, list(partials), use_general_knowledge))
+                return "CUSTOM REDUCER SENTINEL"
+
+        expected = "Q:q\nP:[Score 90] kept\nReferences: entity:kept\nEND"
+        search, llm, _ = self.make_search(len(expected), retriever_type=CustomReducer)
+        result = await search.search("q", 0)
+        assert result.answer == "CUSTOM REDUCER SENTINEL"
+        assert len(calls) == 1
+        assert calls[0][0] == "q" and calls[0][2] is False
+        assert [p.answer for p in calls[0][1]] == ["kept"]
+        assert result.metadata["reduce_partials_used"] == 1
+        assert [c.chunk_id for c in result.citations] == ["chunk:kept"]
+        assert llm.reduce_prompts == []
+
+    @pytest.mark.parametrize("overflow", [False, True])
+    async def test_delegating_override_reuses_admitted_prompt_and_recounts(self, overflow):
+        class DelegatingReducer(GlobalSearchRetriever):
+            async def _reduce_phase(self, query, partials, *, use_general_knowledge=False):
+                return await super()._reduce_phase(
+                    query, partials, use_general_knowledge=use_general_knowledge,
+                )
+
+        expected = "Q:q\nP:[Score 90] kept\nReferences: entity:kept\nEND"
+
+        class ChangingCounter(ReductionCharacterCounter):
+            def count(self, text):
+                count = super().count(text)
+                # Admission accepts this string once; the only repeat is final recount.
+                if text == expected and self.counted.count(text) > 1:
+                    return len(expected) + 1 if overflow else count
+                if text == "Q:q\nP:\nEND" and self.counted.count(text) > 1:
+                    raise AssertionError("Search must not repeat admission")
+                return count
+
+        search, llm, _ = self.make_search(len(expected), retriever_type=DelegatingReducer)
+        search.token_counter = ChangingCounter()
+        if overflow:
+            with pytest.raises(ValueError, match="final prompt count"):
+                await search.search("q", 0)
+            assert llm.reduce_prompts == []
+        else:
+            result = await search.search("q", 0)
+            assert llm.reduce_prompts == [expected]
+            assert result.metadata["reduce_partials_used"] == 1
+            assert [c.chunk_id for c in result.citations] == ["chunk:kept"]
+        assert search.token_counter.counted.count(expected) == 2
+
+    @pytest.mark.parametrize("mutation", ["answer", "references", "list", "query", "general"])
+    async def test_delegating_override_mutation_fails_closed(self, mutation):
+        class MutatingReducer(GlobalSearchRetriever):
+            async def _reduce_phase(self, query, partials, *, use_general_knowledge=False):
+                if mutation == "answer":
+                    partials[0].answer = "changed"
+                elif mutation == "references":
+                    partials[0].references[0]["target_id"] = "changed"
+                elif mutation == "list":
+                    partials.clear()
+                elif mutation == "query":
+                    query = "changed"
+                else:
+                    use_general_knowledge = not use_general_knowledge
+                return await super()._reduce_phase(
+                    query, partials, use_general_knowledge=use_general_knowledge,
+                )
+
+        search, llm, _ = self.make_search(1000, retriever_type=MutatingReducer)
+        with pytest.raises(ValueError, match="hook changed admitted inputs"):
+            await search.search("q", 0)
+        assert llm.reduce_prompts == []
+
+    async def test_concurrent_delegating_searches_keep_request_local_prompts(self):
+        both_entered = asyncio.Event()
+        queries = []
+
+        class ConcurrentReducer(GlobalSearchRetriever):
+            async def _reduce_phase(self, query, partials, *, use_general_knowledge=False):
+                queries.append(query)
+                if len(queries) == 2:
+                    both_entered.set()
+                await asyncio.wait_for(both_entered.wait(), timeout=2)
+                return await super()._reduce_phase(
+                    query, partials, use_general_knowledge=use_general_knowledge,
+                )
+
+        search, llm, _ = self.make_search(1000, retriever_type=ConcurrentReducer)
+        llm.map_responses *= 2
+        results = await asyncio.gather(search.search("first", 0), search.search("second", 0))
+        assert {p.splitlines()[0] for p in llm.reduce_prompts} == {"Q:first", "Q:second"}
+        assert all(result.metadata["reduce_partials_used"] == 2 for result in results)
 
     async def test_search_fixed_overflow_may_follow_map_but_never_calls_reduce(self):
         search, llm, _ = self.make_search(1)
