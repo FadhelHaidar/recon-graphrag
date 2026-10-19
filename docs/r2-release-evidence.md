@@ -54,7 +54,7 @@ and report excerpts were recovered from retained transcripts. Their precise
 historical model/source identity is not independently bound to an immutable
 candidate commit. Do not present them as a controlled release comparison.
 
-## Manual support review
+## Historical manual support review (not the paired run)
 
 A small review of those six answers against the original three-document corpus
 classified deduplicated propositions as supported, unsupported, or explicitly
@@ -80,42 +80,101 @@ Bob was the *primary* investigator. Corpus:
 This is a three-document smoke review, not a statistical accuracy benchmark or a
 recall score. No improvement over R1 is claimed.
 
+## Fresh published-R1 / candidate comparison
+
+Database connectivity and VPN access to the configured providers were restored.
+The earlier embedding connection timeouts were failed attempts, not E2E passes.
+A subsequent fresh serial comparison completed both original synthetic E2Es on
+both revisions, without modifying tests, factories, assertions, or model profile.
+
+- Published R1 `v0.10.1`: `46db7461e23c2d0c72b7441609a499634caa4b9d`.
+- Candidate: `9d3fd26017322dbcf4323bb5480d31a19dd5891e`; only evidence
+  documentation changed from the previously tested implementation at `fc01900`.
+- Original corpus, synthetic test, factory, and support files were byte-identical.
+  Revision-local imports and exact Git-normalized source manifests were verified
+  before/after; raw hashes were retained for CRLF-normalized files.
+- Same Python 3.11.16/dependencies, configured `qwen3.8-27b` LLM with thinking
+  disabled, and `jina-omni-nano-retrieval` embeddings. Successful embedding probes
+  returned 768 dimensions. Server-side model alias revisions were not attested.
+
+| Revision | Real-provider E2E result | Pytest elapsed |
+|---|---|---:|
+| Published R1 | **2 passed** | 469.80 s |
+| Exact candidate | **2 passed** | 413.78 s |
+
+| Revision / backend | Completed actions including primer | Failed | Repairs | Calls / limit | Fallback |
+|---|---:|---:|---:|---:|---|
+| R1 / Neo4j | 16 | 0 | 1 | 19 / 20 | No |
+| R1 / Memgraph | 12 | 0 | 0 | 14 / 20 | No |
+| Candidate / Neo4j | 10 | 0 | 0 | 12 / 20 | No |
+| Candidate / Memgraph | 10 | 0 | 0 | 12 / 20 | No |
+
+All four traces stopped with `all_actions_completed`. Twelve final answer objects
+and full exposed citations/context/DRIFT metadata were captured. These are single
+stochastic smoke runs, not evidence that fewer actions, fewer repairs, or shorter
+elapsed time improve accuracy or reliably improve speed.
+
+Fresh both-store preflight found empty stores and only known 768-dimensional
+indexes before allowing the original fixtures to recreate default retrieval
+indexes. Four independent postflights checked both stores after each test:
+zero nodes/relationships and expected vector definitions. Only exact fixture
+scopes were deleted; no global delete or endpoint/profile substitution occurred.
+
+An earlier VPN attempt was invalidated by an external observer's dataclass
+serialization error; a subsequent launcher import error occurred before paid
+calls. Neither attempt is counted above. After offline import/serialization
+self-checks and fresh safety checks, the corrected external recorder captured the
+fresh comparison without changing original execution or assertions. The executor
+later timed out at its 30-minute agent limit, after saving completed subprocess
+outcomes, all answers, integrity records, and postflights; those saved records
+were inspected separately rather than rerunning successful tests.
+
+## Independent support review of the fresh paired run
+
+All twelve final answers were independently reviewed against the original corpus,
+not generated graph facts, reports, confidence scores, or citation identifiers.
+Each answer's deduplicated semantic propositions were classified as supported
+(explicit or entailed), unsupported (not established, not necessarily false), or
+qualified inference (reasonable possibility, not an established event). Repeated
+facts count once per answer; tightly coupled same-judgment details are grouped.
+
+| Backend / mode | R1 supported / unsupported / qualified | Candidate supported / unsupported / qualified |
+|---|---:|---:|
+| Neo4j local | 4 / 1 / 0 | 3 / 1 / 0 |
+| Memgraph local | 4 / 1 / 0 | 3 / 0 / 0 |
+| Neo4j global | 4 / 0 / 0 | 10 / 0 / 0 |
+| Memgraph global | 4 / 0 / 0 | 5 / 1 / 0 |
+| Neo4j DRIFT | 4 / 3 / 0 | 4 / 1 / 1 |
+| Memgraph DRIFT | 1 / 2 / 0 | 1 / 2 / 1 |
+| **Total** | **21 / 7 / 0** | **26 / 5 / 2** |
+
+These are manual inventories, not accuracy/recall scores. Answer lengths and
+stochastically generated graphs differ (Neo4j entities/relationships: R1 9/16,
+candidate 10/18; Memgraph: R1 9/18, candidate 9/20). No statistical gain or causal
+implementation regression is established by this three-document sample.
+
+A concrete observed deterioration remains: candidate Memgraph global says
+**"Identity Gateway: The specific system where the incident originated."** Its
+paired R1 answer does not assert origin. The corpus only establishes Payments'
+dependency on Gateway and that the incident affected Payments; it does not locate
+the incident in Gateway. Other unsupported additions include Gateway
+technical responsibilities, guaranteed propagation in R1, and attributing
+root-cause discovery specifically to Bob in candidate Neo4j local. All local
+answers correctly name Bob; all global answers identify the organization and
+three systems. Neo4j DRIFT answers acknowledge unspecified interface details;
+Memgraph DRIFT answers do not clearly state that limitation.
+
+The review found coherent execution evidence and no demonstrated blocking
+code-level regression, while recording these factual-support limitations. Valid
+schemas and citations do not prove an answer's claims. The claim ledger and
+reviewed answer excerpts are retained with the sanitized run artifacts.
+
 ## Gates still open
 
-The database connection failure was resolved. Fresh preflight verified **both
-stores empty**, with only known indexes and 768-dimensional vectors. Live
-workflow tests passed, and all six per-test postflights found both stores globally
-empty with unchanged vector definitions.
-
-A fresh exact archive of published R1 `v0.10.1`
-(`46db7461e23c2d0c72b7441609a499634caa4b9d`) and candidate
-`fc01900b3f1750f8355e7a98d2914de5448484dc` each ran both original synthetic E2Es
-without modifying tests or assertions. Corpus, test, and factory files were
-identical across revisions; both used Python 3.11.16 and the same dependencies and
-configured provider profile. Git-normalized source identities were verified
-before/after execution, with raw hashes retained for CRLF-normalized files.
-
-| Revision | Real-provider E2E result | Elapsed |
-|---|---|---:|
-| Published R1 | **2 failed** | 35.28 s |
-| Exact candidate | **2 failed** | 34.89 s |
-
-All four tests failed at the initial embedding dimension probe with
-`openai.APITimeoutError: Request timed out.`, caused by
-`httpcore.ConnectTimeout`. No LLM request, graph build, search, or E2E index
-recreation was reached. The runs retained the SDK's default retries; no alternate
-endpoint/profile or schema-less retry was used. Answers, citations, DRIFT traces,
-and release-over-release support comparisons are **N/A**, not zero or passing.
-The earlier interrupted R1 run still has no surviving completion evidence.
-
-Before release:
-
-1. Restore embedding-provider connectivity. Repeat both-store safety preflight
-   before fresh writes; the observed empty state is not a future guarantee.
-   Never recreate default indexes on populated/shared data.
-2. Rerun original published-R1 and exact-candidate E2Es using the same corpus and
-   profile. Bind model settings and source revisions to the evidence; review
-   factual support and resolve any regression honestly.
-3. Keep independent review and PR CI/build green. Do not merge or publish while
-   the real-provider/comparison gates remain unresolved. Release through the
-   existing Release Please process only after explicit approval; do not start R3.
+The real-provider execution and independent support-review gates are complete.
+The quality assessment is mixed, not an accuracy-improvement claim: the observed
+unsupported Gateway-origin addition remains unresolved. Keep the PR draft until
+the owner decides whether to investigate it further or explicitly accept the
+recorded semantic limitations; do not silently waive the quality concern. Keep
+PR CI/build green. Release through the existing Release Please process only after
+explicit approval; do not merge, publish, or start R3 automatically.
