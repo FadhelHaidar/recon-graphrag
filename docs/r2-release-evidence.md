@@ -29,9 +29,10 @@ automatically repaired; explicit regeneration is separate from upgrading code.
 - `uv lock --check`, source/wheel build, and `twine check`: passed.
 - Fresh dispatch review: no findings; override, delegation, mutation rejection,
   stateful-counter, and concurrency regressions are covered.
-- Deterministic workflow collection: both backends collected. The added search
-  assertions have not yet run against live databases. They use fake AI and cannot
-  measure answer accuracy. See [test operations](10-testing.md).
+- Live deterministic local/global/DRIFT workflow: **2 passed** on Neo4j and
+  Memgraph in 5.31 seconds at candidate
+  `fc01900b3f1750f8355e7a98d2914de5448484dc`. These use fake AI and cannot measure
+  answer accuracy. See [test operations](10-testing.md).
 
 These counts describe the focused candidate, which intentionally excludes
 unrelated staged cleanup and environment-contract tests in the development tree.
@@ -81,24 +82,40 @@ recall score. No improvement over R1 is claimed.
 
 ## Gates still open
 
+The database connection failure was resolved. Fresh preflight verified **both
+stores empty**, with only known indexes and 768-dimensional vectors. Live
+workflow tests passed, and all six per-test postflights found both stores globally
+empty with unchanged vector definitions.
+
 A fresh exact archive of published R1 `v0.10.1`
-(`46db7461e23c2d0c72b7441609a499634caa4b9d`) was verified. Read-only preflight
-failed with `neo4j.exceptions.ServiceUnavailable` caused by
-`ConnectionRefusedError: [Errno 111] Connection refused`, before pytest, model
-requests, cleanup, or index changes. Memgraph preflight was not reached. The
-previous interrupted R1 run has no surviving completion evidence. R1 answers and
-release-over-release support comparisons are **N/A**, not zero or passing.
+(`46db7461e23c2d0c72b7441609a499634caa4b9d`) and candidate
+`fc01900b3f1750f8355e7a98d2914de5448484dc` each ran both original synthetic E2Es
+without modifying tests or assertions. Corpus, test, and factory files were
+identical across revisions; both used Python 3.11.16 and the same dependencies and
+configured provider profile. Git-normalized source identities were verified
+before/after execution, with raw hashes retained for CRLF-normalized files.
+
+| Revision | Real-provider E2E result | Elapsed |
+|---|---|---:|
+| Published R1 | **2 failed** | 35.28 s |
+| Exact candidate | **2 failed** | 34.89 s |
+
+All four tests failed at the initial embedding dimension probe with
+`openai.APITimeoutError: Request timed out.`, caused by
+`httpcore.ConnectTimeout`. No LLM request, graph build, search, or E2E index
+recreation was reached. The runs retained the SDK's default retries; no alternate
+endpoint/profile or schema-less retry was used. Answers, citations, DRIFT traces,
+and release-over-release support comparisons are **N/A**, not zero or passing.
+The earlier interrupted R1 run still has no surviving completion evidence.
 
 Before release:
 
-1. Restore infrastructure and inspect both databases before any write. Current
-   node counts, dimensions, and old fixture cleanup are unverified. Never recreate
-   default indexes on populated/shared data.
-2. Run deterministic local/global/DRIFT tests on both stores with matching
-   `EMBEDDING_DIM`; record scoped cleanup.
-3. Run original published-R1 E2Es unchanged and a fresh exact-candidate E2E using
-   the same corpus/profile. Bind model settings and source revisions to the
-   evidence; review factual support and record any regression honestly.
-4. Finish independent review and require green PR CI/build. Do not merge or
-   publish while these gates remain unresolved. Release through the existing
-   Release Please process only after explicit approval; do not start R3.
+1. Restore embedding-provider connectivity. Repeat both-store safety preflight
+   before fresh writes; the observed empty state is not a future guarantee.
+   Never recreate default indexes on populated/shared data.
+2. Rerun original published-R1 and exact-candidate E2Es using the same corpus and
+   profile. Bind model settings and source revisions to the evidence; review
+   factual support and resolve any regression honestly.
+3. Keep independent review and PR CI/build green. Do not merge or publish while
+   the real-provider/comparison gates remain unresolved. Release through the
+   existing Release Please process only after explicit approval; do not start R3.
