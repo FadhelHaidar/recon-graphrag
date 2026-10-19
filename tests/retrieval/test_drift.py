@@ -14,22 +14,22 @@ import pytest
 
 from recon_graphrag.llm import LLMResponse
 from recon_graphrag.models.artifacts import Citation
-from recon_graphrag.retrieval.search_drift import DriftSearchRetriever
 from recon_graphrag.retrieval.drift_types import (
     DriftAction,
     DriftQueryState,
     DriftSearchConfig,
 )
 from recon_graphrag.retrieval.mixed_context import MixedContextResult
+from recon_graphrag.retrieval.search_drift import DriftSearchRetriever
 from recon_graphrag.utils.tokens import ApproximateTokenCounter
-
+from tests.protocol_fakes import AsyncOnlyEmbedder, AsyncOnlyLLM, UnsupportedGraphStore
 
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------
 
 
-class FakeGraphStore:
+class FakeGraphStore(UnsupportedGraphStore):
     """Fake store with vector_search_community_reports support."""
 
     def __init__(self, *, reports=None):
@@ -100,23 +100,25 @@ class FakeGraphStore:
         return self._reports[:top_k]
 
 
-class FakeEmbedder:
+class FakeEmbedder(AsyncOnlyEmbedder):
     def __init__(self):
         self.queries: list[str] = []
 
-    async def async_embed_query(self, text):
+    async def async_embed_query(self, text, **kwargs):
         self.queries.append(text)
         return [0.1, 0.2, 0.3]
 
 
-class FakeLLM:
+class FakeLLM(AsyncOnlyLLM):
     def __init__(self, responses=None):
         self.prompts: list[str] = []
+        self.kwargs: list[dict] = []
         self._responses = responses or []
         self._call_count = 0
 
-    async def ainvoke(self, prompt):
+    async def ainvoke(self, prompt, **kwargs):
         self.prompts.append(prompt)
+        self.kwargs.append(kwargs)
         if self._call_count < len(self._responses):
             content = self._responses[self._call_count]
         else:
@@ -540,8 +542,84 @@ class TestDriftLimitsAndRepair:
             config=DriftSearchConfig(use_hyde=False),
         ).search("query")
 
-        assert "invalid JSON" in llm.prompts[1]
+        repair_prompt = llm.prompts[1]
+        assert "invalid JSON" in repair_prompt
+        for requirement in (
+            "answer: a string",
+            "score: a number from 0 to 100",
+            "follow_ups: a list of non-empty strings, or []",
+            "references: a list of objects with a non-empty target_id",
+            '"entity", "relationship", or "claim"',
+            "Use [] if no valid targets are known",
+            "report_ids: a list of report ID strings, or []",
+            "Report IDs belong in report_ids, not references",
+        ):
+            assert requirement in repair_prompt
+        assert '"references": []' in repair_prompt
+        assert "not json" in repair_prompt
+        assert "response is not a non-empty JSON object" in repair_prompt
         assert result.metadata["drift_trace"]["total_llm_calls"] == 3
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("references", [
+        ["entity:alice"],
+        [{"target_id": "entity:alice"}],
+        [{"target_id": "chunk:1", "target_type": "chunk"}],
+        [{"target_id": "report:c0:0", "target_type": "report"}],
+    ], ids=["string", "missing-type", "chunk", "report"])
+    @pytest.mark.parametrize("repair_valid", [True, False], ids=["repaired", "still-invalid"])
+    async def test_malformed_action_references_get_one_bounded_repair(
+        self, references, repair_valid,
+    ):
+        action_response = {
+            "answer": "Refined answer.", "score": 90,
+            "follow_ups": ["Must not expand after failure?"],
+            "references": references,
+        }
+        repaired_response = {
+            **action_response,
+            "follow_ups": [] if repair_valid else action_response["follow_ups"],
+            "references": [] if repair_valid else references,
+        }
+        llm = FakeLLM(responses=[
+            json.dumps({
+                "answer": "Primer.", "score": 80,
+                "follow_ups": ["Follow up?"], "report_ids": ["report:c0:0"],
+            }),
+            json.dumps(action_response),
+            json.dumps(repaired_response),
+            "Final answer.",
+        ])
+        result = await DriftSearchRetriever(
+            FakeGraphStore(), llm, FakeEmbedder(),
+            config=DriftSearchConfig(
+                use_hyde=False, max_llm_calls=4, action_use_mixed_context=False,
+            ),
+        ).search("query")
+
+        trace = result.metadata["drift_trace"]
+        assert len(trace["actions"]) == 2
+        action = trace["actions"][1]
+        assert action["status"] == ("completed" if repair_valid else "failed")
+        assert action["answer"] == ("Refined answer." if repair_valid else "")
+        assert trace["total_llm_calls"] == len(llm.prompts) == 4
+        assert sum("invalid JSON" in prompt for prompt in llm.prompts) == 1
+        assert "references must contain typed target_id objects" in llm.prompts[2]
+        assert json.dumps(action_response) in llm.prompts[2]
+        if repair_valid:
+            assert trace["failures"] == []
+            assert "Refined answer." in llm.prompts[3]
+        else:
+            assert any(
+                "action LLM failed" in failure
+                and "action JSON remained invalid after one repair" in failure
+                for failure in trace["failures"]
+            )
+            assert "Refined answer." not in llm.prompts[3]
+        for prompt in llm.prompts[:2]:
+            assert '"entity", "relationship", or "claim"' in prompt
+            assert "report or chunk IDs as target references" in prompt
+            assert "Use [] if no valid targets are known" in prompt
 
     @pytest.mark.asyncio
     async def test_max_llm_calls_is_hard_and_trace_includes_final_state(self):
@@ -690,9 +768,124 @@ async def test_mixed_action_reference_cannot_readmit_dropped_evidence(
 
     await process_admission_action(retriever, action, state)
 
-    assert action.references == references
+    assert action.references == []
     assert action.citations == [kept]
     assert store.calls == []  # Even a valid typed target must not query the graph.
+
+
+@pytest.mark.parametrize("reference_fields", [
+    {},
+    {"references": None},
+    {"references": "entity:kept"},
+    {"references": ["entity:kept"]},
+    {"references": [{"target_id": "entity:kept"}]},
+    {"references": [{"target_id": "chunk:kept", "target_type": "chunk"}]},
+    {"references": [{"target_id": "report:c0:0", "target_type": "report"}]},
+    {"references": [{"target_id": "never-retrieved", "target_type": "entity"}],
+     "report_ids": "unsolicited"},
+], ids=["missing", "null", "string", "string-item", "missing-type", "chunk", "report", "extra"])
+@pytest.mark.asyncio
+async def test_mixed_action_ignores_generated_references(action_harness, reference_fields):
+    retriever, action, state, store, llm, _ = action_harness()
+    llm._responses = [json.dumps({
+        "answer": "Admitted answer.", "score": 90, "follow_ups": [], **reference_fields,
+    })]
+    kept = admission_citation("chunk:kept")
+    stub_mixed_context(retriever, citations=[kept])
+
+    await process_admission_action(retriever, action, state)
+    result = await retriever._reduction_phase("query", state, False, "", asyncio.Lock())
+
+    assert action.references == []
+    assert action.citations == result.citations == [kept]
+    assert store.calls == []
+    assert state.failures == []
+    assert state.total_llm_calls == len(llm.prompts) == 1
+    assert "with only answer, score, and follow_ups" in llm.prompts[0]
+    assert "references" not in llm.prompts[0]
+    assert "report_ids" not in llm.prompts[0]
+
+
+@pytest.mark.parametrize("invalid_fields", [
+    {"answer": None}, {"score": True}, {"score": "90"}, {"score": 101},
+    {"follow_ups": "More?"}, {"follow_ups": [""]},
+], ids=["answer", "boolean-score", "quoted-score", "score-range", "follow-ups-type", "empty-follow-up"])
+@pytest.mark.parametrize("repair_valid", [True, False], ids=["repaired", "still-invalid"])
+@pytest.mark.asyncio
+async def test_mixed_action_core_schema_gets_one_bounded_repair(invalid_fields, repair_valid):
+    valid = {"answer": "Action.", "score": 90, "follow_ups": []}
+    invalid = {**valid, **invalid_fields, "references": ["ignored"]}
+    llm = FakeLLM([
+        json.dumps({"answer": "Primer.", "score": 80, "follow_ups": ["Follow up?"]}),
+        json.dumps(invalid), json.dumps(valid if repair_valid else invalid), "Final answer.",
+    ])
+    retriever = DriftSearchRetriever(
+        FakeGraphStore(), llm, FakeEmbedder(),
+        config=DriftSearchConfig(use_hyde=False, max_llm_calls=4, action_use_mixed_context=True),
+    )
+    stub_mixed_context(retriever, citations=[])
+    result = await retriever.search("query")
+
+    trace = result.metadata["drift_trace"]
+    assert len(trace["actions"]) == 2
+    assert trace["actions"][1]["status"] == ("completed" if repair_valid else "failed")
+    assert trace["total_llm_calls"] == len(llm.prompts) == 4
+    assert sum("invalid JSON" in prompt for prompt in llm.prompts) == 1
+    repair_contract = llm.prompts[2].split("## Errors")[0]
+    for requirement in ("answer: a string", "score: a number from 0 to 100",
+                        "follow_ups: a list of non-empty strings, or []"):
+        assert requirement in repair_contract
+    assert "references" not in repair_contract
+    assert "report_ids" not in repair_contract
+    assert bool(trace["failures"]) is not repair_valid
+    if not repair_valid:
+        assert "action JSON remained invalid after one repair" in trace["failures"][0]
+
+
+@pytest.mark.asyncio
+async def test_mixed_action_repair_respects_reserved_reduce_call():
+    llm = FakeLLM([
+        json.dumps({"answer": "Primer.", "score": 80, "follow_ups": ["Follow up?"]}),
+        json.dumps({"answer": "Action.", "score": True, "follow_ups": []}),
+        "Final answer.",
+    ])
+    retriever = DriftSearchRetriever(
+        FakeGraphStore(), llm, FakeEmbedder(),
+        config=DriftSearchConfig(use_hyde=False, max_llm_calls=3, action_use_mixed_context=True),
+    )
+    stub_mixed_context(retriever, citations=[])
+
+    result = await retriever.search("query")
+
+    trace = result.metadata["drift_trace"]
+    assert trace["actions"][1]["status"] == "failed"
+    assert trace["total_llm_calls"] == len(llm.prompts) == 3
+    assert "max_llm_calls reached" in trace["failures"][0]
+    assert not any("invalid JSON" in prompt for prompt in llm.prompts)
+    assert result.answer == "Final answer."
+
+
+@pytest.mark.parametrize("references", [
+    ["entity:alice"], [{"target_id": "entity:alice"}],
+    [{"target_id": "chunk:1", "target_type": "chunk"}],
+    [{"target_id": "report:c0:0", "target_type": "report"}],
+], ids=["string", "missing-type", "chunk", "report"])
+@pytest.mark.asyncio
+async def test_primer_malformed_references_still_require_repair(references):
+    valid = {"answer": "Primer.", "score": 80, "follow_ups": [], "references": []}
+    llm = FakeLLM([json.dumps(valid)])
+    retriever = DriftSearchRetriever(FakeGraphStore(), llm, FakeEmbedder())
+    state = DriftQueryState(query="query")
+
+    data = await retriever._parse_json_strict(
+        json.dumps({**valid, "references": references}), state,
+        phase="primer", max_llm_calls=1, call_lock=asyncio.Lock(),
+    )
+
+    assert data["references"] == []
+    assert state.total_llm_calls == len(llm.prompts) == 1
+    assert "references must contain typed target_id objects" in llm.prompts[0]
+    assert "references: a list of objects" in llm.prompts[0]
 
 
 @pytest.mark.asyncio
@@ -867,3 +1060,126 @@ async def test_reduction_only_retained_primer_resolves_selected_report_citations
     else:
         assert result.citations == []
         assert store.calls == []
+
+
+def assert_strict_drift_schema(response_format, expected_fields):
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["strict"] is True
+    schema = response_format["json_schema"]["schema"]
+    assert set(schema["properties"]) == set(schema["required"]) == expected_fields
+    assert schema["additionalProperties"] is False
+    assert schema["properties"]["score"]["type"] == "number"
+    if "references" in expected_fields:
+        reference = schema["properties"]["references"]["items"]
+        assert reference["additionalProperties"] is False
+        assert set(reference["required"]) == {"target_id", "target_type"}
+        assert reference["properties"]["target_id"]["type"] == "string"
+        assert reference["properties"]["target_type"]["enum"] == ["entity", "relationship", "claim"]
+
+
+@pytest.mark.parametrize("mixed", [True, False])
+@pytest.mark.asyncio
+async def test_native_schemas_primer_action_and_semantic_repairs(mixed):
+    primer = {"answer": "Primer.", "score": 80, "follow_ups": ["Follow up?"],
+              "references": [], "report_ids": ["report:c0:0"]}
+    action = {"answer": "Action.", "score": 90, "follow_ups": []}
+    if not mixed:
+        action["references"] = []
+    llm = FakeLLM([
+        json.dumps({**primer, "score": 101}), json.dumps(primer),
+        json.dumps({**action, "score": True}), json.dumps(action), "Final.",
+    ])
+    retriever = DriftSearchRetriever(
+        FakeGraphStore(), llm, FakeEmbedder(),
+        config=DriftSearchConfig(use_hyde=False, max_llm_calls=5, action_use_mixed_context=mixed),
+    )
+    if mixed:
+        stub_mixed_context(retriever, citations=[])
+    result = await retriever.search("query")
+    assert result.answer == "Final."
+    assert len(llm.kwargs) == result.metadata["drift_trace"]["total_llm_calls"] == 5
+    primer_schema = llm.kwargs[0]["response_format"]
+    assert_strict_drift_schema(primer_schema, {"answer", "score", "follow_ups", "references", "report_ids"})
+    assert llm.kwargs[1]["response_format"] == primer_schema
+    action_schema = llm.kwargs[2]["response_format"]
+    assert_strict_drift_schema(action_schema, {"answer", "score", "follow_ups"} | (set() if mixed else {"references"}))
+    assert llm.kwargs[3]["response_format"] == action_schema
+    assert llm.kwargs[4] == {}  # reduction remains prose
+    if not mixed:
+        assert '"report_ids"' not in llm.prompts[3].split("## Errors")[0]
+
+
+@pytest.mark.asyncio
+async def test_native_schema_on_folds_and_fold_repair():
+    valid = json.dumps({"answer": "Primer.", "score": 80, "follow_ups": [],
+                        "references": [], "report_ids": []})
+    llm = FakeLLM(["invalid", valid, valid, "Final."])
+    retriever = DriftSearchRetriever(
+        FakeGraphStore(reports=[{"id": "r1"}, {"id": "r2"}]), llm, FakeEmbedder(),
+        config=DriftSearchConfig(use_hyde=False, primer_folds=2),
+    )
+    result = await retriever.search("query")
+    assert result.metadata["drift_trace"]["total_llm_calls"] == 4
+    schema = llm.kwargs[0]["response_format"]
+    assert_strict_drift_schema(schema, {"answer", "score", "follow_ups", "references", "report_ids"})
+    assert [kw["response_format"] for kw in llm.kwargs[:3]] == [schema] * 3
+    assert llm.kwargs[-1] == {}
+
+
+@pytest.mark.asyncio
+async def test_hyde_and_fallback_remain_prose():
+    llm = FakeLLM()
+    await DriftSearchRetriever(FakeGraphStore(), llm, FakeEmbedder()).search("query")
+    assert "hypothetical" in llm.prompts[0].lower()
+    assert llm.kwargs[0] == llm.kwargs[-1] == {}
+    assert "response_format" in llm.kwargs[1]
+
+    llm = FakeLLM()
+    result = await DriftSearchRetriever(EmptyReportsGraphStore(), llm, FakeEmbedder()).search("query")
+    assert result.metadata["drift_fallback_reason"] == "no_report_results"
+    assert llm.kwargs == [{}]
+
+
+@pytest.mark.parametrize("failure", ["refusal", "length", "content_filter", "schema_rejection"])
+@pytest.mark.asyncio
+async def test_native_provider_failure_is_recorded_without_json_repair(failure):
+    from recon_graphrag.llm.factory import OpenAIChatLLM
+
+    llm = OpenAIChatLLM.__new__(OpenAIChatLLM)
+    llm.model_params = {}
+    llm.model_name = "model"
+    llm.azure = False
+    choice = SimpleNamespace(
+        message=SimpleNamespace(content="not json", refusal="refusal" if failure == "refusal" else None),
+        finish_reason=failure if failure in {"length", "content_filter"} else "stop",
+    )
+    calls = []
+
+    async def create(**kwargs):
+        calls.append(kwargs)
+        if "response_format" in kwargs:
+            if failure == "schema_rejection":
+                raise RuntimeError("provider schema_rejection")
+            return SimpleNamespace(choices=[choice], usage=None)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="Fallback."))], usage=None)
+
+    llm.async_client = Mock(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    result = await DriftSearchRetriever(
+        FakeGraphStore(), llm, FakeEmbedder(), config=DriftSearchConfig(use_hyde=False),
+    ).search("query")
+    assert result.answer == "Fallback."
+    assert result.metadata["drift_fallback_reason"] == "primer_llm_failed"
+    assert any(failure in error for error in result.metadata["drift_trace"]["failures"])
+    assert len(calls) == result.metadata["drift_trace"]["total_llm_calls"] == 2
+    assert "response_format" in calls[0]
+    assert "response_format" not in calls[1]
+    assert not any("invalid JSON" in call["messages"][0]["content"] for call in calls)
+
+
+@pytest.mark.parametrize("target_id", [None, 42, True, [], {}, " "])
+def test_nonmixed_reference_requires_nonblank_string(target_id):
+    with pytest.raises(ValueError, match="references must contain typed target_id objects"):
+        DriftSearchRetriever._validate_drift_json({
+            "answer": "Action.", "score": 90, "follow_ups": [],
+            "references": [{"target_id": target_id, "target_type": "entity"}],
+        }, "action")
