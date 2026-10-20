@@ -15,7 +15,8 @@ a stale prepared prompt.
 DRIFT primer/action/repair calls use native JSON schemas. Custom LLM integrations
 must honor these per-call parameters; rejected schema calls are not retried as
 prompt-only JSON. Mixed actions retain retrieval-managed citations instead of
-requesting redundant generated references. Prose phases are unchanged. Existing
+requesting redundant generated references. Other phases retain their existing
+output formats. Existing
 bounded repair and explicit fallback traces remain; fallback is not a successful
 DRIFT traversal. See [search documentation](06-search.md).
 
@@ -24,8 +25,11 @@ automatically repaired; explicit regeneration is separate from upgrading code.
 
 ## Candidate validation
 
-- Python 3.11.16: **1,208 passed, 24 integration tests deselected**.
-- Python 3.14.7: **1,208 passed, 24 integration tests deselected**.
+- Pre-prompt-mitigation candidate, Python 3.11.16 and Python 3.14.7:
+  **1,208 passed, 24 integration tests deselected** on each interpreter.
+- Current prompt-mitigation tree, Python 3.14.7:
+  **1,213 passed, 24 integration tests deselected**. A fresh code review found no
+  issues; prompt-contract tests verify instruction delivery, not factuality.
 - `uv lock --check`, source/wheel build, and `twine check`: passed.
 - Fresh dispatch review: no findings; override, delegation, mutation rejection,
   stateful-counter, and concurrency regressions are covered.
@@ -169,12 +173,80 @@ code-level regression, while recording these factual-support limitations. Valid
 schemas and citations do not prove an answer's claims. The claim ledger and
 reviewed answer excerpts are retained with the sanitized run artifacts.
 
+## Targeted prompt-fidelity mitigation and fixed-input comparison
+
+Investigation traced the Gateway claim to an unsupported location in generated
+report prose, then map text, then a reducer that strengthened occurrence into
+origin. Typed citations authorized evidence identifiers; they did not establish
+that every prose claim was supported. The report was generated before search, so
+this was not solely a reducer issue.
+
+The default report, global map, and global reduce prompts now explicitly require
+supported facts, unchanged relationship/attribution meaning, preserved uncertainty,
+and no invented details or padding of sparse evidence. This is a prompt-only
+mitigation: no new validator, schema, runtime logic, retry, dependency, or model
+call was added. Plain report prefixes inherit the default body; full custom
+report/map/reduce templates remain replacements. Explicitly opted-in, labeled
+general knowledge remains permitted. Stored reports are **not** repaired; using
+new report-generation instructions requires explicit regeneration.
+
+Run `fixed-input-20261020T115748550809Z` compared the old literals at
+`0b01095df284edff8c4a5581b604186dd3166340` with the new literals on identical
+inputs. Three scenarios exercised report, map, and reduce independently; a fourth
+reduce-only case used the actual retained erroneous map partial. No stage output
+was fed into another stage. The configured `qwen3.8-27b` profile used thinking off,
+temperature 0, seed 20261018, alternating old/new order, and one response per
+condition. There were **10 pairs / 20 requests**, with SDK retries disabled:
+all 20 responses ended normally, six reports retained nonempty parsed findings,
+six maps parsed, and eight reductions were prose. No repair, rerun, database,
+embedding, or full E2E call was performed. Source/fixture hashes and privacy checks
+passed. These format/integrity results are not semantic validation.
+
+A fresh independent reviewer examined every complete output against the supplied
+facts. Coverage below counts required supported propositions, not all output
+claims or overall accuracy. Naming a system without its stated relationship does
+not preserve that relationship.
+
+| Fixed-input scenario / stage | Old required coverage | New required coverage | Observed change |
+|---|---:|---:|---|
+| Incident / report | 5/5 | 5/5 | Less embellishment; unsupported criticality remains in the new rating rationale. |
+| Incident / map | 1/5 | 1/5 | New explicitly leaves origin unknown, but trades detection for the operator fact; both omit other required relationships. |
+| Incident / reduce | 5/5 | 5/5 | New leaves origin unspecified rather than reframing the login description as origin. |
+| Sparse roles / report | 3/3 | 3/3 | New removes invented data-integrity and service-detail implications. |
+| Sparse roles / map | 3/3 | 3/3 | Both preserve relationships and leave ownership/development/services unspecified. |
+| Sparse roles / reduce | 3/3 | 3/3 | New removes explicit owner/operator conflation; its combined heading remains ambiguous and ownership/development unknowns are not explicitly answered. |
+| Attribution / report | 3/3 | 3/3 | New removes invented resolution, but still upgrades investigator participation to leadership. |
+| Attribution / map | 3/3 | 3/3 | Both preserve unnamed discoverer and unconfirmed causality. |
+| Attribution / reduce | 3/3 | 3/3 | Both preserve attribution and uncertainty. |
+| Retained erroneous map / reduce | 4/4 | 4/4 | Old strengthens Gateway occurrence into origin; new repeats occurrence without strengthening it. Coverage is relative to the imperfect partial, not original-corpus truth. |
+
+The decisive boundary input says **"Identity Gateway (where the incident
+occurred)"**. Old output says **"The system where the incident originated"**;
+new says **"The location where the incident occurred"**. The upstream false
+location survives in new. This demonstrates less amplification in this sample,
+**not** correction of bad reports. Another residual new report says the
+investigation was **"led by Omar"**, although only participation is established.
+The independent reviewer recommended retaining the mitigation with those limits,
+not speculative additional prompt expansion.
+
+Full prompts, raw/parsed outputs, fixture definitions, hashes, execution manifest,
+and the independent claim/coverage review are retained with the sanitized run
+artifacts. This is one small fixed-input/model-profile check, not a statistical
+benchmark, end-to-end rerun, factuality guarantee, or general accuracy claim.
+Temperature 0 and a fixed seed do not attest deterministic server behavior.
+Longer fixed prompts also leave less room for evidence under existing budgets:
+approximate literal token estimates increase report 370→481, map 257→316, and
+reduce 110→175; these are not full-request or provider billing counts.
+
 ## Gates still open
 
-The real-provider execution and independent support-review gates are complete.
-The quality assessment is mixed, not an accuracy-improvement claim: the observed
-unsupported Gateway-origin addition remains unresolved. Keep the PR draft until
-the owner decides whether to investigate it further or explicitly accept the
-recorded semantic limitations; do not silently waive the quality concern. Keep
-PR CI/build green. Release through the existing Release Please process only after
-explicit approval; do not merge, publish, or start R3 automatically.
+The real-provider execution and independent support-review gates are complete for
+the earlier paired revisions. The prompt-only follow-up has local regression,
+code-review, fixed-input provider, and independent semantic-review evidence, but
+has not been rerun through regenerated reports and the full E2E pipeline. Its
+results favor retaining the mitigation, not declaring the semantic quality issue
+solved. Residual unsupported facts, incomplete answers, and surviving upstream
+errors remain documented. Keep the PR draft until the owner explicitly accepts
+the limitations or chooses further bounded work; do not silently waive them.
+Keep PR CI/build green. Release through the existing Release Please process only
+after explicit approval; do not merge, publish, or start R3 automatically.

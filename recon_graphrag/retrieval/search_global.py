@@ -47,6 +47,10 @@ You are answering a question using community reports from a knowledge graph.
 {batch_text}
 
 ## Instructions
+Preserve uncertainty and relationship meaning from the reports. Do not turn
+possibilities, associations, locations, or temporal statements into established
+causes or origins. Do not add facts; say when requested details are unspecified.
+
 1. Answer the question using ONLY information from the reports above.
 2. Rate how helpful these reports are for answering the question (0-100).
    - 0 = reports contain no relevant information
@@ -80,6 +84,11 @@ You are synthesizing partial answers into a comprehensive final answer.
 {partial_text}
 
 ## Instructions
+Preserve uncertainty and relationship meaning from the partial answers. Do not
+turn possibilities, associations, locations, or temporal statements into
+established causes or origins. Do not add facts during synthesis; say when
+requested details are unspecified.
+
 1. Combine these partial answers into one coherent, comprehensive answer.
 2. Remove redundancy and resolve contradictions.
 3. Preserve specific details and cite report IDs where appropriate.

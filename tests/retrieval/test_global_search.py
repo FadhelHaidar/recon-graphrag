@@ -182,10 +182,37 @@ class TestCreateBatches:
     def test_multiple_batches_when_budget_small(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm, map_budget_tokens=300)
+        search = GlobalSearchRetriever(store, llm)
+        search.map_budget_tokens = search.token_counter.count(
+            search.map_prompt.format(query="test query", batch_text="")
+        ) + 50
         reports = _make_reports(5)
         batches = search._create_batches("test query", reports)
         assert len(batches) > 1
+
+
+class TestPromptContract:
+    @pytest.mark.parametrize("phase", ["map", "reduce"])
+    def test_default_render_preserves_grounding_instructions(self, phase):
+        # Rendering proves instruction delivery, not model obedience or factuality.
+        search = GlobalSearchRetriever(FakeGraphStore(), FakeLLM())
+        if phase == "map":
+            prompt = search.map_prompt.format(query="Question?", batch_text="Evidence.")
+        else:
+            prompt, _ = search._prepare_reduce_prompt(
+                "Question?",
+                [PartialAnswer("0", "Evidence.", 75, ["report:0:0"])],
+            )
+        normalized = " ".join(prompt.split())
+        assert "Question?" in prompt
+        assert "Evidence." in prompt
+        assert "Preserve uncertainty and relationship meaning" in normalized
+        assert (
+            "Do not turn possibilities, associations, locations, or temporal statements "
+            "into established causes or origins."
+        ) in normalized
+        assert "Do not add facts" in normalized
+        assert "say when requested details are unspecified." in normalized
 
 
 class TestMapPhase:
