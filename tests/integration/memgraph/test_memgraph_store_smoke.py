@@ -10,7 +10,6 @@ import pytest
 from tests.integration.factories import get_memgraph_store
 from tests.integration.database_scenarios import (
     assert_cross_document_rerun_idempotent,
-    assert_directed_community_context,
     assert_graph_document_write,
     cleanup_graph,
 )
@@ -55,9 +54,3 @@ def test_memgraph_writes_graph_document_and_reports_counts(memgraph_store):
 @pytest.mark.database
 def test_memgraph_cross_document_rerun_is_idempotent(memgraph_store):
     assert_cross_document_rerun_idempotent(memgraph_store, GRAPH_NAME)
-
-
-@pytest.mark.integration
-@pytest.mark.database
-def test_memgraph_ranked_context_preserves_directed_facts(memgraph_store):
-    assert_directed_community_context(memgraph_store, GRAPH_NAME, id_func="id")

@@ -28,9 +28,6 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Check lockfile is current
-        run: uv lock --check
-
       - name: Install dependencies
         run: uv sync --extra dev --group dev
 

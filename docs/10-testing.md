@@ -275,37 +275,12 @@ RUN_DATABASE_INTEGRATION_TESTS=1 pytest tests/integration/memgraph/test_memgraph
 ### Deterministic workflow (real database, fake AI)
 
 ```bash
-# Both backends
+# Neo4j
 RUN_WORKFLOW_INTEGRATION_TESTS=1 pytest tests/integration/test_workflow_deterministic.py -q
 
-# One backend only
-RUN_WORKFLOW_INTEGRATION_TESTS=1 pytest tests/integration/test_workflow_deterministic.py -k neo4j -q
-RUN_WORKFLOW_INTEGRATION_TESTS=1 pytest tests/integration/test_workflow_deterministic.py -k memgraph -q
+# Memgraph
+RUN_WORKFLOW_INTEGRATION_TESTS=1 pytest tests/integration/test_workflow_deterministic.py -q
 ```
-
-The deterministic gate builds three entities and two relationships from one source,
-seeds one level-0 community/report through the real store, embeds that report, and
-runs actual local, global map/reduce, and DRIFT primer/action/reduce searches on
-each backend. It checks rendered evidence, native DRIFT JSON-schema request
-kwargs, exact fake-answer propagation, source citations, and no DRIFT failures,
-repairs, or fallback. Fake answers do **not** establish real-model factual accuracy;
-community detection and report generation are not exercised by this gate.
-
-Use isolated test databases with absent or compatible vector indexes/embeddings.
-The fake vectors use the existing `EMBEDDING_DIM` setting (default **1536**);
-set it to match existing indexes, for example `EMBEDDING_DIM=768`.
-The test idempotently requests `entity-embeddings` on
-`:__Entity__(embedding)`, `entity-names` on `:__Entity__(name)`, and
-`community-report-embeddings` on `:Community(report_embedding)`. These indexes
-are database-wide (Memgraph also restricts indexes by label/property), not scoped
-by `graph_name`; the test never drops or recreates existing indexes. Newly created
-indexes remain after the run. Incompatible existing indexes are not migrated.
-
-Before and after each backend test, cleanup deletes only nodes whose `graph_name`
-is exactly `workflow-deterministic-neo4j` or `workflow-deterministic-memgraph`,
-respectively, with their attached relationships. Teardown verifies that no nodes
-remain in that graph and closes the driver. Do not use those graph names for
-non-test data or run this fixture concurrently against the same database.
 
 ### Synthetic E2E (real everything, compact corpus)
 
