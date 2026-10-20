@@ -81,6 +81,46 @@ class PackedCommunityContext:
     truncated: bool
 
 
+@dataclass(frozen=True)
+class _CommunityEvidenceSelection:
+    """Rendered direct evidence; child report narratives grant no IDs."""
+
+    packed: PackedCommunityContext
+    edges: tuple[EdgeContext, ...]
+    isolated_entities: tuple[EntityContext, ...]
+    rendered_claims: tuple[ClaimContext, ...] = ()
+
+
+def _render_entity(entity: EntityContext) -> str:
+    label = entity.labels[0] if entity.labels else "Entity"
+    return f"- [{label}] {entity.name}: {entity.description}"
+
+
+def _render_edge_unit(edge: EdgeContext, seen_entities: set[str]) -> str:
+    # Snapshot membership preserves the packed self-loop's duplicate entity line.
+    lines = [
+        _render_entity(entity)
+        for entity in (edge.source, edge.target)
+        if entity.id not in seen_entities
+    ]
+    line = f"  {edge.source.name} --[{edge.relationship_type}]--> {edge.target.name}"
+    if edge.description:
+        line += f": {edge.description}"
+    return "\n".join([*lines, line])
+
+
+def _render_claim(claim: ClaimContext) -> str:
+    parts = [f"status={claim.status}"]
+    if claim.start_date or claim.end_date:
+        parts.append(f"dates={claim.start_date or '?'}..{claim.end_date or '?'}")
+    if claim.object_entity_id:
+        parts.append(f"object={claim.object_entity_id}")
+    line = f"  [{claim.id}] ({claim.claim_type}; {', '.join(parts)}) {claim.description}"
+    if claim.source_text:
+        line += f" Source: {claim.source_text[:200]}"
+    return line
+
+
 def render_community_context(context: CommunityContext) -> str:
     """Render community context as structured text for summarization.
 
@@ -121,16 +161,7 @@ def render_community_context(context: CommunityContext) -> str:
     if context.claims:
         lines.append("")
         lines.append("Claims:")
-        for claim in context.claims:
-            parts = [f"status={claim.status}"]
-            if claim.start_date or claim.end_date:
-                parts.append(f"dates={claim.start_date or '?'}..{claim.end_date or '?'}")
-            if claim.object_entity_id:
-                parts.append(f"object={claim.object_entity_id}")
-            line = f"  [{claim.id}] ({claim.claim_type}; {', '.join(parts)}) {claim.description}"
-            if claim.source_text:
-                line += f" Source: {claim.source_text[:200]}"
-            lines.append(line)
+        lines.extend(_render_claim(claim) for claim in context.claims)
 
     return "\n".join(lines)
 
@@ -144,7 +175,8 @@ def pack_community_context(
 
     Iterates ranked edges in order, including each if it fits. Entity
     descriptions are only included on first occurrence (deduplication).
-    Isolated entities are appended if space remains.
+    Remaining entities, then atomic claims with admitted subjects, are appended
+    if space remains. Headings and separators share the same budget.
 
     Args:
         context: Ranked community context from parse_community_context.
@@ -154,54 +186,52 @@ def pack_community_context(
     Returns:
         PackedCommunityContext with rendered text and telemetry.
     """
+    return _pack_community_evidence(context, max_tokens, counter).packed
+
+
+def _pack_community_evidence(
+    context: CommunityContext,
+    max_tokens: int,
+    counter: TokenCounter | None = None,
+    *,
+    prefix_text: str = "",
+) -> _CommunityEvidenceSelection:
+    """Pack evidence against the complete text, including any fixed parent prefix."""
     counter = counter or ApproximateTokenCounter()
 
-    if max_tokens <= 0:
-        return PackedCommunityContext(
-            community_id=context.community_id,
-            level=context.level,
-            text="",
-            used_tokens=0,
-            max_tokens=max_tokens,
-            included_edges=0,
-            excluded_edges=len(context.edges),
-            included_entities=0,
-            excluded_entities=len(context.entities),
-            truncated=False,
+    if max_tokens <= 0 or counter.count(prefix_text) > max_tokens:
+        return _CommunityEvidenceSelection(
+            packed=PackedCommunityContext(
+                community_id=context.community_id,
+                level=context.level,
+                text="",
+                used_tokens=0,
+                max_tokens=max_tokens,
+                included_edges=0,
+                excluded_edges=len(context.edges),
+                included_entities=0,
+                excluded_entities=len(context.entities),
+                truncated=False,
+            ),
+            edges=(),
+            isolated_entities=(),
         )
 
     lines: list[str] = []
     seen_entities: set[str] = set()
-    used_tokens = 0
+    def compose(direct_text: str) -> str:
+        return "\n\n".join(part for part in (prefix_text, direct_text) if part)
+
     truncated = False
     included_edges = 0
     included_entities = 0
+    selected_isolates: list[EntityContext] = []
 
     for edge in context.edges:
-        unit_lines: list[str] = []
-
-        # Source entity (only if not seen)
-        if edge.source.id not in seen_entities:
-            label = edge.source.labels[0] if edge.source.labels else "Entity"
-            unit_lines.append(f"- [{label}] {edge.source.name}: {edge.source.description}")
-
-        # Target entity (only if not seen)
-        if edge.target.id not in seen_entities:
-            label = edge.target.labels[0] if edge.target.labels else "Entity"
-            unit_lines.append(f"- [{label}] {edge.target.name}: {edge.target.description}")
-
-        # Relationship
-        rel_line = f"  {edge.source.name} --[{edge.relationship_type}]--> {edge.target.name}"
-        if edge.description:
-            rel_line += f": {edge.description}"
-        unit_lines.append(rel_line)
-
-        unit_text = "\n".join(unit_lines)
-        unit_tokens = counter.count(unit_text)
-
-        if used_tokens + unit_tokens <= max_tokens:
+        unit_text = _render_edge_unit(edge, seen_entities)
+        candidate = compose("\n".join([*lines, unit_text]))
+        if counter.count(candidate) <= max_tokens:
             lines.append(unit_text)
-            used_tokens += unit_tokens
             seen_entities.add(edge.source.id)
             seen_entities.add(edge.target.id)
             included_edges += 1
@@ -219,35 +249,68 @@ def pack_community_context(
     for entity in context.entities:
         if entity.id in seen_entities:
             continue
-        label = entity.labels[0] if entity.labels else "Entity"
-        entity_line = f"- [{label}] {entity.name}: {entity.description}"
-        entity_tokens = counter.count(entity_line)
-
-        if used_tokens + entity_tokens <= max_tokens:
+        entity_line = _render_entity(entity)
+        candidate = compose("\n".join([*lines, entity_line]))
+        if counter.count(candidate) <= max_tokens:
             lines.append(entity_line)
-            used_tokens += entity_tokens
             seen_entities.add(entity.id)
             included_entities += 1
+            selected_isolates.append(entity)
         else:
             truncated = True
             break
 
+    direct_text = "\n".join(lines)
+    selected_claims: list[ClaimContext] = []
+    for claim in context.claims:
+        if claim.entity_id not in seen_entities:
+            continue
+        separator = "\n" if selected_claims else "\n\nClaims:\n"
+        candidate = direct_text + separator + _render_claim(claim)
+        if counter.count(compose(candidate)) > max_tokens:
+            truncated = True
+            break
+        direct_text = candidate
+        selected_claims.append(claim)
+
+    text = compose(direct_text)
     total_entities = len({e.id for e in _all_entities(context)})
     excluded_entities = total_entities - len(seen_entities)
 
-    return PackedCommunityContext(
-        community_id=context.community_id,
-        level=context.level,
-        text="\n".join(lines),
-        used_tokens=used_tokens,
-        max_tokens=max_tokens,
-        included_edges=included_edges,
-        excluded_edges=excluded_edges,
-        included_entities=included_entities,
-        excluded_entities=excluded_entities,
-        truncated=truncated,
+    return _CommunityEvidenceSelection(
+        packed=PackedCommunityContext(
+            community_id=context.community_id,
+            level=context.level,
+            text=text,
+            used_tokens=counter.count(text),
+            max_tokens=max_tokens,
+            included_edges=included_edges,
+            excluded_edges=excluded_edges,
+            included_entities=included_entities,
+            excluded_entities=excluded_entities,
+            truncated=truncated,
+        ),
+        edges=tuple(context.edges[:included_edges]),
+        isolated_entities=tuple(selected_isolates),
+        rendered_claims=tuple(selected_claims),
     )
 
+
+def _build_selected_reference_ids(selection: _CommunityEvidenceSelection) -> list[str]:
+    """Authorize only selected direct evidence, retaining reference ordering."""
+    ids: list[str] = []
+    seen_entities: set[str] = set()
+    for edge in selection.edges:
+        for entity in (edge.source, edge.target):
+            if entity.id not in seen_entities:
+                ids.append(entity.id)
+                seen_entities.add(entity.id)
+    for edge in selection.edges:
+        ids.append(f"{edge.source.id}:{edge.relationship_type}:{edge.target.id}")
+    for entity in selection.isolated_entities:
+        ids.append(entity.id)
+    ids.extend(claim.id for claim in selection.rendered_claims)
+    return ids
 
 
 def _all_entities(context: CommunityContext) -> list[EntityContext]:
@@ -425,43 +488,44 @@ def build_packed_reference_ids(
     context: CommunityContext,
     packed: PackedCommunityContext,
 ) -> list[str]:
-    """Build the reference ID allowlist from only the packed subset.
+    """Recover references only from an exact canonical packed rendering.
 
-    Includes only entities and relationships that were actually included
-    in the packed context, respecting the same deduplication as the packer.
+    No counter is available here. Telemetry determines the graph prefix; the
+    entire remaining text must equal a complete eligible claim prefix. Searching
+    for claim blocks would mistake multiline descriptions/sources for evidence.
+    Internal callers retain explicit selections instead of recovering from text.
     """
-    ids: list[str] = []
+    edges = tuple(context.edges[:packed.included_edges])
     seen_entities: set[str] = set()
+    lines: list[str] = []
+    for edge in edges:
+        lines.append(_render_edge_unit(edge, seen_entities))
+        seen_entities.update((edge.source.id, edge.target.id))
 
-    # Only iterate over edges that were included in the packed result
-    for edge in context.edges[:packed.included_edges]:
-        if edge.source.id not in seen_entities:
-            ids.append(edge.source.id)
-            seen_entities.add(edge.source.id)
-        if edge.target.id not in seen_entities:
-            ids.append(edge.target.id)
-            seen_entities.add(edge.target.id)
-
-    # Relationship keys for included edges
-    for edge in context.edges[:packed.included_edges]:
-        rel_key = f"{edge.source.id}:{edge.relationship_type}:{edge.target.id}"
-        ids.append(rel_key)
-
-    # Isolated entities that were included
-    included_entity_count = 0
+    isolates: list[EntityContext] = []
     for entity in context.entities:
         if entity.id in seen_entities:
             continue
-        if included_entity_count >= packed.included_entities:
+        if len(isolates) >= packed.included_entities:
             break
-        ids.append(entity.id)
+        isolates.append(entity)
+        lines.append(_render_entity(entity))
         seen_entities.add(entity.id)
-        included_entity_count += 1
 
-    # Claims are rendered for entities that survived packing.
-    if seen_entities:
-        for claim in context.claims:
-            if claim.entity_id in seen_entities:
-                ids.append(claim.id)
+    selection = _CommunityEvidenceSelection(packed, edges, tuple(isolates))
+    text = "\n".join(lines)
+    if text == packed.text:
+        return _build_selected_reference_ids(selection)
 
-    return ids
+    claims: list[ClaimContext] = []
+    for claim in context.claims:
+        if claim.entity_id not in seen_entities:
+            continue
+        text += ("\n" if claims else "\n\nClaims:\n") + _render_claim(claim)
+        claims.append(claim)
+        if text == packed.text:
+            return _build_selected_reference_ids(
+                _CommunityEvidenceSelection(packed, edges, tuple(isolates), tuple(claims))
+            )
+    # Noncanonical or partial evidence cannot safely grant references.
+    return []

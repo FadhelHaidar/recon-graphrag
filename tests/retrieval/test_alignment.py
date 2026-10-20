@@ -103,7 +103,7 @@ class FakeLLM:
         self._responses = responses or []
         self._call_count = 0
 
-    async def ainvoke(self, prompt):
+    async def ainvoke(self, prompt, **kwargs):
         self.prompts.append(prompt)
         if self._call_count < len(self._responses):
             content = self._responses[self._call_count]
