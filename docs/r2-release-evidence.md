@@ -238,15 +238,70 @@ Longer fixed prompts also leave less room for evidence under existing budgets:
 approximate literal token estimates increase report 370→481, map 257→316, and
 reduce 110→175; these are not full-request or provider billing counts.
 
-## Gates still open
+## Final default-prompt acceptance: failed semantic gate
 
-The real-provider execution and independent support-review gates are complete for
-the earlier paired revisions. The prompt-only follow-up has local regression,
-code-review, fixed-input provider, and independent semantic-review evidence, but
-has not been rerun through regenerated reports and the full E2E pipeline. Its
-results favor retaining the mitigation, not declaring the semantic quality issue
-solved. Residual unsupported facts, incomplete answers, and surviving upstream
-errors remain documented. Keep the PR draft until the owner explicitly accepts
-the limitations or chooses further bounded work; do not silently waive them.
-Keep PR CI/build green. Release through the existing Release Please process only
-after explicit approval; do not merge, publish, or start R3 automatically.
+The implementation at `7ea09f74e920713efedca8125cbd8ddab3d4c1c2` was tested
+through fresh extraction, regenerated reports and local/global/DRIFT search on
+both backends. This was an **adapted external acceptance harness using actual
+default prompts**, not the original synthetic pytest with replacement search
+prompts. One repaired retry was explicitly owner-authorized after the initial
+recorder failed to create its capture directory. That invalid attempt remains
+preserved and is not counted as a pass. Recorder and effective process-timeout
+checks passed offline before the retry; no additional paid trial followed it.
+
+| Backend | Elapsed | Fresh reports | DRIFT calls / limit | Completed actions | Failed / repairs / fallback |
+|---|---:|---:|---:|---:|---|
+| Neo4j | 295.61 s | 6 | 20 / 20 | 18 | 0 / 0 / none |
+| Memgraph | 229.47 s | 3 | 18 / 20 | 16 | 0 / 0 / none |
+
+Depth stayed within three. Neo4j stopped at `max_llm_calls_reached`; Memgraph at
+`all_actions_completed`. Budget compliance does not establish exhaustive
+exploration. All six results had answers and citations. Both stores were
+independently empty after each backend and at final postflight, with compatible
+768-dimensional indexes. Only exact fixture scopes were deleted. Source/index
+integrity was preserved. Full prompts, parameters, responses, contexts, reports
+and traces were captured for 110 logical LLM invocations. HTTP retry attempts and
+embedding usage were not exposed; logical invocations are not HTTP request counts.
+
+**Operational checks passed within this run; semantic acceptance failed.** All
+six answers and all nine reports were reviewed against the original corpus:
+
+- Both local answers correctly identify Bob without upgrading him to discoverer.
+- Both global answers cover Acme and the three systems, but add unsupported
+  causal or technical details. Memgraph also invents Bob's affiliation with Acme.
+- Neo4j DRIFT asserts **"The connection is secured by specific protocols"** and
+  assigns credential rotation/MFA specifically to the Gateway connection. The
+  corpus documents incident mitigation, not these connection protocols.
+- Memgraph DRIFT invents exclusive identity-verification responsibility, Bob's
+  discovery of the root cause, **"invalidating compromised authentication
+  tokens"**, restored trust and stabilized Payments. None is established by the
+  corpus. Acknowledging that OAuth/SAML details are unknown does not retract
+  those affirmative inventions.
+- Report summaries and rating rationales also contain unsupported incident
+  involvement, compromise/resolution outcomes and recurring credential-update
+  practice. Valid finding references do not validate every prose statement.
+
+Captured calls locate unsupported assertions at multiple stages: identity
+handling first appears in extraction (`memgraph-calls/002.json`), incident linkage
+in report prose, connection protocols and token mechanisms in DRIFT actions
+(`neo4j-calls/047.json`, `memgraph-calls/041.json`), and exclusivity/discoverer
+attribution in final reduction (`memgraph-calls/048.json`). The parent checked
+these original artifacts and the corpus directly. The fresh reviewer saved a
+complete corroborating report, but its runner was flagged failed for requesting
+unavailable context-management tools; this is **not** claimed as a clean reviewer
+runner success. The parent independently verified the blocking findings.
+
+The earlier fixed-input improvements remain scoped evidence, not a factuality
+solution. This stochastic run does not establish a statistical regression or
+attribute the errors solely to the new prompt. The malformed-reference action
+failure did not recur, but the preregistered requirement of no materially
+unsupported acceptance answers was not met. Full sanitized execution, claim
+review, stage anchors and final decision are retained with the run artifacts.
+
+## Decision and remaining gate
+
+**Do not merge or release; keep PR #90 draft.** The completed E2E does not waive
+the failed semantic gate. Further remediation or an explicit change to release
+scope requires an owner decision. No automatic prompt expansion, additional paid
+trial, merge, publication or R3 work is authorized by this result. Keep CI/build
+green; any eventual approved release must use the existing Release Please process.
