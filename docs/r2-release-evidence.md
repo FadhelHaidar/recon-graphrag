@@ -1,7 +1,8 @@
 # R2 release evidence and remaining gates
 
-**Status: draft, not release-ready.** Native schemas and evidence admission are
-structural safeguards, not proof that an answer is factually supported.
+**Status: narrowed structural release; the absolute factual-support gate is
+still failed.** Native schemas and evidence admission are structural safeguards,
+not proof that an answer is factually supported.
 
 ## Scope and compatibility
 
@@ -268,7 +269,8 @@ six answers and all nine reports were reviewed against the original corpus:
 
 - Both local answers correctly identify Bob without upgrading him to discoverer.
 - Both global answers cover Acme and the three systems, but add unsupported
-  causal or technical details. Memgraph also invents Bob's affiliation with Acme.
+  causal or technical details. Memgraph also describes Bob as "associated with
+  Acme", which the corpus does not establish; it only names him as investigator.
 - Neo4j DRIFT asserts **"The connection is secured by specific protocols"** and
   assigns credential rotation/MFA specifically to the Gateway connection. The
   corpus documents incident mitigation, not these connection protocols.
@@ -300,8 +302,10 @@ review, stage anchors and final decision are retained with the run artifacts.
 
 ## Decision and remaining gate
 
-**Do not merge or release; keep PR #90 draft.** The completed E2E does not waive
-the failed semantic gate. Further remediation or an explicit change to release
-scope requires an owner decision. No automatic prompt expansion, additional paid
-trial, merge, publication or R3 work is authorized by this result. Keep CI/build
-green; any eventual approved release must use the existing Release Please process.
+**Owner decision: release the structural fixes with a narrowed claim.** On
+2026-10-20 the owner accepted the mechanical evidence-admission fixes while
+leaving the absolute factual-support gate failed and unwaived. The release claims
+only the structural safeguards above; it does not claim that answers are
+factually supported. The successor release supersedes v0.10.1 through the existing
+Release Please process; v0.10.1's published tag and artifacts stay immutable.
+No prompt expansion, additional paid trial or R3 work is authorized by this result.
