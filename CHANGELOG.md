@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.11.0](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.10.1...v0.11.0) (2026-10-20)
+
+
+### Features
+
+* **drift:** request native schemas for structured search calls ([02f5ec3](https://github.com/FadhelHaidar/recon-graphrag/commit/02f5ec3e9ca665e217ab3618bf8ceb2011cab307))
+
+
+### Bug Fixes
+
+* **communities:** pack claims and authorize retained evidence ([1455057](https://github.com/FadhelHaidar/recon-graphrag/commit/14550578754a24cc007bb3de02b9399d09d564cd))
+* **communities:** preserve directed facts in ranked context ([b9d7bcb](https://github.com/FadhelHaidar/recon-graphrag/commit/b9d7bcb511110124a9d9341a7b5ab4885d84c861))
+* preserve factual meaning in report and global prompts ([7ea09f7](https://github.com/FadhelHaidar/recon-graphrag/commit/7ea09f74e920713efedca8125cbd8ddab3d4c1c2))
+* R2 evidence correctness and native DRIFT schemas ([b635765](https://github.com/FadhelHaidar/recon-graphrag/commit/b6357656f5b250149f3e428ddab15e2a31f92a9d))
+* **retrieval:** enforce complete global reduction prompt budgets ([81ec18d](https://github.com/FadhelHaidar/recon-graphrag/commit/81ec18daa95a7e10f58fdab6f31cb1cfb50de0f4))
+* **retrieval:** limit DRIFT citations to packed evidence ([2865017](https://github.com/FadhelHaidar/recon-graphrag/commit/28650174d25a90d296aa56da35f59e63b1aeded6))
+* **retrieval:** preserve global reduction extension dispatch ([1d5497b](https://github.com/FadhelHaidar/recon-graphrag/commit/1d5497b848376e0ef010939ed8ee308ad9b4b0ed))
+
+
+### Documentation
+
+* record completed R1 comparison and semantic limitations ([0b01095](https://github.com/FadhelHaidar/recon-graphrag/commit/0b01095df284edff8c4a5581b604186dd3166340))
+* record failed default-prompt semantic acceptance ([d5e4fb9](https://github.com/FadhelHaidar/recon-graphrag/commit/d5e4fb90737d31a977888736bb6135f68bcab1d0))
+* record narrowed R2 release scope ([4ea8ed3](https://github.com/FadhelHaidar/recon-graphrag/commit/4ea8ed3bc3b4fa0779fbe913059ed52af8903c7b))
+* record passed live workflow and embedding timeout blocker ([9d3fd26](https://github.com/FadhelHaidar/recon-graphrag/commit/9d3fd26017322dbcf4323bb5480d31a19dd5891e))
+* record R2 evidence and unresolved release gates ([fc01900](https://github.com/FadhelHaidar/recon-graphrag/commit/fc01900b3f1750f8355e7a98d2914de5448484dc))
+
 ## [0.10.1](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.10.0...v0.10.1) (2026-10-18)
 
 
