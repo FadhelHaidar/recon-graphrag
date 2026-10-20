@@ -2,15 +2,6 @@
 
 from __future__ import annotations
 
-from uuid import uuid4
-
-from recon_graphrag.communities.context import (
-    build_packed_reference_ids,
-    build_reference_ids,
-    pack_community_context,
-    parse_community_context,
-    render_community_context,
-)
 from recon_graphrag.extraction.types import (
     ChunkRecord,
     DocumentRecord,
@@ -363,90 +354,3 @@ def assert_cross_document_rerun_idempotent(store, graph_name: str) -> None:
     store.write_graph_document(doc)
 
     assert entity_count(store, graph_name) == 1
-
-
-def assert_directed_community_context(store, graph_name: str, *, id_func: str) -> None:
-    """Exercise the real ranked query with backend-ordered endpoints and loops."""
-    graph_name = f"{graph_name}-direction-{uuid4().hex}"
-    params = {
-        "graph_name": graph_name,
-        "cid": f"{graph_name}:community",
-        "isolated": f"{graph_name}:isolated",
-        "outside": f"{graph_name}:outside",
-    }
-    try:
-        seed_entities(store, graph_name, "Person", [
-            {"id": f"{graph_name}:a", "name": "Alice"},
-            {"id": f"{graph_name}:b", "name": "Bob"},
-        ])
-        # Query actual backend ordering, including elementId string order;
-        # creation order and public IDs do not determine the regression.
-        ordered = store.execute_query(
-            f"""
-            MATCH (e:__Entity__ {{graph_name: $graph_name}})
-            RETURN e.id AS id, e.name AS name, {id_func}(e) AS internal_id
-            ORDER BY internal_id DESC
-            """,
-            params,
-        )
-        source, target = ordered
-        assert source["internal_id"] > target["internal_id"]
-        params.update({"source": source["id"], "target": target["id"]})
-        store.execute_query(
-            """
-            MATCH (source:__Entity__ {graph_name: $graph_name, id: $source}),
-                  (target:__Entity__ {graph_name: $graph_name, id: $target})
-            CREATE (c:Community {graph_name: $graph_name, id: $cid, level: 0})
-            CREATE (source)-[:IN_COMMUNITY]->(c)
-            CREATE (target)-[:IN_COMMUNITY]->(c)
-            CREATE (:__Entity__:Person {
-                graph_name: $graph_name, id: $isolated, name: 'Isolated'
-            })-[:IN_COMMUNITY]->(c)
-            CREATE (outside:__Entity__:Person {
-                graph_name: $graph_name, id: $outside, name: 'Outside'
-            })
-            CREATE (source)-[:REPORTS_TO {
-                description: 'Higher internal ID reports to lower', observation_count: 3
-            }]->(target)
-            CREATE (source)-[:KNOWS]->(target)
-            CREATE (target)-[:KNOWS]->(source)
-            CREATE (source)-[:KNOWS]->(source)
-            CREATE (source)-[:OUTSIDE_COMMUNITY]->(outside)
-            """,
-            params,
-        )
-        rows = store.get_community_ranked_context(graph_name, params["cid"], level=0)
-        expected_edges = {
-            (source["id"], "REPORTS_TO", target["id"]),
-            (source["id"], "KNOWS", target["id"]),
-            (target["id"], "KNOWS", source["id"]),
-            (source["id"], "KNOWS", source["id"]),
-        }
-        edge_rows = [row for row in rows if row["rel_type"] is not None]
-        assert len(edge_rows) == 4
-        assert {(r["e_id"], r["rel_type"], r["other_id"]) for r in edge_rows} == expected_edges
-        assert [r["e_id"] for r in rows if r["rel_type"] is None] == [params["isolated"]]
-        reports_to = next(r for r in edge_rows if r["rel_type"] == "REPORTS_TO")
-        assert reports_to["rel_description"] == "Higher internal ID reports to lower"
-        assert reports_to["observation_count"] == 3
-        assert all(r["combined_degree"] == r["e_degree"] + r["other_degree"] for r in edge_rows)
-
-        context = parse_community_context(params["cid"], 0, rows)
-        assert {(e.source.id, e.relationship_type, e.target.id) for e in context.edges} == expected_edges
-        assert len(context.edges) == 4
-        assert [e.id for e in context.entities] == [params["isolated"]]
-        packed = pack_community_context(context, max_tokens=10_000)
-        assert packed.included_edges == 4
-        assert packed.included_entities == 1
-        expected_keys = {f"{s}:{rel}:{t}" for s, rel, t in expected_edges}
-        expected_ids = {source["id"], target["id"], params["isolated"]} | expected_keys
-        assert set(build_reference_ids(context)) == expected_ids
-        assert set(build_packed_reference_ids(context, packed)) == expected_ids
-        names = {source["id"]: source["name"], target["id"]: target["name"]}
-        for text in (render_community_context(context), packed.text):
-            for s, rel, t in expected_edges:
-                assert f"{names[s]} --[{rel}]--> {names[t]}" in text
-            assert f"{target['name']} --[REPORTS_TO]--> {source['name']}" not in text
-            assert "Outside" not in text
-    finally:
-        cleanup_graph(store, graph_name)

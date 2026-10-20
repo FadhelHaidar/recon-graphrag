@@ -35,13 +35,6 @@ Every finding MUST reference at least one ID from this list:
 
 ## Instructions
 
-State only facts supported by the supplied context throughout the report,
-including the summary, findings, and rating explanation. Do not infer locations,
-causes, roles, ownership, or event links from names, co-occurrence, or dependencies.
-Preserve uncertainty and relationship meaning; say when details are unspecified.
-When evidence is sparse, keep the report brief rather than padding it with
-invented detail to meet the requested length.
-
 1. Write a title (one line) summarizing the community's main theme.
 2. Write a summary (2-4 paragraphs) describing the community.
 3. List key findings. Each finding must:

@@ -46,7 +46,7 @@ from recon_graphrag.retrieval.drift_types import (
 )
 from recon_graphrag.retrieval.hybrid import HybridEntityRetriever, HybridRanker
 from recon_graphrag.retrieval.search_local import _source_chunk_ids_from_result
-from recon_graphrag.retrieval.mixed_context import MixedContextBuilder, MixedContextResult
+from recon_graphrag.retrieval.mixed_context import MixedContextBuilder
 from recon_graphrag.utils.tokens import (
     ApproximateTokenCounter,
     TokenCounter,
@@ -79,11 +79,8 @@ You are answering a question using community reports from a knowledge graph.
 1. Answer the question using ONLY information from the reports above.
 2. Rate your confidence from 0 to 100.
 3. Generate up to 3 follow-up questions that would help refine the answer.
-4. Cite report IDs you used in report_ids, not in references.
-5. In references, use only known target IDs from the reports, with target_type
-   exactly "entity", "relationship", or "claim" matching the target. Do not use
-   report or chunk IDs as target references. Use [] if no valid targets are known.
-6. Return valid JSON only.
+4. Cite report IDs you used.
+5. Return valid JSON only.
 
 JSON format:
 {{
@@ -120,11 +117,7 @@ You are refining an answer using local graph context.
 2. Rate your confidence from 0 to 100.
 3. Generate up to 2 additional follow-up questions if the context suggests
    new angles worth exploring.
-4. In references, use only known target IDs from the local context, with
-   target_type exactly "entity", "relationship", or "claim" matching the target.
-   Do not use report or chunk IDs as target references.
-   Use [] if no valid targets are known.
-5. Return valid JSON only.
+4. Return valid JSON only.
 
 JSON format:
 {{
@@ -132,40 +125,8 @@ JSON format:
   "score": 60,
   "follow_ups": ["new follow-up 1"],
   "references": [
-    {{"target_id": "entity-id", "target_type": "entity"}}
+    {{"target_id": "entity-or-claim-id", "target_type": "entity"}}
   ]
-}}
-
-If the context doesn't help, set score to 0.
-"""
-
-MIXED_ACTION_PROMPT = """\
-You are refining an answer using local graph context.
-
-## Original Question
-{query}
-{conversation_history}
-## Follow-up Question
-{action_query}
-
-## Parent Answer
-{parent_answer}
-
-## Local Context
-{local_context}
-
-## Instructions
-1. Answer the follow-up question using ONLY the local context above.
-2. Rate your confidence from 0 to 100.
-3. Generate up to 2 additional follow-up questions if the context suggests
-   new angles worth exploring.
-4. Return valid JSON only, with only answer, score, and follow_ups.
-
-JSON format:
-{{
-  "answer": "Your refined answer...",
-  "score": 60,
-  "follow_ups": ["new follow-up 1"]
 }}
 
 If the context doesn't help, set score to 0.
@@ -189,47 +150,7 @@ You are synthesizing multiple partial answers into a comprehensive final answer.
 Final Answer:"""
 
 REPAIR_PROMPT = """\
-Your previous response had invalid JSON or did not match the response schema.
-Fix it and return a JSON object matching this contract:
-- answer: a string.
-- score: a number from 0 to 100, not a boolean or a quoted number.
-- follow_ups: a list of non-empty strings, or [] if there are no follow-ups.
-- references: a list of objects with a non-empty target_id and target_type exactly
-  "entity", "relationship", or "claim", matching a known target in the supplied
-  context. Never invent IDs or use report or chunk IDs as target references.
-  Use [] if no valid targets are known.
-{report_ids_contract}
-
-JSON format:
-{{
-  "answer": "Your answer...",
-  "score": 60,
-  "follow_ups": [],
-  "references": []{report_ids_example}
-}}
-
-## Errors
-{errors}
-
-## Your previous response
-{raw_content}
-
-Return ONLY valid JSON. Do not include markdown fences.
-"""
-
-MIXED_ACTION_REPAIR_PROMPT = """\
-Your previous response had invalid JSON or did not match the response schema.
-Fix it and return a JSON object with only these fields:
-- answer: a string.
-- score: a number from 0 to 100, not a boolean or a quoted number.
-- follow_ups: a list of non-empty strings, or [] if there are no follow-ups.
-
-JSON format:
-{{
-  "answer": "Your answer...",
-  "score": 60,
-  "follow_ups": []
-}}
+Your previous response had invalid JSON. Fix it and return valid JSON.
 
 ## Errors
 {errors}
@@ -763,21 +684,19 @@ class DriftSearchRetriever:
             return
 
         # Build context
+        chunk_ids = _source_chunk_ids_from_result(retriever_result)
+        if chunk_ids:
+            try:
+                action.citations = resolve_chunk_citations(
+                    self.graph_store, self.graph_name, chunk_ids
+                )
+            except Exception:
+                pass
         if config.action_use_mixed_context:
-            mixed = self._build_action_mixed_context(retriever_result)
-            local_context = mixed.context
-            action.citations = list(mixed.citations)
+            local_context = self._build_action_mixed_context(retriever_result)
         else:
             from recon_graphrag.retrieval.search_local import _format_entity_context
 
-            chunk_ids = _source_chunk_ids_from_result(retriever_result)
-            if chunk_ids:
-                try:
-                    action.citations = resolve_chunk_citations(
-                        self.graph_store, self.graph_name, chunk_ids
-                    )
-                except Exception:
-                    pass
             local_context = _format_entity_context(
                 retriever_result,
                 citations=(action.citations if synthesize_citation_metadata else None),
@@ -796,8 +715,7 @@ class DriftSearchRetriever:
                 parent_answer = parent.answer
 
         # LLM scoring
-        prompt_template = MIXED_ACTION_PROMPT if config.action_use_mixed_context else ACTION_PROMPT
-        prompt = prompt_template.format(
+        prompt = ACTION_PROMPT.format(
             query=original_query,
             action_query=action.query,
             parent_answer=parent_answer,
@@ -807,14 +725,12 @@ class DriftSearchRetriever:
 
         try:
             response = await self._invoke_llm(
-                prompt, state, llm_call_limit, call_lock, "action",
-                mixed_action=config.action_use_mixed_context,
+                prompt, state, llm_call_limit, call_lock, "action"
             )
             data = await self._parse_json_strict(
                 response.content,
                 state,
                 phase="action",
-                mixed_action=config.action_use_mixed_context,
                 max_llm_calls=llm_call_limit,
                 call_lock=call_lock,
             )
@@ -822,8 +738,7 @@ class DriftSearchRetriever:
             action.score = float(data.get("score", 0))
             action.follow_ups = data.get("follow_ups", [])[: config.max_followups]
             action.references = data.get("references", [])
-            # Mixed citations already resolve all admitted evidence.
-            if action.references and not config.action_use_mixed_context:
+            if action.references:
                 try:
                     ref_citations = resolve_reference_citations(
                         self.graph_store, self.graph_name, action.references
@@ -840,14 +755,13 @@ class DriftSearchRetriever:
             action.status = "failed"
             state.failures.append(f"action LLM failed for {action.id}: {e}")
 
-    def _build_action_mixed_context(self, retriever_result) -> MixedContextResult:
+    def _build_action_mixed_context(self, retriever_result) -> str:
         """Build mixed context for a DRIFT action using MixedContextBuilder."""
         if self._mixed_context_builder is None:
             self._mixed_context_builder = MixedContextBuilder(
                 graph_store=self.graph_store,
                 embedder=self.embedder,
                 graph_name=self.graph_name,
-                counter=self.counter,
             )
 
         entity_matches = []
@@ -861,11 +775,12 @@ class DriftSearchRetriever:
             entity_id = content.get("entity_id") or content.get("title", "")
             entity_matches.append({"id": entity_id, "score": score})
 
-        return self._mixed_context_builder.build_context(
+        mixed = self._mixed_context_builder.build_context(
             entity_matches=entity_matches,
             entity_context_rows=entity_context_rows,
             token_budget=self.config.action_mixed_context_tokens,
         )
+        return mixed.context
 
     # ------------------------------------------------------------------
     # Phase 3: Reduction
@@ -1112,24 +1027,14 @@ class DriftSearchRetriever:
         phase: str,
         max_llm_calls: int,
         call_lock: asyncio.Lock,
-        mixed_action: bool = False,
     ) -> dict:
         """Parse and validate a DRIFT response, with exactly one repair attempt."""
         try:
-            return self._validate_drift_json(
-                self._decode_json(content), phase, mixed_action=mixed_action
-            )
+            return self._validate_drift_json(self._decode_json(content), phase)
         except (ValueError, TypeError, json.JSONDecodeError) as error:
-            repair_template = MIXED_ACTION_REPAIR_PROMPT if mixed_action else REPAIR_PROMPT
-            repair_prompt = repair_template.format(
+            repair_prompt = REPAIR_PROMPT.format(
                 errors=str(error),
                 raw_content=content[:2000],
-                report_ids_contract=(
-                    "- report_ids: a list of report ID strings, or [].\n"
-                    "  Report IDs belong in report_ids, not references."
-                    if phase == "primer" else ""
-                ),
-                report_ids_example=(',\n  "report_ids": []' if phase == "primer" else ""),
             )
             response = await self._invoke_llm(
                 repair_prompt,
@@ -1137,11 +1042,10 @@ class DriftSearchRetriever:
                 max_llm_calls,
                 call_lock,
                 f"{phase}_repair",
-                mixed_action=mixed_action,
             )
             try:
                 repaired = self._decode_json(response.content)
-                return self._validate_drift_json(repaired, phase, mixed_action=mixed_action)
+                return self._validate_drift_json(repaired, phase)
             except (ValueError, TypeError, json.JSONDecodeError) as repaired_error:
                 raise ValueError(
                     f"{phase} JSON remained invalid after one repair: {repaired_error}"
@@ -1161,9 +1065,7 @@ class DriftSearchRetriever:
         return data
 
     @staticmethod
-    def _validate_drift_json(
-        data: dict, phase: str, *, mixed_action: bool = False,
-    ) -> dict:
+    def _validate_drift_json(data: dict, phase: str) -> dict:
         answer = data.get("answer")
         score = data.get("score")
         follow_ups = data.get("follow_ups")
@@ -1178,11 +1080,10 @@ class DriftSearchRetriever:
             for question in follow_ups
         ):
             raise ValueError("follow_ups must be a list of non-empty strings")
-        references = [] if mixed_action else data.get("references", [])
+        references = data.get("references", [])
         if not isinstance(references, list) or not all(
             isinstance(ref, dict)
-            and isinstance(ref.get("target_id"), str)
-            and ref["target_id"].strip()
+            and str(ref.get("target_id", "")).strip()
             and ref.get("target_type") in {"entity", "relationship", "claim"}
             for ref in references
         ):
@@ -1206,20 +1107,13 @@ class DriftSearchRetriever:
         max_llm_calls: int,
         call_lock: asyncio.Lock,
         phase: str,
-        *,
-        mixed_action: bool = False,
     ):
         async with call_lock:
             if state.total_llm_calls >= max_llm_calls:
                 raise _LLMCallLimitReached("max_llm_calls reached")
             state.total_llm_calls += 1
         with token_stage(f"drift.{phase}"):
-            kwargs = {}
-            if phase in {"primer", "primer_fold", "primer_repair", "action", "action_repair"}:
-                kwargs["response_format"] = _drift_response_format(
-                    primer=phase.startswith("primer"), mixed_action=mixed_action,
-                )
-            response = await self.llm.ainvoke(prompt, **kwargs)
+            response = await self.llm.ainvoke(prompt)
         state.phase_tokens[phase] = state.phase_tokens.get(phase, 0) + self.counter.count(
             prompt + response.content
         )
@@ -1371,40 +1265,3 @@ class DriftSearchRetriever:
             "phase_tokens": dict(state.phase_tokens),
             "failures": list(state.failures),
         }
-
-
-def _drift_response_format(*, primer: bool, mixed_action: bool = False) -> dict:
-    properties = {
-        "answer": {"type": "string"},
-        "score": {"type": "number", "description": "Confidence score between 0 and 100."},
-        "follow_ups": {
-            "type": "array",
-            "items": {"type": "string", "description": "A nonblank follow-up question."},
-        },
-    }
-    if not mixed_action or primer:
-        properties["references"] = {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "target_id": {"type": "string", "description": "A nonblank target ID."},
-                    "target_type": {"type": "string", "enum": ["entity", "relationship", "claim"]},
-                },
-                "required": ["target_id", "target_type"],
-                "additionalProperties": False,
-            },
-        }
-    if primer:
-        properties["report_ids"] = {"type": "array", "items": {"type": "string"}}
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "drift_primer" if primer else "drift_action",
-            "strict": True,
-            "schema": {
-                "type": "object", "properties": properties,
-                "required": list(properties), "additionalProperties": False,
-            },
-        },
-    }

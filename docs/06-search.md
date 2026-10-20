@@ -301,35 +301,8 @@ config = DriftSearchConfig(
 | `action_use_mixed_context` | `True` | When `True`, each DRIFT action builds mixed context (entities + community reports + claims) instead of entity-only context. |
 | `action_mixed_context_tokens` | `12000` | Token budget for mixed context in each DRIFT action. Only used when `action_use_mixed_context=True`. |
 
-Default mixed-context DRIFT actions request only `answer`, `score`, and
-`follow_ups`; unsolicited generated references are ignored. Their citations come
-from evidence admitted to the mixed context. Non-mixed actions retain typed
-target references and local source-chunk citation resolution. Primer citations
-from selected reports and typed target references are unchanged.
-
-DRIFT primer calls (including folds), action scoring, and their single bounded
-JSON/semantic repair use native per-call strict JSON schemas, not prompt-only
-JSON. All schema fields are required and extra properties are disallowed:
-mixed actions request only the three fields above; non-mixed actions additionally
-require typed `references`, and primers also require `report_ids`. Runtime
-validation still checks scores and nonblank follow-up/target strings. HyDE, final
-reduction, and fallback answer generation remain unstructured prose.
-
-For self-hosted vLLM, use the standard `openai` adapter with your custom
-`base_url` ending in `/v1`; it forwards the same native `response_format` without
-OpenRouter routing preferences. No separate adapter or global JSON mode is needed.
-
-Use a model and endpoint supporting native structured output: OpenAI/Azure and
-OpenRouter receive `response_format` (`json_schema`, `strict: true`); OpenRouter
-also requires parameter-supporting routes (`provider.require_parameters: true`).
-Ollama receives `format=<schema>` and Anthropic receives
-`output_config.format` via SDK `extra_body`. Custom LLMs must honor the per-call
-`response_format` keyword. Unsupported schemas/provider errors and explicit
-refusals or truncation are recorded as phase failures, never retried without a
-schema or sent to JSON repair. Primer failures may trigger the existing local
-fallback, explicitly marked in result metadata. Semantic/JSON validation failures
-get at most one repair with the same schema, subject to the shared call budget
-and reserved reduction call. Provider/model strict-schema compliance still varies.
+DRIFT returns citations for retrieved local source chunks and for references in
+the selected primer reports.
 Like local search, DRIFT accepts `synthesize_citation_metadata=True` and optional
 `synthesis_metadata_keys=[...]` to include compact citation metadata in the
 answer synthesis context.

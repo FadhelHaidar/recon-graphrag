@@ -24,18 +24,18 @@ from tqdm.asyncio import tqdm_asyncio
 
 from recon_graphrag.communities.context import (
     CommunityContext,
-    _build_selected_reference_ids,
-    _pack_community_evidence,
     enrich_context_with_claims,
     build_reference_ids,
-    build_packed_reference_ids,  # noqa: F401 - preserve module import compatibility
-    pack_community_context,  # noqa: F401 - preserve module import compatibility
+    build_packed_reference_ids,
+    pack_community_context,
     parse_community_context,
     render_community_context,
 )
 from recon_graphrag.utils.tokens import (
     ApproximateTokenCounter,
+    PackItem,
     TokenCounter,
+    pack_items,
 )
 from recon_graphrag.communities.reports import (
     ReportParser,
@@ -104,8 +104,7 @@ class CommunitySummarizer:
         Args:
             level: Community hierarchy level to report.
             skip_existing: If True, skip communities that already have a
-                report (fingerprint-based resume). Rendering/budget changes do
-                not invalidate stored reports; use False to regenerate them.
+                report (fingerprint-based resume).
 
         Returns:
             Tuple of (results list, build stats).
@@ -264,16 +263,17 @@ class CommunitySummarizer:
                 ) = self._build_parent_context(context, child_rows, self.max_context_tokens)
                 valid_ids = set(reference_ids)
             else:
-                selection = _pack_community_evidence(
+                packed = pack_community_context(
                     context,
                     max_tokens=self.max_context_tokens,
                     counter=self.token_counter,
                 )
-                packed = selection.packed
                 context_text = packed.text
                 context_tokens_used = packed.used_tokens
                 context_truncated = packed.truncated
-                reference_ids = _build_selected_reference_ids(selection)
+                # Use allowlist from packed context so findings can only
+                # reference items the LLM actually saw.
+                reference_ids = build_packed_reference_ids(context, packed)
                 valid_ids = set(reference_ids)
         else:
             context_text = render_community_context(context)
@@ -400,44 +400,38 @@ class CommunitySummarizer:
         max_tokens: int,
     ) -> tuple[str, int, bool, list[str]]:
         counter = self.token_counter or ApproximateTokenCounter()
-        if max_tokens <= 0:
-            return "", 0, False, []
         child_budget = int(max_tokens * 0.6)
-        child_text = ""
-        children_truncated = False
-        for row in child_rows:
-            if not str(row.get("report_text", "")).strip():
-                continue
-            text = (
-                f"--- Sub-community {row['id']} "
-                f"(level {row['level']}) ---\n{row['report_text']}"
+        child_items = [
+            PackItem(
+                id=str(row["id"]),
+                text=(
+                    f"--- Sub-community {row['id']} "
+                    f"(level {row['level']}) ---\n{row['report_text']}"
+                ),
+                priority=float(row.get("context_tokens_used", 0) or 0),
             )
-            candidate = "\n\n".join(part for part in (child_text, text) if part)
-            if counter.count(candidate) <= child_budget:
-                child_text = candidate
-                continue
-            children_truncated = True
-            # Truncate the composed candidate, not a subtraction-based remainder:
-            # custom counters need not be additive even across separators.
-            shortened = counter.truncate(candidate, child_budget)
-            required_prefix = child_text + "\n\n" if child_text else ""
-            if (
-                shortened
-                and candidate.startswith(shortened)
-                and shortened.startswith(required_prefix)
-                and counter.count(shortened) <= child_budget
-            ):
-                child_text = shortened
-
-        direct_selection = _pack_community_evidence(
-            context, max_tokens=max_tokens, counter=counter, prefix_text=child_text
+            for row in child_rows
+            if str(row.get("report_text", "")).strip()
+        ]
+        packed_children = pack_items(
+            child_items, child_budget, counter, truncate_oversized=True
         )
-        packed = direct_selection.packed
+        remaining = max(max_tokens - packed_children.used_tokens, 0)
+        packed_direct = pack_community_context(context, max_tokens=remaining, counter=counter)
+        context_text = "\n\n".join(
+            part
+            for part in (
+                "\n\n".join(item.text for item in packed_children.included),
+                packed_direct.text,
+            )
+            if part
+        )
+        reference_ids = build_packed_reference_ids(context, packed_direct)
         return (
-            packed.text,
-            packed.used_tokens,
-            children_truncated or packed.truncated,
-            _build_selected_reference_ids(direct_selection),
+            context_text,
+            packed_children.used_tokens + packed_direct.used_tokens,
+            bool(packed_children.truncated_item_ids) or packed_direct.truncated,
+            reference_ids,
         )
 
     def _report_input_fingerprint(
