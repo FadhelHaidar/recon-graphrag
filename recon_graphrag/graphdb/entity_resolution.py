@@ -289,6 +289,7 @@ class BaseEntityResolver(ABC):
     ) -> dict:
         merged_nodes = 0
         if not dry_run and groups:
+            self._hydrate_properties([entity for group in groups for entity in group])
             self._merge_summaries = await self._prepare_merge_summaries(
                 groups, llm, concurrency=self._llm_concurrency
             )
@@ -386,7 +387,47 @@ class BaseEntityResolver(ABC):
     def _load_entities(
         self, graph_name: str, resolve_property: str
     ) -> list[_EntityRecord]:
+        """Load candidate entities, identity fields only.
+
+        Properties are hydrated lazily for candidate nodes (see
+        ``_hydrate_properties``), so implementations must not project the whole
+        property map here: that drags every stored embedding into memory.
+        """
         raise NotImplementedError
+
+    def _load_properties(self, node_ids: list) -> dict:
+        """Return ``{node_id: properties}``. Backends override with a batch query."""
+        return {}
+
+    def _hydrate_properties(self, records) -> None:
+        """Fetch properties for records that carry none yet.
+
+        Records that already have properties (a subclass may build them itself)
+        are left untouched, so the only cost of hydrating twice is one extra
+        query for nodes that genuinely have no properties.
+        """
+        pending = [record for record in records if not record.properties]
+        if not pending:
+            return
+        properties = self._load_properties(
+            list(dict.fromkeys(record.node_id for record in pending))
+        )
+        for record in pending:
+            record.properties = properties.get(record.node_id) or {}
+
+    def _hydrate_candidates(
+        self,
+        entities: list[_EntityRecord],
+        groups: list[list[_EntityRecord]],
+        review_groups: list[dict],
+    ) -> None:
+        """Hydrate only the entities that ended up in a group or review group."""
+        node_ids = {entity.node_id for group in groups for entity in group}
+        for review_group in review_groups:
+            node_ids.update(review_group.get("node_ids") or ())
+        self._hydrate_properties(
+            [entity for entity in entities if entity.node_id in node_ids]
+        )
 
     @abstractmethod
     def _merge_groups(
@@ -549,6 +590,7 @@ class BaseEntityResolver(ABC):
             for e in g:
                 merged_ids.add(e.node_id)
 
+        self._hydrate_candidates(entities, groups, review_groups)
         groups, review_groups = self._apply_conflict_rules(
             groups,
             review_groups,
@@ -574,6 +616,9 @@ class BaseEntityResolver(ABC):
             active_review_groups.extend(rescued)
 
         if llm and active_review_groups:
+            # LLM profiles read properties, and rescued pairs joined the review
+            # set after the hydration above.
+            self._hydrate_candidates(entities, groups, active_review_groups)
             active_review_groups = await self._llm_review(
                 active_review_groups,
                 llm,
@@ -662,7 +707,11 @@ class BaseEntityResolver(ABC):
             node_ids = rg.get("node_ids") or []
             confidence = llm_review.get("confidence")
             try:
-                confidence_value = float(confidence)
+                confidence_value = (
+                    float(confidence)
+                    if isinstance(confidence, (int, float, str))
+                    else 0.0
+                )
             except (TypeError, ValueError):
                 confidence_value = 0.0
 

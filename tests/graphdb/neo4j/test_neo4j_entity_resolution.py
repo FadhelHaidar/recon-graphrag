@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from recon_graphrag.graphdb.neo4j import entity_resolution as neo4j_entity_resolution
 from recon_graphrag.graphdb.neo4j.entity_resolution import _Neo4jEntityResolver
 
 
@@ -24,8 +25,23 @@ class FakeGraphStore:
             return [{"merged_groups": 2}]
         if "apoc.refactor.mergeNodes" in query:
             return [{"merged_id": "4:abc"}]
+        if "properties(n) AS props" in query:
+            # Hydration stage: the loader no longer projects properties, so the
+            # fake answers the batched property lookup from the same rows.
+            properties_by_id = {
+                row.get("node_id"): row.get("properties", {}) for row in self._rows
+            }
+            return [
+                {"node_id": node_id, "props": properties_by_id.get(node_id, {})}
+                for node_id in (parameters or {}).get("node_ids", [])
+            ]
         if "MATCH (e:__Entity__)" in query and "elementId(e) AS node_id" in query:
-            return self._rows
+            # Honour the keyset cursor and page size like the real store.
+            after = (parameters or {}).get("after")
+            if after is None:
+                return self._rows
+            page_size = (parameters or {}).get("page_size", len(self._rows))
+            return [row for row in self._rows if row["node_id"] > after][:page_size]
         return []
 
     def create_vector_index(self, **kwargs):
@@ -41,6 +57,46 @@ class FakeGraphStore:
 # ------------------------------------------------------------------
 # _Neo4jEntityResolver — exact strategy
 # ------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_neo4j_resolver_pages_entity_load_across_all_nodes(monkeypatch):
+    monkeypatch.setattr(neo4j_entity_resolution, "_LOAD_PAGE_SIZE", 2)
+
+    class PagingStore(FakeGraphStore):
+        """Fails loudly if the loader keeps asking for pages, instead of hanging."""
+
+        max_pages = 4
+
+        def execute_query(self, query, parameters=None):
+            if "ORDER BY node_id" in query:
+                served = sum(1 for q, _ in self.calls if "ORDER BY node_id" in q)
+                if served >= self.max_pages:
+                    raise AssertionError("loader never stopped paging")
+            return super().execute_query(query, parameters)
+
+    names = ["Alpha", "Alpha", "Beta", "Beta", "Gamma", "Gamma"]
+    rows = [
+        {
+            "node_id": f"4:{index}",
+            "entity_id": f"e{index}",
+            "graph_name": "g1",
+            "resolve_value": name,
+            "labels": ["__Entity__", "Organization"],
+            "properties": {"name": name},
+        }
+        for index, name in enumerate(names)
+    ]
+    store = PagingStore(rows=rows)
+    resolver = _Neo4jEntityResolver(store)
+
+    result = await resolver.resolve(strategy="exact", dry_run=True)
+
+    load_pages = [q for q, _ in store.calls if "ORDER BY node_id" in q]
+    # Three data pages plus the short page that ends the loop.
+    assert len(load_pages) == 4
+    # One group per name: nodes from every page reached the grouping stage.
+    assert result["merged_groups"] == 3
+
 
 @pytest.mark.asyncio
 async def test_neo4j_resolver_exact_groups_by_raw_name():

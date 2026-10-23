@@ -29,6 +29,16 @@ class FakeGraphStore:
             return [{"rel_type": "ACTED_IN", "node_id": 2}]
 
         if "RETURN id(n) AS node_id, properties(n) AS props" in query:
+            # Batched property hydration for entity rows; falls back to the
+            # merge fixture when no entity rows are supplied.
+            properties_by_id = {
+                row.get("node_id"): row.get("properties", {}) for row in self._rows
+            }
+            if properties_by_id:
+                return [
+                    {"node_id": node_id, "props": properties_by_id.get(node_id, {})}
+                    for node_id in params.get("node_ids", [])
+                ]
             return [
                 {
                     "node_id": 1,

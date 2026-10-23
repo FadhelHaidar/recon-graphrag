@@ -11,6 +11,13 @@ from recon_graphrag.graphdb.entity_resolution import (
 from recon_graphrag.graphdb.cypher import escape_cypher_identifier
 
 
+# Entity nodes outnumber candidate groups by orders of magnitude, so the bulk
+# load is paged to keep both the driver list and the server-side transaction
+# under a small dbms.memory.transaction.total.max.
+_LOAD_PAGE_SIZE = 5000
+_HYDRATE_BATCH_SIZE = 1000
+
+
 class _Neo4jEntityResolver(BaseEntityResolver):
     def _preflight(self, *, dry_run: bool) -> dict | None:
         if dry_run:
@@ -32,41 +39,72 @@ class _Neo4jEntityResolver(BaseEntityResolver):
     def _load_entities(
         self, graph_name: str, resolve_property: str
     ) -> list[_EntityRecord]:
-        prop = escape_cypher_identifier(resolve_property)
-        rows = self.graph_store.execute_query(
-            f"""
-            MATCH (e:__Entity__)
-            WHERE e.graph_name = $graph_name
-              AND e.{prop} IS NOT NULL
-            RETURN
-              elementId(e) AS node_id,
-              e.id AS entity_id,
-              e.graph_name AS graph_name,
-              e.{prop} AS resolve_value,
-              labels(e) AS labels,
-              properties(e) AS properties
-            """,
-            {"graph_name": graph_name},
-        )
+        """Load candidate entities with identity fields only.
 
+        Properties are hydrated lazily for candidate nodes (see
+        ``_hydrate_properties``); projecting ``properties(e)`` here would pull
+        every stored embedding into memory.
+        """
+        prop = escape_cypher_identifier(resolve_property)
         entities = []
-        for row in rows:
-            labels = row.get("labels", [])
-            domain_labels = [label for label in labels if label != "__Entity__"]
-            domain_label = domain_labels[0] if domain_labels else "__Entity__"
-            resolve_value = row.get("resolve_value", "")
-            entities.append(
-                _EntityRecord(
-                    node_id=row.get("node_id", ""),
-                    entity_id=row.get("entity_id", ""),
-                    graph_name=row.get("graph_name", ""),
-                    domain_label=domain_label,
-                    resolve_value=resolve_value,
-                    normalized_value=_normalize_name(resolve_value),
-                    properties=row.get("properties", {}),
-                )
+        after = ""
+        while True:
+            rows = self.graph_store.execute_query(
+                f"""
+                MATCH (e:__Entity__)
+                WHERE e.graph_name = $graph_name
+                  AND e.{prop} IS NOT NULL
+                  AND elementId(e) > $after
+                RETURN
+                  elementId(e) AS node_id,
+                  e.id AS entity_id,
+                  e.graph_name AS graph_name,
+                  e.{prop} AS resolve_value,
+                  labels(e) AS labels
+                ORDER BY node_id
+                LIMIT $page_size
+                """,
+                {
+                    "graph_name": graph_name,
+                    "after": after,
+                    "page_size": _LOAD_PAGE_SIZE,
+                },
             )
+            for row in rows:
+                labels = row.get("labels", [])
+                domain_labels = [label for label in labels if label != "__Entity__"]
+                domain_label = domain_labels[0] if domain_labels else "__Entity__"
+                resolve_value = row.get("resolve_value", "")
+                entities.append(
+                    _EntityRecord(
+                        node_id=row.get("node_id", ""),
+                        entity_id=row.get("entity_id", ""),
+                        graph_name=row.get("graph_name", ""),
+                        domain_label=domain_label,
+                        resolve_value=resolve_value,
+                        normalized_value=_normalize_name(resolve_value),
+                    )
+                )
+            if len(rows) < _LOAD_PAGE_SIZE:
+                break
+            after = rows[-1].get("node_id", "")
         return entities
+
+    def _load_properties(self, node_ids: list) -> dict:
+        properties: dict = {}
+        for start in range(0, len(node_ids), _HYDRATE_BATCH_SIZE):
+            batch = node_ids[start : start + _HYDRATE_BATCH_SIZE]
+            rows = self.graph_store.execute_query(
+                """
+                MATCH (n)
+                WHERE elementId(n) IN $node_ids
+                RETURN elementId(n) AS node_id, properties(n) AS props
+                """,
+                {"node_ids": batch},
+            )
+            for row in rows:
+                properties[row.get("node_id")] = row.get("props") or {}
+        return properties
 
     def _merge_groups(
         self, groups: list[list[_EntityRecord]], resolve_property: str

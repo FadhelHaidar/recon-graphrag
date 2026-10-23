@@ -1,5 +1,7 @@
 """Shared entity-resolution normalization contract tests."""
 
+import json
+
 import pytest
 
 from recon_graphrag.graphdb.entity_resolution import (
@@ -46,6 +48,41 @@ class ContractResolver(BaseEntityResolver):
     def _merge_groups(self, groups, resolve_property: str) -> int:
         self.merged_groups = groups
         return sum(len(group) for group in groups)
+
+
+@pytest.mark.asyncio
+async def test_shared_resolver_keeps_subclass_supplied_properties():
+    """A subclass that builds records with properties needs no hydration hook."""
+    rows = [
+        _EntityRecord(
+            1,
+            "e1",
+            "g1",
+            "Person",
+            "John Smith",
+            "johnsmith",
+            {"name": "John Smith", "country": "US"},
+        ),
+        _EntityRecord(
+            2,
+            "e2",
+            "g1",
+            "Person",
+            "John Smith",
+            "johnsmith",
+            {"name": "John Smith", "country": "FR"},
+        ),
+    ]
+    resolver = ContractResolver(rows)
+
+    result = await resolver.resolve(
+        strategy="hybrid",
+        conflict_properties={"Person": ["country"]},
+    )
+
+    assert result["merged_groups"] == 0
+    assert result["review_groups"][0]["reason"] == "property_conflict"
+    assert "US" in json.dumps(result["review_groups"][0]["conflicts"])
 
 
 @pytest.mark.asyncio
