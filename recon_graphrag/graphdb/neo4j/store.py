@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import LiteralString, Optional, cast
 
 import neo4j
 
@@ -43,7 +43,9 @@ class Neo4jGraphStore(BaseGraphStore):
             database=self._database,
             notifications_disabled_categories=["DEPRECATION", "UNRECOGNIZED", "HINT"],
         ) as session:
-            result = session.run(query, parameters or {})
+            # Driver typing narrows to LiteralString; built queries are
+            # parameterized with escaped identifiers only (trusted code).
+            result = session.run(cast(LiteralString, query), parameters or {})
             return [dict(record) for record in result]
 
     # ------------------------------------------------------------------
@@ -248,6 +250,9 @@ class Neo4jGraphStore(BaseGraphStore):
         filters: Optional[dict] = None,
     ) -> list[dict]:
         filters = filters or {}
+        # Post-filtering by label/graph narrows global candidates; over-fetch so
+        # foreign-graph rows cannot consume the whole candidate window.
+        overfetch_k = max(k * 5, k) if label or filters.get("graph_name") else k
         conditions: list[str] = []
         if label:
             conditions.append(f"node:{escape_cypher_identifier(label)}")
@@ -266,7 +271,7 @@ class Neo4jGraphStore(BaseGraphStore):
             query,
             {
                 "index_name": index_name,
-                "k": k,
+                "k": overfetch_k,
                 "top_k": k,
                 "query_vector": query_vector,
                 "graph_name": filters.get("graph_name"),
@@ -282,6 +287,9 @@ class Neo4jGraphStore(BaseGraphStore):
         filters: Optional[dict] = None,
     ) -> list[dict]:
         filters = filters or {}
+        # Post-filtering by label/graph narrows global candidates; over-fetch so
+        # foreign-graph rows cannot consume the whole candidate window.
+        overfetch_k = max(k * 5, k) if label or filters.get("graph_name") else k
         conditions: list[str] = []
         if label:
             conditions.append(f"node:{escape_cypher_identifier(label)}")
@@ -305,7 +313,7 @@ class Neo4jGraphStore(BaseGraphStore):
             {
                 "index_name": index_name,
                 "query_text": query_text,
-                "k": k,
+                "k": overfetch_k,
                 "top_k": k,
                 "graph_name": filters.get("graph_name"),
             },
@@ -414,16 +422,18 @@ class Neo4jGraphStore(BaseGraphStore):
         )
         return detector.detect()
 
-    def get_unembedded_entities(self, limit: int = 500) -> list[dict]:
+    def get_unembedded_entities(self, graph_name: str, limit: int = 500) -> list[dict]:
         query = """
-        MATCH (e:__Entity__)
+        MATCH (e:__Entity__ {graph_name: $graph_name})
         WHERE e.embedding IS NULL
         RETURN elementId(e) AS id, labels(e) AS labels,
                e.name AS name,
                CASE WHEN e.description IS NOT NULL THEN e.description ELSE '' END AS description
         LIMIT $limit
         """
-        return self.execute_query(query, {"limit": limit})
+        return self.execute_query(
+            query, {"graph_name": graph_name, "limit": limit}
+        )
 
     def get_entities_needing_summary(
         self, graph_name: str, limit: int = 500

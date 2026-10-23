@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import asyncio
 import logging
+import re
+
 import pytest
 
 from recon_graphrag.extraction.schema import (
@@ -44,23 +46,40 @@ class FakeGraphStore:
     def backfill_descriptions(self):
         pass
 
-    async def resolve_entities_exact(self, **kwargs):
-        self.resolve_kwargs = {"strategy": "exact", **kwargs}
+    async def resolve_entities_exact(self, graph_name="entity-graph", resolve_property="name", dry_run=False, **kwargs):
+        self.resolve_kwargs = {"strategy": "exact", "graph_name": graph_name, **kwargs}
         return {"skipped": False, "merged_groups": 0, "strategy": "exact"}
 
-    async def resolve_entities_normalized(self, **kwargs):
-        self.resolve_kwargs = {"strategy": "normalized", **kwargs}
+    async def resolve_entities_normalized(self, graph_name="entity-graph", resolve_property="name", dry_run=False, **kwargs):
+        self.resolve_kwargs = {"strategy": "normalized", "graph_name": graph_name, **kwargs}
         return {"skipped": False, "merged_groups": 0, "strategy": "normalized"}
 
-    async def resolve_entities_fuzzy(self, **kwargs):
-        self.resolve_kwargs = {"strategy": "fuzzy", **kwargs}
+    async def resolve_entities_fuzzy(self, graph_name="entity-graph", resolve_property="name", dry_run=False,
+                                     merge_threshold=95.0, review_threshold=85.0, max_candidates_per_entity=20, **kwargs):
+        self.resolve_kwargs = {"strategy": "fuzzy", "graph_name": graph_name, **kwargs}
         return {"skipped": False, "merged_groups": 0, "strategy": "fuzzy"}
 
-    async def resolve_entities_hybrid(self, **kwargs):
-        self.resolve_kwargs = {"strategy": "hybrid", **kwargs}
+    async def resolve_entities_hybrid(self, graph_name="entity-graph", resolve_property="name", dry_run=False,
+                                      merge_threshold=95.0, review_threshold=85.0, max_candidates_per_entity=20,
+                                      aliases=None, embedder=None, llm=None, llm_guidance=None,
+                                      allow_ai_auto_merge=False, context_properties=None, conflict_properties=None,
+                                      context_mode="safe_defaults", **kwargs):
+        self.resolve_kwargs = {
+            "strategy": "hybrid",
+            "graph_name": graph_name,
+            "embedder": embedder,
+            "llm": llm,
+            "aliases": aliases,
+            "llm_guidance": llm_guidance,
+            "allow_ai_auto_merge": allow_ai_auto_merge,
+            "context_properties": context_properties,
+            "conflict_properties": conflict_properties,
+            "context_mode": context_mode,
+            **kwargs,
+        }
         return {"skipped": False, "merged_groups": 0, "strategy": "hybrid"}
 
-    def get_unembedded_entities(self, limit=500):
+    def get_unembedded_entities(self, graph_name, limit=500):
         return []
 
     def get_entities_needing_summary(self, graph_name, limit=500):
@@ -75,7 +94,7 @@ class FakeGraphStore:
     def persist_relationship_summaries(self, graph_name, summaries):
         pass
 
-    def upsert_vectors(self, ids, property_name, vectors):
+    def upsert_vectors(self, node_ids, embedding_property, vectors):
         pass
 
     def validate_graph_build(self):
@@ -85,6 +104,80 @@ class FakeGraphStore:
             "evidence_link_count": 2,
             "entity_relationship_count": 1,
         }
+
+    def create_indexes(self, config=None, embedding_dim=1536):
+        pass
+
+    def drop_indexes(self, config=None):
+        pass
+
+    def create_vector_index(self, name, label, embedding_property, dimensions, similarity_fn="cosine"):
+        pass
+
+    def create_fulltext_index(self, name, label, node_properties):
+        pass
+
+    def vector_search(self, index_name, query_vector, k, label=None, filters=None):
+        return []
+
+    def keyword_search(self, index_name, query_text, k, label=None, filters=None):
+        return []
+
+    def fetch_entity_context(self, matches, retrieval_query=None, query_params=None, mode="local", graph_name=None):
+        return []
+
+    def detect_communities(self, graph_name, relationship_types=None, max_levels=3, gamma=1.0,
+                           theta=0.01, tolerance=1e-4, relationship_weight_property=None,
+                           random_seed=None, entity_label="__Entity__", community_label="Community"):
+        return []
+
+    def get_communities(self, graph_name, level=None):
+        return []
+
+    def get_community_stats(self, graph_name):
+        return []
+
+    def store_community_report(self, report, graph_name):
+        pass
+
+    def mark_community_report_failed(self, graph_name, community_id, level, error):
+        pass
+
+    def get_community_ranked_context(self, graph_name, community_id, level=0):
+        return []
+
+    def get_child_community_reports(self, graph_name, community_id, level, child_level):
+        return []
+
+    def get_claims_for_entities(self, graph_name, entity_ids):
+        return []
+
+    def resolve_chunk_citations(self, graph_name, chunk_ids):
+        return []
+
+    def get_community_reports_by_keys(self, graph_name, keys, top_k):
+        return []
+
+    def get_unembedded_community_reports(self, graph_name, limit=500):
+        return []
+
+    def upsert_community_report_vectors(self, node_ids, vectors, graph_name, levels):
+        pass
+
+    def vector_search_community_reports(self, query_vector, graph_name, top_k=3, level=None):
+        return []
+
+    def get_entity_count(self):
+        return 2
+
+    def get_chunk_count(self):
+        return 1
+
+    def get_evidence_link_count(self):
+        return 2
+
+    def get_relationship_count(self):
+        return 1
 
 
 class MyGraphStore(FakeGraphStore):
@@ -258,7 +351,7 @@ async def test_build_from_documents_preserves_page_metadata(
         {"text": "Page two", "metadata": {"record_id": "page-2"}},
         {"text": "Page three", "metadata": {"record_id": "page-3"}},
     ]
-    results = await pipeline.build_from_documents(
+    await pipeline.build_from_documents(
         [{"pages": pages, "metadata": {"source": "document-source", "collection": "movies"}}],
         schema=movie_schema,
         window_size=2,
@@ -366,7 +459,7 @@ async def test_build_from_documents_envelope_validation(
     )
 
     with pytest.raises(ValueError, match="must be a dict"):
-        await pipeline.build_from_documents(["not a dict"], schema=movie_schema)
+        await pipeline.build_from_documents(["not a dict"], schema=movie_schema)  # type: ignore[arg-type]
 
     with pytest.raises(ValueError, match="both 'text' and 'pages'"):
         await pipeline.build_from_documents(
@@ -391,7 +484,7 @@ async def test_build_from_documents_envelope_validation(
 
     with pytest.raises(ValueError, match="schema must be a GraphSchema"):
         await pipeline.build_from_documents(
-            [{"text": "x"}], schema=None
+            [{"text": "x"}], schema=None  # type: ignore[arg-type]
         )
 
     fake_writer.write_graph_document.assert_not_called()
@@ -472,7 +565,59 @@ def test_make_document_id_with_source():
         embedder=MagicMock(),
     )
     doc_id = pipeline._make_document_id("hello", {"source": "My Doc"})
-    assert doc_id == "doc:my-doc"
+    assert re.fullmatch(r"doc:[0-9a-f]{16}", doc_id), doc_id
+
+
+def test_make_document_id_slash_and_dash_sources_are_distinct():
+    """Slug slugs collapsed "A/B" and "A-B" to the same id; hashing must not."""
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=MagicMock(),
+        embedder=MagicMock(),
+    )
+    slash_id = pipeline._make_document_id("t", {"source": "A/B"})
+    dash_id = pipeline._make_document_id("t", {"source": "A-B"})
+    assert slash_id != dash_id
+
+
+def test_make_document_id_non_ascii_sources_are_distinct():
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=MagicMock(),
+        embedder=MagicMock(),
+    )
+    arabic_id = pipeline._make_document_id("t", {"source": "نص عربي"})
+    cjk_id = pipeline._make_document_id("t", {"source": "中文文档"})
+    assert arabic_id != cjk_id
+    assert re.fullmatch(r"doc:[0-9a-f]{16}", arabic_id)
+
+
+def test_make_document_id_same_source_is_stable():
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=MagicMock(),
+        embedder=MagicMock(),
+    )
+    first = pipeline._make_document_id("text one", {"source": "Report"})
+    second = pipeline._make_document_id("text two", {"source": "Report"})
+    # same source → same document identity even as text differs between chunks
+    assert first == second
+
+
+def test_make_document_id_explicit_document_id_wins():
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=MagicMock(),
+        embedder=MagicMock(),
+    )
+    assert (
+        pipeline._make_document_id("hello", {"source": "My Doc", "document_id": "doc:test"})
+        == "doc:test"
+    )
 
 
 @pytest.mark.parametrize(
@@ -644,7 +789,7 @@ async def test_concurrency_limit_respected(
             active -= 1
         return MagicMock(content='{"nodes": [], "relationships": []}')
 
-    pipeline.llm.inner.ainvoke = AsyncMock(side_effect=tracked_invoke)
+    pipeline.llm.inner.ainvoke = AsyncMock(side_effect=tracked_invoke)  # type: ignore[attr-defined]
 
     await pipeline._extract_and_write_chunks(
         document_id="doc:test",

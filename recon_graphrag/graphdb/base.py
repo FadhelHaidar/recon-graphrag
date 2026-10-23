@@ -255,8 +255,10 @@ class GraphStore(Protocol):
         """Record a failed community report generation attempt."""
         ...
 
-    def get_unembedded_entities(self, limit: int = 500) -> list[dict]:
-        """Get entities without embeddings."""
+    def get_unembedded_entities(
+        self, graph_name: str, limit: int = 500
+    ) -> list[dict]:
+        """Get graph-scoped entities without embeddings."""
         ...
 
     def get_community_ranked_context(

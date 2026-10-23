@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### ⚠ BREAKING CHANGES
+
+* **graphdb:** `get_unembedded_entities` now takes a required `graph_name`
+  first argument; embedding runs are scoped to a single graph so entities
+  from other graphs are never read or overwritten (production audit F1).
+* **pipelines:** document IDs derived from `source`/`title` metadata are now
+  content hashes (`doc:<16 hex chars>`) instead of slugs; sources that
+  slugified identically (e.g. `A/B`, `A-B`) no longer collide. Pre-existing
+  graphs built before this change are NOT migrated — re-ingested documents
+  with the same source get new document IDs (production audit F2, user
+  decision: hash new IDs, no migration). Explicit `metadata["document_id"]`
+  still wins.
+* **graphdb:** Neo4j `vector_search`/`keyword_search` over-fetch (5×) when
+  label or `graph_name` filters are applied and trim to `top_k` after the
+  filter, matching Memgraph behavior; result shape is unchanged.
+
 ## [0.10.1](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.10.0...v0.10.1) (2026-10-18)
 
 

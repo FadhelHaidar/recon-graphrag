@@ -358,6 +358,42 @@ def test_vector_search_overfetches_when_label_filtering(store, fake_driver):
     assert fake_driver.session_obj.params[-1]["top_k"] == 5
 
 
+def test_vector_search_graph_filter_overfetches_and_scopes(store, fake_driver):
+    fake_driver.session_obj._next_result = FakeResult([])
+
+    store.vector_search(
+        index_name="entity-embeddings",
+        query_vector=[0.1, 0.2],
+        k=5,
+        filters={"graph_name": "graph-a"},
+    )
+
+    query_text = fake_driver.session_obj.queries[-1]
+    params = fake_driver.session_obj.params[-1]
+    assert "node.graph_name = $graph_name" in query_text
+    assert params["graph_name"] == "graph-a"
+    assert params["k"] == 25  # over-fetch before post-filter trims to top_k
+    assert params["top_k"] == 5
+
+
+def test_keyword_search_graph_filter_overfetches_and_scopes(store, fake_driver):
+    fake_driver.session_obj._next_result = FakeResult([])
+
+    store.keyword_search(
+        index_name="entity-names",
+        query_text="Alice",
+        k=5,
+        filters={"graph_name": "graph-a"},
+    )
+
+    query_text = fake_driver.session_obj.queries[-1]
+    params = fake_driver.session_obj.params[-1]
+    assert "node.graph_name = $graph_name" in query_text
+    assert params["graph_name"] == "graph-a"
+    assert params["k"] == 25
+    assert params["top_k"] == 5
+
+
 def test_keyword_search_runs_text_search_procedure(store, fake_driver):
     fake_driver.session_obj._next_result = FakeResult(
         [{"id": 1, "score": 0.9}]

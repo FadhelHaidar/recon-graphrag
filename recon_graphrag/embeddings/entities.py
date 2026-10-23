@@ -46,7 +46,9 @@ class EntityEmbedder:
         last_batch_ids: frozenset | None = None
 
         while True:
-            entities = self.graph_store.get_unembedded_entities(limit=batch_size)
+            entities = self.graph_store.get_unembedded_entities(
+                graph_name=self.graph_name, limit=batch_size
+            )
             if not entities:
                 break
 

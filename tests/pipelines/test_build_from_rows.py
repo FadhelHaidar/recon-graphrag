@@ -1,5 +1,6 @@
 """Tests for GraphBuilderPipeline structured-data ingestion."""
 
+import hashlib
 import sqlite3
 from unittest.mock import AsyncMock, MagicMock
 
@@ -17,8 +18,11 @@ from recon_graphrag.extraction.structured import (
     TextColumn,
 )
 from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
-
 from tests.pipelines.test_graph_builder import FakeGraphStore
+
+
+def _hashed_doc_id(source):
+    return "doc:" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
 
 
 ROWS = [
@@ -95,7 +99,7 @@ async def test_direct_only_makes_zero_llm_calls(mapping, fake_writer):
     assert "validation" in result
 
     doc = fake_writer.write_graph_document.call_args.args[0]
-    assert doc.document.id == "doc:orders"
+    assert doc.document.id == _hashed_doc_id("orders")
     assert [chunk.metadata["record_id"] for chunk in doc.chunks] == ["O-1", "O-2"]
 
     entities = {e.canonical_key: e for e in doc.entities}
@@ -227,7 +231,7 @@ async def test_build_from_csv_and_sql(tmp_path, mapping, fake_writer):
         encoding="utf-8",
     )
     result = await pipeline.build_from_csv(path, mapping, finalize=False)
-    assert result["extraction"]["document_id"] == "doc:orders-csv"
+    assert result["extraction"]["document_id"] == _hashed_doc_id("orders.csv")
     assert result["extraction"]["chunks"] == 1
 
     connection = sqlite3.connect(":memory:")

@@ -957,7 +957,9 @@ class GraphBuilderPipeline:
 
     async def _embed_entities(self):
         """Step 3: Generate vector embeddings for entity nodes."""
-        embedder = EntityEmbedder(self.graph_store, self.embedder)
+        embedder = EntityEmbedder(
+            self.graph_store, self.embedder, graph_name=self.graph_name
+        )
         try:
             await embedder.embed_entities()
         except Exception as e:
@@ -980,9 +982,12 @@ class GraphBuilderPipeline:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     def _make_document_id(self, text: str, metadata: dict) -> str:
+        explicit = metadata.get("document_id")
+        if explicit:
+            return str(explicit)
         source = metadata.get("source") or metadata.get("title")
         if source:
-            slug = re.sub(r"[^a-zA-Z0-9]+", "-", str(source).lower()).strip("-")
-            return f"doc:{slug}"
+            # Slipugged slugs collided ("A/B" → "a-b" == "A-B"); hash instead.
+            return f"doc:{self._hash_text(str(source))[:16]}"
 
         return f"doc:{self._hash_text(text)[:16]}"
