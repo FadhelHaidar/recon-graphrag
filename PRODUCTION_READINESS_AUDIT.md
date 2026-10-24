@@ -40,13 +40,13 @@ These constraints do **not** establish a production capacity. Unattended mutable
 | F3 | High | Metadata/properties can overwrite reserved identity and scope fields during persistence. | Fixed with pre-write reserved-field validation, including UID; regressions pass. |
 | F4 | High | Changed-document ingestion does not prune obsolete evidence; entity vectors are not invalidated when their input changes. | Corrected; replacement/vector regressions and live AI E2E pass on both backends. Atomicity/concurrent replacement remain excluded. |
 | F5 | High | Community and index maintenance delete existing resources before replacement succeeds. | Open; confirmed ordering. Maintenance safety was excluded from this patch. |
-| F6 | High | Embedding failures can be reported as success; graph writes are partial and reported counts are input counts. | Partially fixed: strict embedding completion/recovery implemented. Rollback and write-count accuracy remain open. |
+| F6 | High | Embedding failures can be reported as success; graph writes are partial and reported counts are input counts. | Fixed. Strict embedding completion, one transaction per document, confirmed write counts, fail-fast reference validation and bounded retry all landed and were verified on live Neo4j and Memgraph. Residual: work after the write (resolution, summarization, embedding) is not in the transaction. |
 | F7 | High | Default entity resolution merges homonyms; extraction identity mistakes can collapse entities before resolution. | Chunk scope/conflict guards corrected; live AI resolution and E2E pass on both backends. Semantic ambiguity and old bad merges remain. |
 | F8 | High for concurrent use | Synchronous database operations block async callers; core node identities lack uniqueness constraints. | Offload/UID mechanisms corrected; async, bounded database-race and live E2E checks pass. Load envelope unmeasured. |
 | F9 | High as data grows | Full materialization, quadratic candidate generation, and unbounded neighborhood expansion create scaling limits. | Open; confirmed mechanisms, thresholds unmeasured. |
 | F10 | Medium | Citation failures can disappear silently; one retrieval mode ignores citation-metadata options. | Open; successful E2E citations do not cover failure observability. |
-| F11 | Medium | Invalid concurrency can hang ingestion; malformed externally written reports can cause a non-progress loop. | Open; reproduced with qualifications below. |
-| F12 | Medium | Lockfile drift, limited mandatory integration coverage, and inconsistent diagnostic sanitization weaken operational confidence. | Partially addressed: integration evidence expanded. CI gating and diagnostic-sanitization risks remain. |
+| F11 | Medium | Invalid concurrency can hang ingestion; malformed externally written reports can cause a non-progress loop. | Concurrency half fixed: zero/negative values are rejected at every entry point. Blank externally written report loop remains open. |
+| F12 | Medium | Lockfile drift, limited mandatory integration coverage, and inconsistent diagnostic sanitization weaken operational confidence. | Partially addressed: lockfile fixed, integration evidence expanded, embedding diagnostics now redact entity names. CI gating and version-matrix coverage remain open. |
 
 ## Findings, evidence, and remedies
 
@@ -194,7 +194,15 @@ Graph “validation” supplies aggregate counts, not proof of embedding coverag
 
 The SDK does not promise transactions in its documentation; the concern is incomplete persistence and misleading success, not violation of a documented atomicity guarantee.
 
-**Fix status:** Sub-problem 1 is fixed (commit `774457f fix(pipelines): fail_on_embedding_error verifies embedding completion`, on `prod-hardening`). A strict build now verifies that no entity in the configured graph still lacks an embedding after the embedding pass and raises `RuntimeError("Entity embedding incomplete ...")` when any remain; failures during the pass are logged and re-raised in strict mode (`recon_graphrag/pipelines/graphrag_pipeline.py:958-981`). A public recovery method `complete_embeddings()` fills only missing vectors without re-running extraction, resolution, or summarization. Behavior is pinned by 10 deterministic regressions in `tests/pipelines/test_graph_builder.py` (all-fail, partial success with retained vectors, no-progress upsert, graph-scoped `limit=1` check, `embed_entities=False` skip, strict/non-strict vector-write errors, final-lookup failure), reflected in `tests/compatibility/fixtures/public_api.json`, and documented in `docs/05-pipelines.md` ("Embedding failures and recovery"). Probe-confirmed live on a disposable graph against Neo4j and Memgraph, including provider failure → retained pending state → successful recovery. Sub-problems 2 (document-wide rollback) and 3 (write-statistic accuracy) remain open.
+**Fix status:** Sub-problem 1 is fixed (commit `774457f fix(pipelines): fail_on_embedding_error verifies embedding completion`, on `prod-hardening`). A strict build now verifies that no entity in the configured graph still lacks an embedding after the embedding pass and raises `RuntimeError("Entity embedding incomplete ...")` when any remain; failures during the pass are logged and re-raised in strict mode (`recon_graphrag/pipelines/graphrag_pipeline.py:958-981`). A public recovery method `complete_embeddings()` fills only missing vectors without re-running extraction, resolution, or summarization. Behavior is pinned by 10 deterministic regressions in `tests/pipelines/test_graph_builder.py` (all-fail, partial success with retained vectors, no-progress upsert, graph-scoped `limit=1` check, `embed_entities=False` skip, strict/non-strict vector-write errors, final-lookup failure), reflected in `tests/compatibility/fixtures/public_api.json`, and documented in `docs/05-pipelines.md` ("Embedding failures and recovery"). Probe-confirmed live on a disposable graph against Neo4j and Memgraph, including provider failure → retained pending state → successful recovery. Sub-problems 2 (document-wide rollback) and 3 (write-statistic accuracy) are fixed:
+
+- **Rollback:** `write_graph_document` runs its reads, writes and reconcile of one document inside a single transaction on both backends (commit `14afa92`). A failure inside the write leaves the document's previous state intact; stores without the private `_transaction` hook keep the previous auto-commit path.
+- **Truthful counts:** every write query now returns `count(*)` and `write_stats` reports confirmed rows, falling back to submitted rows only when a store reports no count (commit `5c90cbe`). The same commit rejects a document whose relationship endpoint, evidence entity, or claim entity/chunk resolves in neither the document nor the graph, before the first write, with a `ValueError` naming the document and the missing ids.
+- **Retry:** a transaction aborted by a deadlock, serialization conflict, or unique-constraint race is retried up to 3 times with a short backoff, reusing the already-extracted document (commits `b8d78a6`, `b2e8b8e`). Nothing else is retried.
+
+**Live evidence (disposable Neo4j 5.26 and Memgraph, this session):** 23 writer-invariant regressions pass on both backends, and a stress run of 15 rounds of two concurrent document writes over shared entities went from 5/15 and 2/15 failed rounds on the pre-patch code, and 7/15 and 15/15 with the transaction alone, to **0/15 on both** with the unique-constraint retry. The failing mode was a `MERGE` race creating the same `:__Entity__` twice (`Neo.TransientError.Transaction.DeadlockDetected` on Neo4j; `ConstraintValidationFailed` / Memgraph's contract violation on `:__Entity__(uid)`). After recovery each shared entity existed exactly once with evidence from both documents.
+
+**Remaining:** extraction, summarization and embedding are outside the transaction, so a failure after the write still leaves that document written; there is no atomicity across the documents of one build; retry is bounded at 3, and a persistent abort still fails the whole batch.
 
 ### F7 — Identity resolution can merge distinct real-world entities
 
@@ -289,6 +297,8 @@ Citation lookup exceptions can become an empty citation list without a diagnosti
 
 **Remediation/validation:** Reject non-positive concurrency at entry; filter blank report text and add a progress guard. Test zero/negative values and malformed externally written rows.
 
+**Fix status:** the concurrency half is fixed by commit `5f9edb6`. `_require_concurrency()` validates `extraction_concurrency` and `document_concurrency` in `build_from_text`, `build_from_documents` and `build_from_rows` before any work starts (CSV/Excel/SQL callers reach it through `build_from_rows`), raising `ValueError("extraction_concurrency must be at least 1")` or `ValueError("document_concurrency must be at least 1")`. Pinned by a parametrized regression over 0 and -1 that asserts no LLM call, no write and no query happens first. The whitespace-only externally stored report loop remains open (defensive interoperability case only).
+
 ### F12 — Operational evidence and diagnostics need tightening
 
 **Locations:**
@@ -306,6 +316,8 @@ Citation lookup exceptions can become an empty citation list without a diagnosti
 **Remediation:** Refresh/check the lockfile in CI; run a small real-backend contract matrix for supported versions and failure paths; apply consistent diagnostic redaction.
 
 **Validation:** Require a clean lock check, backend contract tests, and a log-capture test with sensitive entity names/provider errors.
+
+**Fix status:** the diagnostics half is fixed by commit `83cc613`. An entity embedding failure now logs `entity id` (a `uuid5` URN) and the exception class at `WARNING`; the entity name and provider text moved to `DEBUG`, so the failure stays traceable without leaking graph content. Pinned by a `caplog` regression asserting neither the name nor the payload appears at `WARNING` or above. The lockfile item was fixed earlier (`aee4ba8`). Still open: CI does not gate `uv lock --check`, and there is no supported-version backend matrix.
 
 ## Positive evidence and important qualifications
 
@@ -325,12 +337,12 @@ The maintainability issues are concentrated at shared boundaries—identity, wri
 
 1. Fix graph-scoped embedding and reserve internal persistence fields.
 2. Replace lossy document identity generation.
-3. Make strict failures and persistence counts truthful.
-4. Replacement/replay corrective regressions pass on disposable backends; F6 persistence counts/partial writes and concurrent reconciliation limits remain.
+3. Make strict failures and persistence counts truthful. **Done:** strict embedding completion, confirmed write counts, fail-fast unresolved references.
+4. Replacement/replay corrective regressions pass on disposable backends. **Done:** one document write is one transaction on both backends; deadlock/serialization/unique-constraint aborts are retried three times before surfacing; verified live on Neo4j 5.26 and Memgraph, including a concurrency stress run. Residual: extraction, summarization and embedding stay outside the transaction, and there is no atomicity across documents in one build.
 5. Protect existing communities/indexes during failed maintenance.
 6. Chunk-scoped fallback IDs, configured conflict checks and graph-scoped UID constraints now have regression evidence on both backends. Name matching remains heuristic; do not interpret absence of a configured conflict as proof that a merge is safe.
 
-Concurrent serving additionally requires measuring race behavior under load; blocking database calls are now offloaded from the event loop.
+Concurrent serving additionally requires measuring race behavior under load; blocking database calls are now offloaded from the event loop, and per-document write races are retried rather than lost.
 
 ### Near-term improvements
 
