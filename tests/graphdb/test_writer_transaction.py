@@ -172,3 +172,56 @@ def test_persistent_deadlock_surfaces_after_bounded_retries(name):
 
     assert len(session.transactions) == 3
     assert all(transaction.rolled_back for transaction in session.transactions)
+
+
+class ConstraintError(Exception):
+    """Stand-in for a unique-constraint failure on :__Entity__(uid)."""
+
+    code = "Neo.ClientError.Schema.ConstraintValidationFailed"
+
+
+class MemgraphConstraintError(Exception):
+    """Memgraph reports the same race as a generic ClientError message."""
+
+    code = "Memgraph.ClientError.MemgraphError.MemgraphError"
+
+    def __str__(self) -> str:
+        return "Unable to commit due to unique constraint violation on :__Entity__(uid)"
+
+
+class ConstraintSession(FakeSession):
+    def __init__(self, error: type[Exception], failures: int):
+        super().__init__()
+        self.error = error
+        self.failures = failures
+
+    def run(self, query: str, parameters: dict | None = None):
+        if self.failures and "MERGE (e:__Entity__" in query:
+            self.failures -= 1
+            raise self.error()
+        return super().run(query, parameters)
+
+
+@pytest.mark.parametrize(
+    "error", [ConstraintError, MemgraphConstraintError], ids=["neo4j", "memgraph"]
+)
+def test_unique_constraint_race_is_retried(error):
+    session = ConstraintSession(error, failures=1)
+    store = Neo4jGraphStore(cast(Any, FakeDriver(session)))
+
+    store.write_graph_document(make_graph_document())
+
+    assert len(session.transactions) == 2
+    assert session.transactions[0].rolled_back is True
+    assert session.transactions[1].committed is True
+
+
+def test_unrelated_constraint_error_is_not_retried():
+    session = ConstraintSession(ConstraintError, failures=99)
+    session.error = ValueError  # no code, no constraint wording
+    store = Neo4jGraphStore(cast(Any, FakeDriver(session)))
+
+    with pytest.raises(ValueError):
+        store.write_graph_document(make_graph_document())
+
+    assert len(session.transactions) == 1

@@ -133,9 +133,18 @@ def _joined(descriptions: list[str]) -> str:
 
 
 def _is_retryable_write_error(error: BaseException) -> bool:
-    """True for an abort where retrying the same document can succeed."""
+    """True for an abort where retrying the same document can succeed.
+
+    A unique-constraint failure on ``uid`` is included: two concurrent writers
+    MERGE the same entity that does not exist yet, both create it, and the
+    loser's rollback leaves the winner's node in place for the retry to match.
+    """
     code = str(getattr(error, "code", "") or "")
     if "DeadlockDetected" in code or "SerializationError" in code:
+        return True
+    if "ConstraintValidationFailed" in code:
+        return True
+    if "unique constraint violation" in str(error).lower():
         return True
     return type(error).__name__ in {
         "DeadlockDetected",
