@@ -43,7 +43,7 @@ class ExtractionLLM:
     async def ainvoke(self, prompt):
         return LLMResponse(content=json.dumps({
             "nodes": [
-                {"id": "p1", "label": "Person", "properties": {"name": "Alice"}},
+                {"id": "p1", "label": "Person", "properties": {"name": "Alice", "canonical_key": "Person:Alice"}},
                 {"id": "m1", "label": "Movie", "properties": {"title": "Inception"}},
             ],
             "relationships": [{"source_id": "p1", "target_id": "m1", "type": "DIRECTED"}],
@@ -90,7 +90,7 @@ class SynchronousStore(FakeGraphStore):
 @pytest.fixture
 def schema():
     return GraphSchema(
-        [NodeType("Person", properties=[PropertyType("name")]),
+        [NodeType("Person", properties=[PropertyType("name"), PropertyType("canonical_key")]),
          NodeType("Movie", properties=[PropertyType("title")], identity_property="title")],
         [RelationshipType("DIRECTED"), RelationshipType("MENTIONS")],
         [("Person", "DIRECTED", "Movie"), ("Person", "MENTIONS", "Movie")],

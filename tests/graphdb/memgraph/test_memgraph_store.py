@@ -342,6 +342,7 @@ def test_upsert_vectors_records_content_and_model_fingerprints(store, fake_drive
     assert fake_driver.session_obj.params[-1]["rows"] == [
         {"id": 1, "vector": [0.1], "content_fingerprint": "content-1"}
     ]
+    assert fake_driver.session_obj.params[-1]["model_fingerprint"] == "model-1"
 
 
 def test_upsert_vectors_rejects_mismatched_lengths(store):

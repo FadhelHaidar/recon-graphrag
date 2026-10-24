@@ -170,6 +170,7 @@ class StatefulFakeGraphStore:
                     "observation_count": row["observation_count"],
                     "weight": row["weight"],
                     "strength": row["strength"],
+                    "strength_sources": row["strength_sources"],
                     "descriptions": list(row["descriptions"]),
                     "description_sources": row["description_sources"],
                 }
@@ -193,6 +194,8 @@ class StatefulFakeGraphStore:
             rel["source_chunk_ids"] = list(row["source_chunk_ids"])
             rel["observation_count"] = row["observation_count"]
             rel["weight"] = row["weight"]
+            rel["strength"] = row["strength"]
+            rel["strength_sources"] = row["strength_sources"]
             rel["descriptions"] = list(row["descriptions"])
             rel["description_sources"] = row["description_sources"]
             rel["description"] = row["description_text"]
@@ -299,6 +302,7 @@ class StatefulFakeGraphStore:
             "description",
             "description_summary_status",
             "strength",
+            "strength_sources",
         )
         return [
             {field: rel.get(field) for field in fields}

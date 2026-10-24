@@ -36,6 +36,18 @@ You do not need to recreate them every time you ingest more text, unless you cha
 
 ---
 
+## Identity constraints and existing graphs
+
+`create_indexes()` also installs unique `uid` constraints for `Document`, `Chunk`, and `__Entity__` on both backends. A UID encodes the existing `(graph_name, id)` pair as `len(graph_name):graph_name:id`; it does not change public IDs or infer semantic identity. `uid` is writer-owned: do not supply it in metadata or entity properties.
+
+Before creating constraints, setup checks for duplicate `(graph_name, id)` records within each label. A failure names the label, graph, ID, and duplicate count. Resolve those duplicates or rebuild the affected graph, then rerun setup; it never auto-merges them. Once the preflight passes, missing UIDs are backfilled. Equivalent constraints are accepted; other constraint errors propagate.
+
+**Finish setup before starting concurrent ingestion.** Two concurrent writes may match the same node or one may receive a backend conflict. The constraints prevent duplicate committed identities, not interleaved property updates or partial document replacement; the SDK does not automatically retry conflicts. The same ID in different graphs remains independent.
+
+Index setup does not migrate legacy description/strength ownership. See [replacement and migration](05-pipelines.md#document-replacement-and-legacy-graphs). Also note that managed retrieval indexes are recreated during setup: this is a maintenance operation, not a safe concurrent-serving rebuild.
+
+---
+
 ## Embedding dimensions
 
 The `embedding_dim` parameter must match the dimension of your embedder.

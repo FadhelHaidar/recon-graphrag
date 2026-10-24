@@ -107,6 +107,7 @@ _COMMON_RESERVED = (
     "description_summary_error",
     "description_summary_fallback",
     "description_sources",
+    "strength_sources",
     "embedding_input_fingerprint",
     "embedding_content_fingerprint",
     "embedding_model_fingerprint",

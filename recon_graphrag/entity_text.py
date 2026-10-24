@@ -79,8 +79,8 @@ def embedder_fingerprint(embedder: Any) -> str:
 
 
 def _model_name(model: Any) -> str | None:
-    if model is None:
-        return None
+    if model is None or isinstance(model, str):
+        return model
     for attribute in ("model_name_or_path", "name_or_path", "model_name"):
         value = getattr(model, attribute, None)
         if isinstance(value, str) and value:

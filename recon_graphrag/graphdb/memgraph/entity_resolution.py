@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from recon_graphrag.graphdb._provenance import (
+    build_uid,
+    preflight_merge_ownership,
+    property_list,
+    raw_descriptions,
+)
 from recon_graphrag.graphdb.entity_resolution import (
     BaseEntityResolver,
     _EntityRecord,
@@ -54,6 +60,7 @@ class _MemgraphEntityResolver(BaseEntityResolver):
     def _merge_groups(
         self, groups: list[list[_EntityRecord]], resolve_property: str
     ) -> int:
+        preflight_merge_ownership(self.graph_store, groups, "id")
         merged_nodes = 0
         for group in groups:
             sorted_group = sorted(
@@ -89,10 +96,14 @@ class _MemgraphEntityResolver(BaseEntityResolver):
 
             combined_props = self._combine_properties(node_ids)
             combined_props["id"] = canonical_entity_id
+            combined_props["graph_name"] = sorted_group[0].graph_name
+            combined_props["uid"] = build_uid(sorted_group[0].graph_name, canonical_entity_id)
+            combined_props["description_sources"] = property_list(combined_props.get("description_sources"))
             # Drop any (now-stale, possibly corrupted) merged embedding so the
             # embedding step re-embeds the merged node from its consolidated
             # description. SET n += {embedding: null} removes the property.
             combined_props["embedding"] = None
+            combined_props["embedding_input_fingerprint"] = None
             if canonical_key:
                 combined_props["canonical_key"] = canonical_key
             if canonical_readable_id:
@@ -101,7 +112,12 @@ class _MemgraphEntityResolver(BaseEntityResolver):
             summary = self._merge_summaries.get(canonical_entity_id)
             if summary:
                 combined_props.update(summary)
-                combined_props["observation_count"] = len(summary["descriptions"])
+                combined_props["descriptions"] = list(dict.fromkeys(
+                    text for entity in sorted_group
+                    for text in raw_descriptions(entity.properties)
+                    if text
+                ))
+                combined_props["observation_count"] = len(combined_props["descriptions"])
             if aliases:
                 existing_aliases = combined_props.get("aliases", [])
                 if not isinstance(existing_aliases, list):
@@ -206,24 +222,38 @@ class _MemgraphEntityResolver(BaseEntityResolver):
                          coalesce(new_r.descriptions,
                            CASE WHEN new_r.description IS NULL THEN []
                                 ELSE [new_r.description] END) AS existing_descriptions,
+                         coalesce(new_r.description_sources, []) AS existing_description_sources,
+                         coalesce(new_r.strength_sources, []) AS existing_strength_sources,
                          new_r.strength AS existing_strength
                     SET new_r += rel_props
                     WITH r, new_r, rel_props, existing_strength,
+                         existing_description_sources, existing_strength_sources,
                          reduce(acc = [], item IN existing_chunks +
                            coalesce(rel_props.source_chunk_ids, []) |
                            CASE WHEN item IN acc THEN acc ELSE acc + [item] END
                          ) AS merged_chunks,
                          reduce(acc = [], item IN existing_descriptions +
-                           CASE WHEN rel_props.description IS NULL THEN []
-                                ELSE [rel_props.description] END |
+                           coalesce(rel_props.descriptions,
+                             CASE WHEN rel_props.description IS NULL THEN []
+                                  ELSE [rel_props.description] END) |
                            CASE WHEN item IN acc THEN acc ELSE acc + [item] END
                          ) AS merged_descriptions
-                    SET new_r.source_chunk_ids = merged_chunks,
+                    SET new_r.description_sources = reduce(
+                          acc = [], item IN existing_description_sources + coalesce(rel_props.description_sources, []) |
+                          CASE WHEN item IN acc THEN acc ELSE acc + [item] END),
+                        new_r.strength_sources = reduce(
+                          acc = [], item IN existing_strength_sources + coalesce(rel_props.strength_sources, []) |
+                          CASE WHEN item IN acc THEN acc ELSE acc + [item] END),
+                        new_r.source_chunk_ids = merged_chunks,
                         new_r.observation_count = size(merged_chunks),
                         new_r.weight = toFloat(size(merged_chunks)),
                         new_r.descriptions = merged_descriptions,
                         new_r.description = reduce(text = '', item IN merged_descriptions |
                           text + CASE WHEN text = '' THEN '' ELSE '\n' END + item),
+                        new_r.description_summary_status = null,
+                        new_r.description_input_fingerprint = null,
+                        new_r.description_summary_error = null,
+                        new_r.description_summary_updated = null,
                         new_r.description_summary_fallback = true,
                         new_r.strength = CASE
                           WHEN existing_strength IS NULL THEN rel_props.strength
@@ -262,24 +292,38 @@ class _MemgraphEntityResolver(BaseEntityResolver):
                          coalesce(new_r.descriptions,
                            CASE WHEN new_r.description IS NULL THEN []
                                 ELSE [new_r.description] END) AS existing_descriptions,
+                         coalesce(new_r.description_sources, []) AS existing_description_sources,
+                         coalesce(new_r.strength_sources, []) AS existing_strength_sources,
                          new_r.strength AS existing_strength
                     SET new_r += rel_props
                     WITH r, new_r, rel_props, existing_strength,
+                         existing_description_sources, existing_strength_sources,
                          reduce(acc = [], item IN existing_chunks +
                            coalesce(rel_props.source_chunk_ids, []) |
                            CASE WHEN item IN acc THEN acc ELSE acc + [item] END
                          ) AS merged_chunks,
                          reduce(acc = [], item IN existing_descriptions +
-                           CASE WHEN rel_props.description IS NULL THEN []
-                                ELSE [rel_props.description] END |
+                           coalesce(rel_props.descriptions,
+                             CASE WHEN rel_props.description IS NULL THEN []
+                                  ELSE [rel_props.description] END) |
                            CASE WHEN item IN acc THEN acc ELSE acc + [item] END
                          ) AS merged_descriptions
-                    SET new_r.source_chunk_ids = merged_chunks,
+                    SET new_r.description_sources = reduce(
+                          acc = [], item IN existing_description_sources + coalesce(rel_props.description_sources, []) |
+                          CASE WHEN item IN acc THEN acc ELSE acc + [item] END),
+                        new_r.strength_sources = reduce(
+                          acc = [], item IN existing_strength_sources + coalesce(rel_props.strength_sources, []) |
+                          CASE WHEN item IN acc THEN acc ELSE acc + [item] END),
+                        new_r.source_chunk_ids = merged_chunks,
                         new_r.observation_count = size(merged_chunks),
                         new_r.weight = toFloat(size(merged_chunks)),
                         new_r.descriptions = merged_descriptions,
                         new_r.description = reduce(text = '', item IN merged_descriptions |
                           text + CASE WHEN text = '' THEN '' ELSE '\n' END + item),
+                        new_r.description_summary_status = null,
+                        new_r.description_input_fingerprint = null,
+                        new_r.description_summary_error = null,
+                        new_r.description_summary_updated = null,
                         new_r.description_summary_fallback = true,
                         new_r.strength = CASE
                           WHEN existing_strength IS NULL THEN rel_props.strength

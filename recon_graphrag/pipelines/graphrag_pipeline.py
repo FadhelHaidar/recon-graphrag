@@ -939,7 +939,7 @@ class GraphBuilderPipeline:
 
     async def _backfill_descriptions(self):
         """Set description = '' on __Entity__ nodes missing the property."""
-        self.graph_store.backfill_descriptions()
+        await asyncio.to_thread(self.graph_store.backfill_descriptions)
 
     async def _resolve_entities(self):
         """Step 2: Merge duplicate entities with the internal resolver."""

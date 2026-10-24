@@ -231,14 +231,14 @@ How it works:
 | `llm` | An LLM instance from `create_llm()`. |
 | `embedder` | An embedder instance from `create_embedder()`. |
 | `graph_name` | Graph scope for all created nodes and relationships. Defaults to `"entity-graph"`. |
-| `graph_writer` | Optional `GraphWriter` implementation. When omitted, the pipeline writes directly to `graph_store`. |
+| `graph_writer` | Optional `GraphWriter` implementation. When omitted, the pipeline uses the shared `CypherGraphWriter` for Neo4j/Memgraph replacement semantics. |
 | `perform_entity_resolution` | When `True` (default), resolves duplicate entities after extraction. Set to `False` to skip resolution. |
 | `summarize_descriptions` | When `True` (default), runs a mandatory LLM pass after entity resolution to collapse raw entity and relationship `descriptions` arrays into scalar `description` summaries before embedding. |
 | `summarization_concurrency` | Maximum concurrent description summarization calls. Defaults to `5`. |
 | `summarization_limit` | Batch size for fetching unsummarized entities or relationships. Defaults to `500`. |
 | `embed_entities` | When `True` (default), embeds entity nodes after extraction and resolution. Set to `False` to skip embedding. |
 | `fail_on_resolution_error` | When `True`, raises resolution errors instead of logging and continuing. Defaults to `False`. |
-| `fail_on_embedding_error` | When `True`, the build fails instead of logging and continuing when the embedding stage cannot complete: after the embedding pass the pipeline re-checks the graph and raises if any entity in the configured graph still lacks an embedding (for example, because the embedding provider or vector write failed). Defaults to `False`. |
+| `fail_on_embedding_error` | When `True`, the build fails instead of logging and continuing when the embedding stage cannot complete: after the embedding pass the pipeline re-checks the graph and raises if any entity in the configured graph has a missing or stale embedding (for example, because input/model changed or the provider/vector write failed). Defaults to `False`. |
 
 ### `GraphBuilderPipeline` entity resolution parameters
 
@@ -287,6 +287,8 @@ pipeline = GraphBuilderPipeline(
     allow_ai_auto_merge=True,
 )
 ```
+
+The default `normalized` strategy also applies configured conflict properties. Matching names without a known conflict remain a heuristic, not proof of identity. Extracted IDs such as `p1` are local to a chunk; absent a trusted canonical/domain key, observations get document-and-chunk-scoped persistent IDs and are left for resolution to merge.
 
 Conflict properties are conservative: missing values do not block a merge, but
 two non-empty unequal values do. Blocked candidates are returned in
@@ -391,10 +393,24 @@ Claims are automatically available downstream:
 Claims are optional. The pipeline works without them; they simply add another
 layer of structured evidence when enabled.
 
+### Document replacement and legacy graphs
+
+The default writer replaces one document's contribution within its `graph_name`, including when called through `store.write_graph_document()`. Reusing the same document ID removes obsolete chunks, evidence and claims, replaces descriptions, and recomputes relationship chunk counts, weights and maximum strength from surviving document contributions. Shared evidence/descriptions survive; only unreferenced entities and relationships without surviving evidence are deleted.
+
+Use stable `metadata["document_id"]` to identify updates explicitly. Otherwise the ID hashes the exact source/title, or the text when neither is supplied. Changing text without stable source/ID metadata creates a separate document; it cannot be recognized as a replacement automatically. Replacing the same ID in another graph is independent.
+
+Description ownership (`description_sources`) and optional relationship strength ownership (`strength_sources`) are internal flat lists of JSON-encoded contribution records, compatible with both databases. Do not supply these fields. If legacy descriptions or strength have unknown ownership, the writer raises a migration diagnostic before writing. Identical text is not ownership evidence. Rebuild the affected documents/graph from their sources through the current writer; index creation alone cannot reconstruct ownership. Already mismerged identities also require rebuilding.
+
+Changed description inputs invalidate summaries and vectors. Removing an observation rebuilds raw text from the surviving contributions rather than retaining an obsolete summary. The embedding pass checks both input and provider/model fingerprints; changing a model refreshes vectors even when text is unchanged. Stale in-flight embedding results cannot certify newer input. Low-level vector writes without fingerprints remain supported but clear freshness certification and need a normal embedding pass before strict completion.
+
+Replacement uses multiple database queries: it is **not a document-wide transaction**. A failure can leave partial writes, and concurrent replacement of the same document is not serialized. There are no automatic ingestion retries. `write_stats` still reports input counts, not a transactional persistence receipt. Custom writers must define their own guarantees.
+
+Blocking database calls in pipeline writes/backfill/validation, description summarization, entity embedding, and resolver preflight/load/merge run through `asyncio.to_thread`. Cancellation does not terminate an in-flight database call or undo its writes.
+
 ### Tips
 
-- Run `store.create_indexes()` before the first build.
-- The pipeline can be run multiple times on new text; it appends to the existing graph.
+- Run `store.create_indexes()` before the first build and before starting concurrent writers; see [identity constraints](04-indexing.md#identity-constraints-and-existing-graphs).
+- New document IDs extend the graph; an existing document ID replaces that document's contribution.
 - Pass `metadata` to link extracted chunks and entities back to any source
   shape: documents, pages, database rows, tickets, API objects, or list items.
 
@@ -404,19 +420,20 @@ Entity embedding is best-effort by default: provider or vector-write errors are
 logged and the build continues. With `fail_on_embedding_error=True` (or when you
 ask for strict completion directly), the build raises
 `RuntimeError("Entity embedding incomplete ...")` if any entity in the configured
-graph still lacks an embedding after the embedding pass. The check is
-graph-wide and point-in-time: it proves "no entity is missing a vector right
-now" in `graph_name` — not global coverage, vector freshness, or that every
-intended document was ingested.
+graph has a missing or stale embedding after the embedding pass. The check is
+graph-wide and point-in-time: each entity must have a vector with current input
+and provider/model fingerprints in `graph_name`. It does not prove global
+coverage, atomicity under concurrent writers, or that every intended document
+was ingested.
 
 A failed strict build keeps earlier work: extraction results, graph writes,
 entity resolution, and any successfully stored vectors are retained; only
-unembedded entities stay without vectors. It does not roll back partial writes,
+missing/stale entities remain pending. It does not roll back partial writes,
 and extraction is not replayed for you.
 
 To recover, call `complete_embeddings()` on a pipeline pointing at the same
-graph store, embedder, and `graph_name`. It embeds only the entities that still
-lack vectors, verifies completion, and raises if anything remains:
+graph store, embedder, and `graph_name`. It embeds entities with missing or stale
+vectors, verifies freshness/completion, and raises if anything remains:
 
 ```python
 pipeline = GraphBuilderPipeline(
@@ -426,7 +443,7 @@ pipeline = GraphBuilderPipeline(
 try:
     await pipeline.build_from_text(text, schema=schema)
 except RuntimeError:
-    # Later, once the provider is healthy: no re-extraction, missing vectors only
+    # Later, once the provider is healthy: refresh pending vectors, no extraction
     await pipeline.complete_embeddings()
 ```
 

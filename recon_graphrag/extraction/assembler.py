@@ -76,10 +76,9 @@ class GraphDocumentAssembler:
                     if identity_value:
                         canonical_key = f"{node.label}:{identity_value}"
                     else:
-                        # Name/title-only record: scope by document so reused
-                        # local IDs and identical names from other documents
-                        # stay separate until resolution merges on evidence.
-                        canonical_key = f"{document_id}:{node.label}:{node.id}"
+                        # Local IDs are chunk-scoped; only trusted identity
+                        # can merge observations across chunks.
+                        canonical_key = f"{document_id}:{chunk.id}:{node.label}:{node.id}"
                 chunk_keys[node.id] = canonical_key
 
                 entity_id = _build_entity_uuid(graph_name, canonical_key)

@@ -288,7 +288,7 @@ def test_upsert_vectors_records_content_and_model_fingerprints():
         model_fingerprint="model-1",
     )
 
-    query, params = driver.calls[0]
+    query, params = driver.calls[-1]
     assert "n.embedding_content_fingerprint" in query
     assert "n.embedding_input_fingerprint" in query
     assert "n.embedding_model_fingerprint" in query

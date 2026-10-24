@@ -4,10 +4,11 @@ from uuid import UUID
 
 from recon_graphrag.extraction.assembler import GraphDocumentAssembler
 from recon_graphrag.extraction.chunking import TextChunk
-from recon_graphrag.extraction.types import ExtractedClaim, GraphExtraction
 from recon_graphrag.extraction.types import (
+    ExtractedClaim,
     ExtractedNode,
     ExtractedRelationship,
+    GraphExtraction,
 )
 
 
@@ -20,15 +21,15 @@ def test_assembler_deduplicates_entities():
     extractions = {
         "c1": GraphExtraction(
             nodes=[
-                ExtractedNode(id="p1", label="Person", properties={"name": "Alice"}),
-                ExtractedNode(id="p2", label="Person", properties={"name": "Bob"}),
+                ExtractedNode(id="p1", label="Person", properties={"name": "Alice", "canonical_key": "Person:Alice"}),
+                ExtractedNode(id="p2", label="Person", properties={"name": "Bob", "canonical_key": "Person:Bob"}),
             ],
             relationships=[],
         ),
         "c2": GraphExtraction(
             nodes=[
-                ExtractedNode(id="p1", label="Person", properties={"name": "Alice"}),
-                ExtractedNode(id="p2", label="Person", properties={"name": "Bob"}),
+                ExtractedNode(id="p1", label="Person", properties={"name": "Alice", "canonical_key": "Person:Alice"}),
+                ExtractedNode(id="p2", label="Person", properties={"name": "Bob", "canonical_key": "Person:Bob"}),
             ],
             relationships=[],
         ),
@@ -42,14 +43,12 @@ def test_assembler_deduplicates_entities():
         graph_name="entity-graph",
     )
     assert len(result.entities) == 2
-    # Reused chunk-local IDs must not be global identity: they are scoped to
-    # their own document so re-occurring "p1" from another document stays a
-    # separate node until resolution merges on real evidence.
+    # Trusted canonical keys merge observations across chunks.
     assert {e.canonical_key for e in result.entities} == {
-        "doc1:Person:p1",
-        "doc1:Person:p2",
+        "Person:Alice",
+        "Person:Bob",
     }
-    assert {e.human_readable_id for e in result.entities} == {"p1", "p2"}
+    assert {e.human_readable_id for e in result.entities} == {"Person:Alice", "Person:Bob"}
     assert all(UUID(e.id) for e in result.entities)
 
 
@@ -62,8 +61,8 @@ def test_assembler_deduplicates_relationships_and_aggregates_weight():
     extractions = {
         "c1": GraphExtraction(
             nodes=[
-                ExtractedNode(id="p1", label="Person", properties={"name": "Alice"}),
-                ExtractedNode(id="p2", label="Person", properties={"name": "Bob"}),
+                ExtractedNode(id="p1", label="Person", properties={"name": "Alice", "canonical_key": "Person:Alice"}),
+                ExtractedNode(id="p2", label="Person", properties={"name": "Bob", "canonical_key": "Person:Bob"}),
             ],
             relationships=[
                 ExtractedRelationship(
@@ -76,8 +75,8 @@ def test_assembler_deduplicates_relationships_and_aggregates_weight():
         ),
         "c2": GraphExtraction(
             nodes=[
-                ExtractedNode(id="p1", label="Person", properties={"name": "Alice"}),
-                ExtractedNode(id="p2", label="Person", properties={"name": "Bob"}),
+                ExtractedNode(id="p1", label="Person", properties={"name": "Alice", "canonical_key": "Person:Alice"}),
+                ExtractedNode(id="p2", label="Person", properties={"name": "Bob", "canonical_key": "Person:Bob"}),
             ],
             relationships=[
                 ExtractedRelationship(
@@ -103,13 +102,13 @@ def test_assembler_deduplicates_relationships_and_aggregates_weight():
     assert rel.strength == 1.0  # first extracted weight
     assert rel.properties["weight"] == 2.0  # Leiden observation weight
     assert rel.properties["canonical_key"] == (
-        "doc1:Person:p1:KNOWS:doc1:Person:p2"
+        "Person:Alice:KNOWS:Person:Bob"
     )
     assert rel.properties["human_readable_id"] == (
-        "doc1:Person:p1:KNOWS:doc1:Person:p2"
+        "Person:Alice:KNOWS:Person:Bob"
     )
-    assert rel.properties["source_canonical_key"] == "doc1:Person:p1"
-    assert rel.properties["target_canonical_key"] == "doc1:Person:p2"
+    assert rel.properties["source_canonical_key"] == "Person:Alice"
+    assert rel.properties["target_canonical_key"] == "Person:Bob"
     assert set(rel.properties["source_chunk_ids"]) == {"c1", "c2"}
 
 
@@ -276,8 +275,8 @@ def test_assembler_claims_from_multiple_chunks():
     entity_ids = {c.entity_id for c in result.claims}
     assert entity_ids == {e.id for e in result.entities}
     assert {e.canonical_key for e in result.entities} == {
-        "doc1:Person:person:alice",
-        "doc1:Person:person:bob",
+        "doc1:c1:Person:person:alice",
+        "doc1:c2:Person:person:bob",
     }
 
 
@@ -298,7 +297,7 @@ def _node(eid: str, description: str) -> ExtractedNode:
     return ExtractedNode(
         id=eid,
         label="Person",
-        properties={"name": "Alice" if eid == "e1" else "Bob", "description": description},
+        properties={"canonical_key": f"doc1:Person:{eid}", "name": "Alice" if eid == "e1" else "Bob", "description": description},
     )
 
 
@@ -538,8 +537,8 @@ def test_reused_local_id_across_documents_stays_separate():
         metadata={},
         graph_name="entity-graph",
     )
-    assert doc1.entities[0].canonical_key == "doc1:Person:p1"
-    assert doc2.entities[0].canonical_key == "doc2:Person:p1"
+    assert doc1.entities[0].canonical_key == "doc1:doc1:chunk:0:Person:p1"
+    assert doc2.entities[0].canonical_key == "doc2:doc2:chunk:0:Person:p1"
     assert doc1.entities[0].id != doc2.entities[0].id
 
 
@@ -699,7 +698,7 @@ def test_identity_property_without_value_falls_back_to_surrogate():
         graph_name="entity-graph",
         identity_properties={"Person": "person_no"},
     )
-    assert result.entities[0].canonical_key == "doc1:Person:p1"
+    assert result.entities[0].canonical_key == "doc1:c1:Person:p1"
 
 
 def test_explicit_canonical_key_wins_over_surrogate():
@@ -730,3 +729,37 @@ def test_explicit_canonical_key_wins_over_surrogate():
     )
     assert result.entities[0].canonical_key == "Product:Widget"
     assert result.entities[0].human_readable_id == "Product:Widget"
+
+
+def test_chunk_local_ids_keep_endpoints_claims_and_citations_separate():
+    chunks = [_chunk("c1", "Alice knows Shared"), _chunk("c2", "Bob knows Shared", 1)]
+    extractions = {
+        chunk.id: GraphExtraction(
+            nodes=[
+                ExtractedNode(id="p1", label="Person", properties={"name": name}),
+                ExtractedNode(id="p2", label="Person", properties={"canonical_key": "shared"}),
+            ],
+            relationships=[ExtractedRelationship(source_id="p1", target_id="p2", type="KNOWS", properties={})],
+        )
+        for chunk, name in zip(chunks, ["Alice", "Bob"], strict=True)
+    }
+    claims = {
+        chunk.id: [ExtractedClaim(subject_entity_id="p1", object_entity_id="p2", claim_type="role", description=chunk.text)]
+        for chunk in chunks
+    }
+    result = GraphDocumentAssembler().assemble("doc", "hash", chunks, extractions, {}, "g", chunk_claims=claims)
+    entities = {entity.canonical_key: entity for entity in result.entities}
+    assert len(entities) == 3
+    shared_id = entities["shared"].id
+    assert len(entities["shared"].description_observations) == 2
+    for chunk, name in zip(chunks, ["Alice", "Bob"], strict=True):
+        entity = entities[f"doc:{chunk.id}:Person:p1"]
+        assert entity.properties["name"] == name
+        assert entity.description_observations[0].source.chunk_id == chunk.id
+        rel = next(rel for rel in result.relationships if rel.source_id == entity.id)
+        assert rel.target_id == shared_id
+        assert rel.properties["source_chunk_ids"] == [chunk.id]
+        claim = next(claim for claim in result.claims if claim.entity_id == entity.id)
+        assert claim.object_entity_id == shared_id
+        assert claim.source.chunk_id == claim.text_unit_id == chunk.id
+        assert {(link.chunk_id, link.entity_id) for link in result.evidence_links if link.chunk_id == chunk.id} == {(chunk.id, entity.id), (chunk.id, shared_id)}

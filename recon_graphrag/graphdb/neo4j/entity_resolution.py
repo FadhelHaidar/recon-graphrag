@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from recon_graphrag.graphdb._provenance import (
+    build_uid,
+    preflight_merge_ownership,
+    raw_descriptions,
+)
 from recon_graphrag.graphdb.entity_resolution import (
     BaseEntityResolver,
     _EntityRecord,
@@ -71,6 +76,7 @@ class _Neo4jEntityResolver(BaseEntityResolver):
     def _merge_groups(
         self, groups: list[list[_EntityRecord]], resolve_property: str
     ) -> int:
+        preflight_merge_ownership(self.graph_store, groups, "elementId")
         merged_nodes = 0
         for group in groups:
             sorted_group = sorted(
@@ -103,21 +109,39 @@ class _Neo4jEntityResolver(BaseEntityResolver):
                 f"""
                 MATCH (n)
                 WHERE elementId(n) IN $node_ids
-                WITH collect(n) AS nodes
+                OPTIONAL MATCH (n)-[r]-()
+                WITH n, r ORDER BY apoc.coll.indexOf($node_ids, elementId(n))
+                WITH collect(DISTINCT n) AS nodes, collect(DISTINCT r) AS rels
+                // APOC combine fails on empty arrays; null carries the same empty ownership.
+                FOREACH (n IN nodes |
+                    SET n.descriptions = CASE WHEN n.descriptions = [] THEN null ELSE n.descriptions END,
+                        n.description_sources = CASE WHEN n.description_sources = [] THEN null ELSE n.description_sources END)
+                FOREACH (r IN rels |
+                    SET r.descriptions = CASE WHEN r.descriptions = [] THEN null ELSE r.descriptions END,
+                        r.description_sources = CASE WHEN r.description_sources = [] THEN null ELSE r.description_sources END,
+                        r.strength_sources = CASE WHEN r.strength_sources = [] THEN null ELSE r.strength_sources END,
+                        r.source_chunk_ids = CASE WHEN r.source_chunk_ids = [] THEN null ELSE r.source_chunk_ids END)
+                WITH nodes
                 CALL apoc.refactor.mergeNodes(
                     nodes,
-                    {{properties: 'combine', mergeRels: true}}
+                    {{properties: {{uid: 'discard', id: 'discard', graph_name: 'discard', `.*`: 'combine'}},
+                      mergeRels: true}}
                 ) YIELD node
                 SET node.{escape_cypher_identifier(resolve_property)} = $canonical_name,
                     node.id = $canonical_entity_id,
+                    node.uid = $canonical_uid,
+                    node.graph_name = $canonical_graph_name,
                     node.canonical_key = coalesce($canonical_key, node.canonical_key),
                     node.human_readable_id = coalesce($canonical_readable_id, node.human_readable_id),
-                    node.embedding = null
+                    node.embedding = null,
+                    node.embedding_input_fingerprint = null
                 RETURN elementId(node) AS merged_id
                 """,
                 {
                     "node_ids": node_ids,
                     "canonical_entity_id": canonical_entity_id,
+                    "canonical_uid": build_uid(sorted_group[0].graph_name, canonical_entity_id),
+                    "canonical_graph_name": sorted_group[0].graph_name,
                     "canonical_key": canonical_key,
                     "canonical_readable_id": canonical_readable_id,
                     "canonical_name": canonical_name,
@@ -127,20 +151,33 @@ class _Neo4jEntityResolver(BaseEntityResolver):
                 merged_nodes += len(node_ids)
                 merged_id = result[0].get("merged_id")
                 if merged_id:
-                    # apoc.refactor.mergeNodes(properties: 'combine') collapses a
-                    # single-valued list property into a scalar: when two duplicate
-                    # relationships each carry the same one-element source_chunk_ids
-                    # (a shared edge extracted from a single chunk), 'combine' dedupes
-                    # to one value and unwraps the list. Downstream list consumers
-                    # (the flatten below, retrieval, and the graph writer) all assume
-                    # a list, so re-wrap any scalar left on the merged node's rels.
+                    # APOC can unwrap singleton provenance on nodes and edges.
                     self.graph_store.execute_query(
                         """
-                        MATCH (n)-[r]-() WHERE elementId(n) = $node_id
-                          AND r.source_chunk_ids IS NOT NULL
-                          AND NOT apoc.meta.cypher.type(r.source_chunk_ids)
-                              CONTAINS 'LIST'
-                        SET r.source_chunk_ids = [r.source_chunk_ids]
+                        MATCH (n) WHERE elementId(n) = $node_id
+                        SET n.description_sources = apoc.convert.toList(n.description_sources)
+                        WITH n
+                        MATCH (n)-[r]-()
+                        SET r.source_chunk_ids = apoc.convert.toList(r.source_chunk_ids),
+                            r.description_sources = apoc.convert.toList(r.description_sources),
+                            r.strength_sources = apoc.convert.toList(r.strength_sources)
+                        WITH DISTINCT r,
+                             apoc.coll.toSet(apoc.convert.toList(r.source_chunk_ids)) AS chunks,
+                             apoc.coll.toSet(CASE
+                               WHEN r.descriptions IS NOT NULL
+                               THEN apoc.convert.toList(r.descriptions)
+                               ELSE apoc.convert.toList(r.description) END) AS descriptions
+                        SET r.source_chunk_ids = chunks,
+                            r.observation_count = size(chunks),
+                            r.weight = toFloat(size(chunks)),
+                            r.strength = apoc.coll.max(apoc.convert.toList(r.strength)),
+                            r.descriptions = descriptions,
+                            r.description = apoc.text.join(descriptions, '\n'),
+                            r.description_summary_status = null,
+                            r.description_input_fingerprint = null,
+                            r.description_summary_error = null,
+                            r.description_summary_updated = null,
+                            r.description_summary_fallback = true
                         """,
                         {"node_id": merged_id},
                     )
@@ -151,29 +188,18 @@ class _Neo4jEntityResolver(BaseEntityResolver):
                         MATCH (n) WHERE elementId(n) = $node_id
                         SET n.descriptions = $descriptions,
                             n.description = $description,
+                            n.embedding_input_fingerprint = null,
                             n.observation_count = size($descriptions),
                             n.description_input_fingerprint = $fingerprint,
                             n.description_summary_fallback = $fallback
-                        WITH n
-                        MATCH (n)-[r]-()
-                        WITH r,
-                             apoc.coll.toSet(apoc.coll.flatten(
-                               apoc.convert.toList(r.source_chunk_ids)
-                             )) AS chunks,
-                             apoc.coll.toSet(
-                               coalesce(r.descriptions, []) +
-                               coalesce(apoc.convert.toList(r.description), [])
-                             ) AS descriptions
-                        SET r.source_chunk_ids = chunks,
-                            r.observation_count = size(chunks),
-                            r.weight = toFloat(size(chunks)),
-                            r.descriptions = descriptions,
-                            r.description = apoc.text.join(descriptions, '\n'),
-                            r.description_summary_fallback = true
                         """,
                         {
                             "node_id": merged_id,
-                            "descriptions": summary["descriptions"],
+                            "descriptions": list(dict.fromkeys(
+                                text for entity in sorted_group
+                                for text in raw_descriptions(entity.properties)
+                                if text
+                            )),
                             "description": summary["description"],
                             "fingerprint": summary["description_input_fingerprint"],
                             "fallback": summary["description_summary_fallback"],

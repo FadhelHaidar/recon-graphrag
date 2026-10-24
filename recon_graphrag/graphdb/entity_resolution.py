@@ -158,7 +158,7 @@ class BaseEntityResolver(ABC):
         resolve_property: str = "name",
         dry_run: bool = False,
     ) -> dict:
-        preflight_result = self._preflight(dry_run=dry_run)
+        preflight_result = await asyncio.to_thread(self._preflight, dry_run=dry_run)
         if preflight_result is not None:
             return preflight_result
         entities = await asyncio.to_thread(self._load_entities, graph_name, resolve_property)
@@ -180,7 +180,7 @@ class BaseEntityResolver(ABC):
         dry_run: bool = False,
         conflict_properties: dict[str, list[str]] | list[str] | None = None,
     ) -> dict:
-        preflight_result = self._preflight(dry_run=dry_run)
+        preflight_result = await asyncio.to_thread(self._preflight, dry_run=dry_run)
         if preflight_result is not None:
             return preflight_result
         entities = await asyncio.to_thread(self._load_entities, graph_name, resolve_property)
@@ -208,7 +208,7 @@ class BaseEntityResolver(ABC):
         review_threshold: float = 85.0,
         max_candidates_per_entity: int = 20,
     ) -> dict:
-        preflight_result = self._preflight(dry_run=dry_run)
+        preflight_result = await asyncio.to_thread(self._preflight, dry_run=dry_run)
         if preflight_result is not None:
             return preflight_result
         entities = await asyncio.to_thread(self._load_entities, graph_name, resolve_property)
@@ -245,7 +245,7 @@ class BaseEntityResolver(ABC):
         conflict_properties: dict[str, list[str]] | list[str] | None = None,
         context_mode: str = "safe_defaults",
     ) -> dict:
-        preflight_result = self._preflight(dry_run=dry_run)
+        preflight_result = await asyncio.to_thread(self._preflight, dry_run=dry_run)
         if preflight_result is not None:
             return preflight_result
         entities = await asyncio.to_thread(self._load_entities, graph_name, resolve_property)
@@ -333,8 +333,7 @@ class BaseEntityResolver(ABC):
             observations: list[str] = []
             for entity in group:
                 values = entity.properties.get("descriptions", [])
-                if not isinstance(values, list):
-                    values = [values]
+                values = list(values) if isinstance(values, list) else [values]
                 description = entity.properties.get("description")
                 if description:
                     values.append(description)

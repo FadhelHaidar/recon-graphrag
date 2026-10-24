@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, LiteralString, Optional, cast
 if TYPE_CHECKING:
     import neo4j
 
+from recon_graphrag.entity_text import entity_embedding_fingerprint
 from recon_graphrag.extraction.types import GraphDocument
 from recon_graphrag.graphdb.cypher import (
     cypher_string_literal,
@@ -264,6 +265,8 @@ class MemgraphGraphStore(BaseGraphStore):
         """Batch upsert vector embeddings onto nodes matched by id()."""
         if len(node_ids) != len(vectors):
             raise ValueError("node_ids and vectors must have the same length")
+        if content_fingerprints is not None and len(content_fingerprints) != len(node_ids):
+            raise ValueError("node_ids and content_fingerprints must have the same length")
         if not node_ids:
             return
 
@@ -279,18 +282,50 @@ class MemgraphGraphStore(BaseGraphStore):
                 content_fingerprints or [None] * len(node_ids),
             )
         ]
+        # NULL expected input also occurs after summarization; validate its text
+        # and compare the snapshot again in the write, not just in this read.
+        if content_fingerprints is not None:
+            legacy_inputs = self.execute_query(
+                """
+                MATCH (n)
+                WHERE id(n) IN $node_ids
+                  AND n.embedding_input_fingerprint IS NULL
+                RETURN id(n) AS id, labels(n) AS labels,
+                       n.name AS name, n.description AS description
+                """,
+                {"node_ids": node_ids},
+            )
+            snapshots = {node["id"]: node for node in legacy_inputs}
+            for row in rows:
+                snapshot = snapshots.get(row["id"])
+                if snapshot is not None and entity_embedding_fingerprint(
+                    labels=snapshot["labels"],
+                    name=snapshot["name"],
+                    description=snapshot["description"],
+                ) == row["content_fingerprint"]:
+                    row["legacy_input"] = snapshot
+
         self.execute_query(
             f"""
             UNWIND $rows AS row
             MATCH (n)
             WHERE id(n) = row.id
+              AND (row.content_fingerprint IS NULL
+                   OR n.embedding_input_fingerprint = row.content_fingerprint
+                   OR (n.embedding_input_fingerprint IS NULL
+                       AND row.legacy_input IS NOT NULL
+                       AND labels(n) = row.legacy_input.labels
+                       AND (n.name = row.legacy_input.name
+                            OR (n.name IS NULL AND row.legacy_input.name IS NULL))
+                       AND (n.description = row.legacy_input.description
+                            OR (n.description IS NULL AND row.legacy_input.description IS NULL))))
             SET n.{escape_cypher_identifier(embedding_property)} = row.vector,
-                n.embedding_content_fingerprint = coalesce(row.content_fingerprint, n.embedding_content_fingerprint),
-                n.embedding_input_fingerprint = coalesce(row.content_fingerprint, n.embedding_input_fingerprint),
-                n.embedding_model_fingerprint = coalesce($model_fingerprint, n.embedding_model_fingerprint)
+                n.embedding_content_fingerprint = row.content_fingerprint,
+                n.embedding_input_fingerprint = coalesce(n.embedding_input_fingerprint, row.content_fingerprint),
+                n.embedding_model_fingerprint = $model_fingerprint
             RETURN count(n) AS updated_count
             """,
-            {"rows": rows},
+            {"rows": rows, "model_fingerprint": model_fingerprint},
         )
 
     # ------------------------------------------------------------------

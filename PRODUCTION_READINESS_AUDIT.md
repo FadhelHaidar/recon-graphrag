@@ -2,13 +2,13 @@
 
 **Verdict: not production-ready as a general-purpose, reusable GraphRAG SDK.**
 
-The implementation has a substantial test suite and useful separation between extraction, graph storage, and retrieval. However, several confirmed behaviors can silently corrupt graph identity, leave partially updated data, or report success without usable embeddings. Sharing a database between graphs is particularly unsafe.
+The original audit found identity corruption, partial writes and misleading success reporting. Subsequent corrections on `prod-hardening` address graph-scoped embeddings, source identity, reserved fields and the F4/F7/F8 defects below, with deterministic and bounded live AI/database evidence. Partial-write behavior, destructive maintenance, scaling limits and other open findings still prevent a general production-readiness claim.
 
 It is suitable for **controlled evaluation and supervised batch workflows**, subject to the constraints below. A supported document count, graph size, or query throughput has not been established.
 
-**Audited revision:** `46db746`, package version `0.10.1`.
+**Original audited revision:** `46db746`, package version `0.10.1`. Original locations and reproductions below are historical unless identified as corrective-pass evidence.
 
-**Implementation changes:** none during the audit; the tracked working tree was clean when audit checks concluded. This report was subsequently saved at the user's request.
+**Corrective scope:** follow-up patch to `6160f86` on `prod-hardening`, including the F4/F7/F8 review corrections, regression tests and documentation. Current verification includes 1,182 deterministic passes, 34 real-backend regression/smoke passes, and 4 live AI/database passes; skips and remaining limits are detailed at the end of this report.
 
 ## Workloads and deployment constraints
 
@@ -17,7 +17,7 @@ A defensible evaluation deployment would have:
 - One graph/security domain per database—not merely separate `graph_name` values.
 - A single ingestion/maintenance writer, with community and index rebuilds outside query-serving periods.
 - Curated, stable document and entity identifiers.
-- Immutable or append-oriented inputs; no assumption that reingesting changed documents replaces their previous evidence.
+- Sequential document updates using stable source identities and known contribution ownership; no assumption of atomic or safe concurrent replacement. Legacy records with unknown ownership require migration/rebuild.
 - Entity-resolution rules reviewed for the domain; normalized-name auto-merging disabled where homonyms are possible.
 - Explicit post-ingestion checks for vector coverage, dangling evidence, and expected document counts.
 - Caller-controlled provider deadlines, spending limits, backups, and database privileges.
@@ -33,20 +33,20 @@ These constraints do **not** establish a production capacity. Unattended mutable
 - **Risk:** the mechanism is present, but its production frequency or performance impact needs live testing.
 - Database effects inferred from generated Cypher are distinguished from live database reproductions below.
 
-| ID | Severity | Finding and production impact | Evidence |
+| ID | Severity | Original finding and production impact | Current status and evidence |
 |---|---|---|---|
-| F1 | High | Entity embedding ignores graph scope; one graph's run can embed another graph's data using the wrong provider/model. | Confirmed |
-| F2 | High | Source-derived document IDs collide, allowing unrelated documents and chunks to overwrite each other. | Confirmed |
-| F3 | High | Metadata/properties can overwrite reserved identity and scope fields during persistence. | Confirmed query construction |
-| F4 | High | Changed-document ingestion does not prune obsolete evidence; entity vectors are not invalidated when their input changes. | Fixed |
-| F5 | High | Community and index maintenance delete existing resources before replacement succeeds. | Confirmed ordering |
-| F6 | High | Embedding failures can be reported as success; graph writes are partial and reported counts are input counts. | Confirmed |
-| F7 | High | Default entity resolution merges homonyms; extraction identity mistakes can collapse entities before resolution. | Fixed |
-| F8 | High for concurrent use | Synchronous database operations block async callers; core node identities lack uniqueness constraints. | Fixed (mechanisms); live race/heartbeat measurement outstanding |
-| F9 | High as data grows | Full materialization, quadratic candidate generation, and unbounded neighborhood expansion create scaling limits. | Confirmed mechanisms; thresholds unmeasured |
-| F10 | Medium | Citation failures can disappear silently; one retrieval mode ignores citation-metadata options. | Confirmed |
-| F11 | Medium | Invalid concurrency can hang ingestion; malformed externally written reports can cause a non-progress loop. | Reproduced, with qualifications |
-| F12 | Medium | Lockfile drift, limited mandatory integration coverage, and inconsistent diagnostic sanitization weaken operational confidence. | Confirmed / conditional risk |
+| F1 | High | Entity embedding ignores graph scope; one graph's run can embed another graph's data using the wrong provider/model. | Scope defect fixed; cross-graph regression passes. Global candidate-window recall risk remains. |
+| F2 | High | Source-derived document IDs collide, allowing unrelated documents and chunks to overwrite each other. | Fixed with collision-resistant source identity; regressions pass. |
+| F3 | High | Metadata/properties can overwrite reserved identity and scope fields during persistence. | Fixed with pre-write reserved-field validation, including UID; regressions pass. |
+| F4 | High | Changed-document ingestion does not prune obsolete evidence; entity vectors are not invalidated when their input changes. | Corrected; replacement/vector regressions and live AI E2E pass on both backends. Atomicity/concurrent replacement remain excluded. |
+| F5 | High | Community and index maintenance delete existing resources before replacement succeeds. | Open; confirmed ordering. Maintenance safety was excluded from this patch. |
+| F6 | High | Embedding failures can be reported as success; graph writes are partial and reported counts are input counts. | Partially fixed: strict embedding completion/recovery implemented. Rollback and write-count accuracy remain open. |
+| F7 | High | Default entity resolution merges homonyms; extraction identity mistakes can collapse entities before resolution. | Chunk scope/conflict guards corrected; live AI resolution and E2E pass on both backends. Semantic ambiguity and old bad merges remain. |
+| F8 | High for concurrent use | Synchronous database operations block async callers; core node identities lack uniqueness constraints. | Offload/UID mechanisms corrected; async, bounded database-race and live E2E checks pass. Load envelope unmeasured. |
+| F9 | High as data grows | Full materialization, quadratic candidate generation, and unbounded neighborhood expansion create scaling limits. | Open; confirmed mechanisms, thresholds unmeasured. |
+| F10 | Medium | Citation failures can disappear silently; one retrieval mode ignores citation-metadata options. | Open; successful E2E citations do not cover failure observability. |
+| F11 | Medium | Invalid concurrency can hang ingestion; malformed externally written reports can cause a non-progress loop. | Open; reproduced with qualifications below. |
+| F12 | Medium | Lockfile drift, limited mandatory integration coverage, and inconsistent diagnostic sanitization weaken operational confidence. | Partially addressed: integration evidence expanded. CI gating and diagnostic-sanitization risks remain. |
 
 ## Findings, evidence, and remedies
 
@@ -145,11 +145,13 @@ Entity embeddings are selected only when `embedding IS NULL`; changing names/des
 
 **Validation:** Ingest a document, remove facts and shorten it, then reingest. Removed evidence must disappear, shared entities must survive, and changed entities must receive refreshed vectors.
 
-**Fix status:** Fixed on `prod-hardening`. `CypherGraphWriter.write_graph_document` now replaces one document's contribution inside its `graph_name`: it reads what the graph holds for that document, writes the new records first, then deletes evidence and claims on removed chunks, detaches removed chunks, prunes relationships whose `source_chunk_ids` become empty, rebuilds merged descriptions for entities no longer mentioned, and deletes entities left with no edges. Description text is stored with per-document provenance (`description_sources` as `[document_id, text]` pairs, which survives APOC `mergeNodes`) and merged descriptions are rebuilt by subtracting the replaced document's contribution, so shared entities, shared relationships, and identical text contributed by another document survive. Stored descriptions without provenance raise a `ValueError` naming the document and asking for re-ingestion instead of silently keeping stale text.
+**Corrective status:** The earlier “fixed” conclusion was premature: nested provenance properties failed on Neo4j, legacy ownership was guessed, and removal could retain old summaries/strength. The shared writer now stores `description_sources` as a flat list of JSON-encoded `[document_id, text]` records and `strength_sources` as JSON-encoded per-document strength records. It replaces document-owned chunks/evidence/claims, rebuilds surviving descriptions and relationship counts/weights/maximum strength, invalidates stale summaries/vectors, and preserves other documents' contributions. Unknown legacy ownership raises a migration error before mutation; identical text is not treated as ownership evidence. Both resolver implementations preserve these records and the canonical scalar UID.
 
 Vectors are now refreshed rather than only filled in: the writer records `embedding_input_fingerprint` for the text it expects to be embedded, `EntityEmbedder` records `embedding_content_fingerprint` and `embedding_model_fingerprint` when it writes a vector, `get_unembedded_entities` selects `embedding IS NULL OR content <> input OR model <> current model` (both backends), and `persist_entity_summaries` nulls the expected fingerprint so a new summary description marks its vector stale. `fail_on_embedding_error` also rejects stale vectors, not just missing ones. Legacy graphs without fingerprints are re-embedded on the next pass.
 
-Behavior is pinned by `tests/pipelines/test_writer_replacement.py` (9 cases: shorter reingestion, shared relationship chunk ids and weight, relationship deletion on evidence loss, shared entity survival, per-document description replacement, identical-text survival, summary-status/vector invalidation, graph-name isolation, legacy-provenance rejection), `tests/embeddings/test_entity_embedder.py` (changed-text and model-change re-embedding, fingerprint propagation), and backend query-shape tests. `uv run pytest -m "not integration"` passes (1097 tests). Live Neo4j and Memgraph runs of the replacement path were **not** executed; `shortcut:` per-document relationship strength is still not tracked (max of contributions is kept).
+String-valued OpenAI/Ollama model IDs now produce distinct fingerprints. The Memgraph vector query receives its model parameter. Vector writes compare expected input (or a validated NULL-input text snapshot) rather than overwriting newer invalidation; Neo4j acquires the node lock before testing freshness. Low-level writes without fingerprints clear certification. Resolution invalidates merged input fingerprints, including without a subsequent summary pass.
+
+Evidence includes focused pure-function/query/parameter regressions plus `tests/integration/test_writer_invariants.py` on both disposable backends: shorter replacement, both resolve→replace directions, identical shared text, canonical UID/constraint enforcement, lowered/removed strength, legacy rejection, stale-vector interleavings and resolve→embed. See the corrective-pass table below for executed checks. This does not provide whole-document rollback or serialize competing document replacements.
 
 ### F5 — Maintenance is destructive before successful replacement
 
@@ -214,7 +216,9 @@ Separately, the assembler treats extracted node IDs as canonical identities. Reu
 
 **Narrow additional defect:** A node's `canonical_key` override is not applied consistently to relationship endpoints. This was reproduced, but default schema filtering removes that property unless explicitly declared; it is an extension-path defect, not a default-path failure.
 
-**Fix status (F7):** Fixed in three layers. (1) The assembler now treats extracted node IDs as chunk-local references, not global identities: relationship and claim endpoints resolve through a per-chunk mapping that must contain both endpoints (mirroring validator rules). Entity keys are `label:value` when a non-name identity property is configured (schema `identity_property`), document-scoped surrogates (`document_id:label:local_id`) for name-only records, explicit `canonical_key` when provided, and legacy global keys only as a fallback for endpoints missing from the chunk's extraction. Reused local IDs like `p1` therefore stay separate until resolution distinguishes them on real evidence. (2) Normalized resolution accepts the same optional `conflict_properties` argument as hybrid resolution; groups whose configured properties differ on non-empty values are moved to blocked review groups instead of auto-merging, while missing values do not conflict. The pipeline's default normalized strategy now passes configured `entity_resolution_conflict_properties` through, and derives the identity-property map from the active schema for both extraction paths. (3) Both backends share the resolver base class so the behavior is identical on Neo4j and Memgraph. Coverage: 8 new assembler tests (reused local IDs, endpoint mapping, fallback, identity-property scoping, explicit keys), 3 new normalized-conflict resolver tests, and updated pipeline tests pinning document-scoped LLM keys; full suite 1,107 passed. Not run: live-backend conflict scenarios on an existing graph with previously merged wrong entities (re-ingestion or rebuilds required).
+**Corrective status (F7):** The earlier document-only fallback still collapsed `p1` reused within one document. The fallback is now `document_id:chunk_id:label:local_id`; trusted explicit canonical keys and non-name identity properties retain their existing label-scoped behavior. The same per-chunk mapping feeds entities, relationship endpoints, claims, observations and evidence. Unit regressions assert Alice/Bob separation within a document and correct citations/endpoints. Live tests on both backends persist four reused-`p1` observations and retain same-name people with conflicting configured birth dates through normalized resolution.
+
+Normalized resolution applies configured conflict checks and leaves conflicting groups for review; missing values do not conflict. Matching names without known conflicts remain heuristic, not proof of identity. Both backends retain canonical scalar UIDs after merges and reject duplicate UIDs with constraints installed. Already incorrectly merged legacy identities are not reconstructed automatically and require a source rebuild.
 
 ### F8 — Async concurrency and database identity guarantees are insufficient
 
@@ -235,9 +239,9 @@ Index setup creates a community uniqueness constraint, but not corresponding ide
 
 **Validation:** Measure event-loop heartbeat during delayed queries; run simultaneous ingestion of identical IDs and verify one logical node per identity. Use `EXPLAIN`/`PROFILE` to verify lookup plans—no query-plan performance claim is established here.
 
-**Fix status:** Fixed on `prod-hardening` (mechanisms; live load/race measurement outstanding). Blocking database work is offloaded from the event loop with `asyncio.to_thread` at defined boundaries: graph-document writes, validation, description backfill, the strict unembedded check, description summarizer fetch/persist (including the error path), entity-embedding fetch/upsert, and entity-resolution loads/merges. A heartbeat regression test (`tests/pipelines/test_async_offload.py`) pins that writes and validation no longer block the loop.
+**Corrective status:** Merely making backfill `async def` did not offload its body; it now awaits `asyncio.to_thread`, as do all four resolver preflights. `tests/pipelines/test_async_offload.py` exercises actual pipeline, summarizer, embedder and resolver methods with delayed synchronous local-store operations, asserting thread identity and event-loop heartbeat across reads/writes/preflight/load/merge. This is deterministic boundary coverage, not a production-latency benchmark. Offloaded calls are not immediately cancellable database operations.
 
-Identity is now database-enforced: the writer records a length-prefixed graph-scoped `uid` (`len(graph_name):graph_name:id`) on Document, Chunk, and `__Entity__` (reserved key, so callers cannot spoof it), and both index managers preflight existing duplicates (raising a `ValueError` that names label/graph/id/count and advises re-ingestion), backfill missing `uid` values with the same encoding in Cypher, and create a uniqueness constraint per label (Neo4j `REQUIRE n.uid IS UNIQUE`, Memgraph `ASSERT n.uid IS UNIQUE`). Community constraint failures now fail loudly instead of being swallowed. Live-backend coverage of the contract exists as an integration scenario (`assert_uid_contract`, both smoke suites) that backfills a legacy node, verifies the encoded id including a graph name containing `:`, and asserts a duplicate-uid write is rejected with identical counts before/after; it was **not** executed here (no live database), and simultaneous identical-ID ingestion remains unmeasured.
+Identity is now database-enforced: the writer records a length-prefixed graph-scoped `uid` (`len(graph_name):graph_name:id`) on Document, Chunk, and `__Entity__` (reserved key, so callers cannot spoof it), and both index managers preflight existing duplicates (raising a `ValueError` that names label/graph/id/count and advises re-ingestion), backfill missing `uid` values with the same encoding in Cypher, and create a uniqueness constraint per label (Neo4j `REQUIRE n.uid IS UNIQUE`, Memgraph `ASSERT n.uid IS UNIQUE`). Community constraint failures now fail loudly instead of being swallowed. The existing `assert_uid_contract` scenarios were executed on both disposable backends. The new suite also runs two simultaneous identical-ID ingestions with constraints already installed, requires one committed Document/Chunk/entity per identity after success, allows an explicitly surfaced competing backend conflict, and checks the same IDs in another graph remain independent. A held-writer Neo4j test waits for a blocked vector transaction before commit and confirms the stale result cannot erase newer invalidation. These bounded races are not evidence of a safe concurrent document-replacement protocol or a supported load envelope.
 
 ### F9 — Bounded concurrency does not bound memory or total work
 
@@ -322,9 +326,9 @@ The maintainability issues are concentrated at shared boundaries—identity, wri
 1. Fix graph-scoped embedding and reserve internal persistence fields.
 2. Replace lossy document identity generation.
 3. Make strict failures and persistence counts truthful.
-4. ~~Define replacement/replay semantics; reconcile obsolete evidence and invalidate stale vectors.~~ Fixed; sub-problem 3 of F6 (persistence counts) remains.
+4. Replacement/replay corrective regressions pass on disposable backends; F6 persistence counts/partial writes and concurrent reconciliation limits remain.
 5. Protect existing communities/indexes during failed maintenance.
-6. ~~Establish safe identity-resolution defaults and database identity constraints.~~ Fixed: chunk-local extracted IDs and homonyms stay separate until a merge is safe (defended by conflict checks for both hybrid and default normalized resolution), and Document/Chunk/__Entity__ identities gained a graph-scoped `uid` with uniqueness constraints on both backends.
+6. Chunk-scoped fallback IDs, configured conflict checks and graph-scoped UID constraints now have regression evidence on both backends. Name matching remains heuristic; do not interpret absence of a configured conflict as proof that a merge is safe.
 
 Concurrent serving additionally requires measuring race behavior under load; blocking database calls are now offloaded from the event loop.
 
@@ -392,6 +396,23 @@ PYTHONPATH=. .venv/bin/python /tmp/recon_production_audit_checks.py
 
 Test environment included Python **3.14.7**, Neo4j driver **6.2.0**, and OpenAI SDK **2.36.0**.
 
-**Not checked:** live Neo4j/Memgraph/plugin execution, the 22 integration tests, real-provider behavior, representative load, answer-quality benchmarks, or a dependency vulnerability scan.
+### Corrective-pass checks (supersede the original F4/F7/F8 completion claims)
 
-**Residual risk:** passing unit tests does not establish safe mutable ingestion, tenant isolation, or production capacity; those remain release gates.
+| Check | Result |
+|---|---|
+| `uv run pytest -q -m 'not integration'` | **1,182 passed, 1 skipped, 48 deselected**. Skip: Memgraph parameter of Neo4j-specific lock-query check. |
+| `uv build` | Passed; source distribution and wheel built. |
+| `RUN_DATABASE_INTEGRATION_TESTS=1 uv run pytest tests/integration/test_writer_invariants.py -m database` | **23 passed, 1 skipped** on disposable Neo4j 5.26 + APOC core and Memgraph 3.13.2. Skip: Neo4j-only held-lock race on Memgraph. Local mock embedding provider only; persistence uses real databases. |
+| Existing backend smoke/resolution checks | **11 passed, 2 skipped** across both store-smoke and entity-resolution integration modules; includes constraints and legacy UID backfill. The two skipped tests require live AI providers. |
+| Fresh independent review | Found resolve→embed fingerprint invalidation gap; reproduced failing on both backends, fixed in both resolver merge paths and regression-tested without summarization. |
+| Live AI + disposable database follow-up | **4 passed, 0 skipped in 552.03 seconds**: both synthetic E2E tests in `tests/integration/test_smoke_full.py`, plus `test_neo4j_hybrid_uses_real_embedder_and_llm_for_review` and `test_memgraph_hybrid_uses_real_embedder_and_llm_for_review`. The two previously skipped AI-resolution cases are now exercised. |
+
+The new backend suite covers provenance/property compatibility, both rewiring directions, resolve→replace and resolve→embed, shorter documents/claims, strength recomputation, legacy rejection, stale snapshots/held locks, conflict-aware chunk identity, concurrent identical-ID ingestion and graph isolation. The compatibility fixture change is limited to declaring the deliberate shared Alice key; no public API snapshot rewrite was made. The SQLite mini-Cypher vector emulator was replaced by focused query/parameter tests plus real persistence regressions.
+
+The live follow-up used the configured OpenAI-compatible endpoints with LLM `qwen3.8-27b` (`LLM_ENABLE_THINKING=false`) and embedder `jina-omni-nano-retrieval`, against fresh Neo4j 5.26.0 (APOC 5.26.0, GDS 2.13.2) and Memgraph 3.13.2/MAGE. Both E2E runs completed extraction/claims, conflict-aware hybrid resolution, entity/relationship summarization, vector persistence, community detection/report embedding, and local/global/DRIFT retrieval. Citation assertions passed; DRIFT had primer reports and no fallback. Neo4j produced 11 entities, 20 entity relationships, 14 written claims and 7 embedded reports; Memgraph produced 10 entities, 18 entity relationships, 12 written claims and 5 embedded reports. These are observed stochastic outputs, not required equal backend results or quality scores.
+
+The run emitted 422 existing Neo4j notification-setting deprecation warnings and 4 embedding-dimension warnings: configured `EMBEDDING_DIM=1536` exceeded the embedder's native 768 dimensions, so the SDK kept 768. E2E index dimensions were obtained from an actual embedding probe. Sanitized local output is `/tmp/recon-ai-live-safe.log` (temporary, not committed). No source or `.env` changes were needed. Only fresh disposable databases were written, and their containers were removed after testing; existing database containers were left intact.
+
+**Not checked in the corrective pass:** production data, representative load, large legacy migrations, answer-quality benchmarks, query-plan/performance claims, alternate AI models/providers, or dependency vulnerability scans. Successful synthetic live runs do not establish a production operating envelope.
+
+**Residual risk:** multiple-query writes can remain partial, write stats remain input counts, concurrent document replacements are not serialized, and F5 destructive maintenance remains open. Passing these unit and bounded backend regressions does not establish production capacity or a complete production-safety guarantee.

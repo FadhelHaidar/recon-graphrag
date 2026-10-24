@@ -30,6 +30,12 @@ from typing import Any
 
 from recon_graphrag.entity_text import entity_embedding_fingerprint
 from recon_graphrag.extraction.types import GraphDocument
+from recon_graphrag.graphdb._provenance import (
+    build_uid as _build_uid,
+    contribution_entries,
+    encode_contributions,
+    raw_descriptions,
+)
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.cypher import escape_cypher_identifier
 
@@ -48,6 +54,7 @@ _SDK_OWNED_KEYS = frozenset(
         "description_summary_error",
         "description_summary_fallback",
         "description_sources",
+        "strength_sources",
         "embedding_input_fingerprint",
         "embedding_content_fingerprint",
         "embedding_model_fingerprint",
@@ -76,23 +83,11 @@ class _DocumentState:
 
 
 def _description_entries(value: Any) -> list[list[str]]:
-    """Normalize stored description provenance to ``[document_id, text]`` pairs.
-
-    A list of pairs survives APOC ``mergeNodes(properties: 'combine')`` as a
-    concatenated list, which a nested map property does not.
-    """
-    entries: list[list[str]] = []
-    for item in value or []:
-        if isinstance(item, (list, tuple)) and len(item) == 2:
-            document_id, text = item
-            if str(text).strip():
-                entries.append([str(document_id), str(text)])
+    """Decode property-compatible description provenance, rejecting invalid text."""
+    entries = contribution_entries(value)
+    if any(not isinstance(text, str) or not text.strip() for _, text in entries):
+        raise ValueError("Invalid description provenance; re-ingest the affected documents.")
     return entries
-
-
-def _build_uid(graph_name: str, node_id: str) -> str:
-    # Length-prefixed encoding keeps graph names containing ":" unambiguous.
-    return f"{len(graph_name)}:{graph_name}:{node_id}"
 
 
 def _merge_contributions(
@@ -138,13 +133,15 @@ class CypherGraphWriter:
         entity_rows = self._entity_rows(graph_document, state)
         relationship_rows = self._relationship_rows(graph_document, state)
 
+        rebuild_relationships = self._rebuild_relationship_rows(
+            graph_document, state, relationship_rows
+        )
+        # Validate removed contributions too, before the first mutation.
+        self._rebuild_entity_rows(graph_document, state, entity_rows)
         self._write_documents([graph_document.document])
         self._write_chunks(graph_document.chunks)
         self._write_entities(graph_document.entities, entity_rows)
         self._write_evidence_links(graph_document.evidence_links)
-        rebuild_relationships = self._rebuild_relationship_rows(
-            graph_document, state, relationship_rows
-        )
         self._write_relationships(graph_document, relationship_rows, rebuild_relationships)
         self._write_claims(graph_document.claims)
         self._reconcile(
@@ -235,11 +232,12 @@ class CypherGraphWriter:
                 RETURN r.id AS id, s.id AS source_id, t.id AS target_id,
                        type(r) AS type,
                        coalesce(r.source_chunk_ids, []) AS source_chunk_ids,
-                       coalesce(r.descriptions, []) AS descriptions,
+                       r.descriptions AS descriptions,
                        r.description_sources AS description_sources,
                        r.description AS description,
                        r.description_summary_status AS description_summary_status,
                        r.strength AS strength,
+                       r.strength_sources AS strength_sources,
                        r.properties AS properties
                 """,
                 {
@@ -267,7 +265,7 @@ class CypherGraphWriter:
                     UNWIND $entity_ids AS id
                     MATCH (e:__Entity__ {id: id, graph_name: $graph_name})
                     RETURN e.id AS id,
-                           coalesce(e.descriptions, []) AS descriptions,
+                           e.descriptions AS descriptions,
                            e.description_sources AS description_sources,
                            e.description AS description,
                            e.description_summary_status AS description_summary_status,
@@ -292,7 +290,7 @@ class CypherGraphWriter:
             properties = dict(entity.properties)
             description = str(properties.pop("description", "") or "")
             stored = state.entities.get(entity.id) or {}
-            stored_descriptions = [str(d) for d in (stored.get("descriptions") or [])]
+            stored_descriptions = raw_descriptions(stored)
             entries = _accessible_entries(
                 stored.get("description_sources"), stored_descriptions,
                 [description], document_id, entity.id,
@@ -326,7 +324,7 @@ class CypherGraphWriter:
                     "uid": _build_uid(entity.graph_name, entity.id),
                     "canonical_key": entity.canonical_key,
                     "human_readable_id": entity.human_readable_id,
-                    "description_sources": merged_entries,
+                    "description_sources": encode_contributions(merged_entries),
                     "descriptions": descriptions,
                     "description_text": description_text,
                     "descriptions_changed": changed,
@@ -353,11 +351,11 @@ class CypherGraphWriter:
             new_chunk_ids = list(dict.fromkeys(properties.pop("source_chunk_ids", []) or []))
             properties.pop("observation_count", None)
             properties.pop("weight", None)
-            if rel.strength is not None:
-                properties.pop("strength", None)
+            strength = rel.strength if rel.strength is not None else properties.get("strength")
+            properties.pop("strength", None)
             description = str(properties.get("description") or "")
             stored = stored_by_key.get(_relationship_key(rel)) or {}
-            stored_descriptions = [str(d) for d in (stored.get("descriptions") or [])]
+            stored_descriptions = raw_descriptions(stored)
             entries = _accessible_entries(
                 stored.get("description_sources"), stored_descriptions,
                 [description], document_id, rel.id,
@@ -370,6 +368,7 @@ class CypherGraphWriter:
                 state.chunk_ids,
                 new_chunk_ids,
             )
+            strength_entries, strength_value = _replace_strength(stored, document_id, strength)
             observation_count = max(len(chunk_ids), rel.observation_count, 1)
             changed = descriptions != stored_descriptions
             rows.append(
@@ -382,8 +381,9 @@ class CypherGraphWriter:
                     "source_chunk_ids": chunk_ids,
                     "observation_count": observation_count,
                     "weight": float(observation_count),
-                    "strength": _merged_strength(stored.get("strength"), rel.strength),
-                    "description_sources": merged_entries,
+                    "strength": strength_value,
+                    "strength_sources": encode_contributions(strength_entries),
+                    "description_sources": encode_contributions(merged_entries),
                     "descriptions": descriptions,
                     "description_text": (
                         stored.get("description")
@@ -475,13 +475,18 @@ class CypherGraphWriter:
                         WHEN row.descriptions_changed THEN NULL
                         ELSE e.description_summary_status
                     END,
+                    e.description_summary_error = CASE WHEN row.descriptions_changed THEN NULL ELSE e.description_summary_error END,
+                    e.description_summary_updated = CASE
+                        WHEN row.descriptions_changed THEN NULL
+                        ELSE e.description_summary_updated
+                    END,
+                    e.description_summary_fallback = CASE
+                        WHEN row.descriptions_changed THEN NULL
+                        ELSE e.description_summary_fallback
+                    END,
                     e.description_input_fingerprint = CASE
                         WHEN row.descriptions_changed THEN NULL
                         ELSE e.description_input_fingerprint
-                    END,
-                    e.description_summary_error = CASE
-                        WHEN row.descriptions_changed THEN NULL
-                        ELSE e.description_summary_error
                     END
                 """,
                 {"entities": [row for row in rows if row["id"] in group_ids]},
@@ -528,6 +533,7 @@ class CypherGraphWriter:
                     r.observation_count = row.observation_count,
                     r.weight = row.weight,
                     r.strength = row.strength,
+                    r.strength_sources = row.strength_sources,
                     r.description_sources = row.description_sources,
                     r.descriptions = row.descriptions,
                     r.description = CASE
@@ -538,13 +544,18 @@ class CypherGraphWriter:
                         WHEN row.descriptions_changed THEN NULL
                         ELSE r.description_summary_status
                     END,
+                    r.description_summary_error = CASE WHEN row.descriptions_changed THEN NULL ELSE r.description_summary_error END,
+                    r.description_summary_updated = CASE
+                        WHEN row.descriptions_changed THEN NULL
+                        ELSE r.description_summary_updated
+                    END,
+                    r.description_summary_fallback = CASE
+                        WHEN row.descriptions_changed THEN NULL
+                        ELSE r.description_summary_fallback
+                    END,
                     r.description_input_fingerprint = CASE
                         WHEN row.descriptions_changed THEN NULL
                         ELSE r.description_input_fingerprint
-                    END,
-                    r.description_summary_error = CASE
-                        WHEN row.descriptions_changed THEN NULL
-                        ELSE r.description_summary_error
                     END
                 """,
                 {
@@ -565,12 +576,23 @@ class CypherGraphWriter:
                 SET r.source_chunk_ids = row.source_chunk_ids,
                     r.observation_count = row.observation_count,
                     r.weight = row.weight,
+                    r.strength = row.strength,
+                    r.strength_sources = row.strength_sources,
                     r.description_sources = row.description_sources,
                     r.descriptions = row.descriptions,
                     r.description = row.description_text,
                     r.description_summary_status = CASE
                         WHEN row.descriptions_changed THEN NULL
                         ELSE r.description_summary_status
+                    END,
+                    r.description_summary_error = CASE WHEN row.descriptions_changed THEN NULL ELSE r.description_summary_error END,
+                    r.description_summary_updated = CASE
+                        WHEN row.descriptions_changed THEN NULL
+                        ELSE r.description_summary_updated
+                    END,
+                    r.description_summary_fallback = CASE
+                        WHEN row.descriptions_changed THEN NULL
+                        ELSE r.description_summary_fallback
                     END,
                     r.description_input_fingerprint = CASE
                         WHEN row.descriptions_changed THEN NULL
@@ -629,9 +651,10 @@ class CypherGraphWriter:
         for stored in state.relationships:
             if _relationship_key(stored) in retained_keys:
                 continue
-            stored_descriptions = [str(d) for d in (stored.get("descriptions") or [])]
+            stored_descriptions = raw_descriptions(stored)
             entries, descriptions = _merge_contributions(
-                _description_entries(stored.get("description_sources")),
+                _accessible_entries(stored.get("description_sources"), stored_descriptions,
+                                    [], document_id, stored["id"]),
                 document_id,
                 [],
             )
@@ -641,7 +664,10 @@ class CypherGraphWriter:
                 [],
             )
             changed = descriptions != stored_descriptions
-            if not changed and chunk_ids == (stored.get("source_chunk_ids") or []):
+            strength_entries, strength_value = _replace_strength(stored, document_id, None)
+            if (not changed and chunk_ids == (stored.get("source_chunk_ids") or [])
+                    and encode_contributions(entries) == stored.get("description_sources")
+                    and encode_contributions(strength_entries) == stored.get("strength_sources")):
                 continue
             rows.append(
                 {
@@ -650,7 +676,9 @@ class CypherGraphWriter:
                     "source_chunk_ids": chunk_ids,
                     "observation_count": len(chunk_ids),
                     "weight": float(len(chunk_ids)),
-                    "description_sources": entries,
+                    "strength": strength_value,
+                    "strength_sources": encode_contributions(strength_entries),
+                    "description_sources": encode_contributions(entries),
                     "descriptions": descriptions,
                     "description_text": (
                         stored.get("description")
@@ -677,27 +705,28 @@ class CypherGraphWriter:
         for stored in state.entities.values():
             if stored["id"] in retained_ids:
                 continue
-            stored_descriptions = [str(d) for d in (stored.get("descriptions") or [])]
+            stored_descriptions = raw_descriptions(stored)
             entries, descriptions = _merge_contributions(
-                _description_entries(stored.get("description_sources")),
+                _accessible_entries(stored.get("description_sources"), stored_descriptions,
+                                    [], document_id, stored["id"]),
                 document_id,
                 [],
             )
             changed = descriptions != stored_descriptions
-            if not changed:
+            if not changed and encode_contributions(entries) == stored.get("description_sources"):
                 continue
             description_text = (
                 stored.get("description")
-                if stored.get("description_summary_status") is not None
+                if not changed and stored.get("description_summary_status") is not None
                 else _joined(descriptions)
             )
             rows.append(
                 {
                     "id": stored["id"],
-                    "description_sources": entries,
+                    "description_sources": encode_contributions(entries),
                     "descriptions": descriptions,
                     "description_text": description_text,
-                    "descriptions_changed": True,
+                    "descriptions_changed": changed,
                     "embedding_input_fingerprint": entity_embedding_fingerprint(
                         labels=stored.get("labels"),
                         name=stored.get("name") or stored["id"],
@@ -805,6 +834,15 @@ class CypherGraphWriter:
                     e.description_summary_status = CASE
                         WHEN row.descriptions_changed THEN NULL
                         ELSE e.description_summary_status
+                    END,
+                    e.description_summary_error = CASE WHEN row.descriptions_changed THEN NULL ELSE e.description_summary_error END,
+                    e.description_summary_updated = CASE
+                        WHEN row.descriptions_changed THEN NULL
+                        ELSE e.description_summary_updated
+                    END,
+                    e.description_summary_fallback = CASE
+                        WHEN row.descriptions_changed THEN NULL
+                        ELSE e.description_summary_fallback
                     END,
                     e.description_input_fingerprint = CASE
                         WHEN row.descriptions_changed THEN NULL
@@ -923,18 +961,10 @@ def _accessible_entries(
     document_id: str,
     record_id: str,
 ) -> list[list[str]]:
-    """Provenance for an existing record, or a targeted legacy diagnostic.
-
-    Records written before per-document provenance existed hold description
-    text that cannot be attributed. An identical rewrite can safely adopt that
-    text as this document's contribution; a changed rewrite cannot tell whose
-    text it would delete, so it fails and asks for a rebuild instead.
-    """
+    """Reject unknown legacy ownership even when the replacement text matches."""
     entries = _description_entries(stored_sources)
-    if entries or not stored_descriptions:
+    if set(stored_descriptions) <= {text for _, text in entries}:
         return entries
-    if set(stored_descriptions) <= set(new_descriptions):
-        return [[document_id, text] for text in stored_descriptions]
     raise ValueError(
         f"Cannot replace record {record_id!r}: its stored descriptions predate "
         "per-document provenance, so the text contributed by document "
@@ -955,12 +985,20 @@ def _relationship_key(rel: Any) -> tuple[str, str, str]:
     return (str(rel.source_id), str(rel.target_id), str(rel.type))
 
 
-def _merged_strength(existing: Any, new: Any) -> float | None:
-    """Keep the strongest observed contribution.
-
-    shortcut: strength is not tracked per document, so a replaced document's
-    stronger value can survive until the edge itself is replaced; track it in
-    ``description_sources``-style provenance if per-document strength matters.
-    """
-    values = [float(value) for value in (existing, new) if value is not None]
-    return max(values) if values else None
+def _replace_strength(
+    stored: dict, document_id: str, strength: Any
+) -> tuple[list[list[Any]], float | None]:
+    entries = contribution_entries(stored.get("strength_sources"))
+    if stored.get("strength") is not None and not entries:
+        raise ValueError(
+            f"Cannot replace record {stored.get('id')!r}: strength ownership is unknown; "
+            "re-ingest the affected documents before replacement."
+        )
+    try:
+        entries = [[owner, float(value)] for owner, value in entries]
+        entries = [entry for entry in entries if entry[0] != document_id]
+        if strength is not None:
+            entries.append([document_id, float(strength)])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Invalid strength provenance; re-ingest the affected documents.") from exc
+    return entries, max((value for _, value in entries), default=None)
