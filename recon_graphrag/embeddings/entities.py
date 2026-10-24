@@ -102,10 +102,19 @@ class EntityEmbedder:
             ids, embeddings, fingerprints = [], [], []
             for entity, result in zip(entities, results, strict=True):
                 if isinstance(result, Exception):
-                    name = value_to_text(
-                        entity.get("name", entity.get("description", ""))
+                    # Entity ids are uuid5 URNs, so the warning stays traceable
+                    # without putting names or provider payloads in logs.
+                    logger.warning(
+                        "error embedding entity id=%s type=%s",
+                        entity["id"],
+                        type(result).__name__,
                     )
-                    logger.warning("error embedding entity '%s': %s", name, result)
+                    logger.debug(
+                        "error embedding entity id=%s name=%s: %s",
+                        entity["id"],
+                        value_to_text(entity.get("name", entity.get("description", ""))),
+                        result,
+                    )
                 elif result is not None:
                     ids.append(result[0])
                     embeddings.append(result[1])

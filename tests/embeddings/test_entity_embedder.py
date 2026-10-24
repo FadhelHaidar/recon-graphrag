@@ -1,5 +1,6 @@
 """Tests for entity embedding."""
 
+import logging
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -207,3 +208,38 @@ async def test_model_change_reembeds_unchanged_text(fake_embedder):
     assert [call[0] for call in store.upserted] == [["e1"]]
     assert entity["embedding_model_fingerprint"] != "old"
     assert embedder.model_fingerprint == store.upserted[0][2]
+
+
+@pytest.mark.asyncio
+async def test_embedding_failure_logs_no_entity_name_or_provider_payload(caplog):
+    name = "Janet Confidential"
+    payload = "429 rate limited for 'Janet Confidential lives at 12 Elm St'"
+    store = FakeGraphStore(
+        entities=[
+            {"id": "e1", "labels": ["Person"], "name": name, "description": "bio"},
+        ]
+    )
+    embedder = MagicMock()
+    embedder.async_embed_query = AsyncMock(side_effect=RuntimeError(payload))
+
+    with caplog.at_level(
+        logging.DEBUG, logger="recon_graphrag.embeddings.entities"
+    ):
+        await EntityEmbedder(cast(GraphStore, store), embedder).embed_entities(
+            batch_size=500
+        )
+
+    warned = "\n".join(
+        record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING
+    )
+    assert warned
+    assert name not in warned
+    assert "12 Elm St" not in warned
+    assert "e1" in warned
+    assert "RuntimeError" in warned
+
+    debugged = "\n".join(
+        record.getMessage() for record in caplog.records if record.levelno == logging.DEBUG
+    )
+    assert name in debugged
+    assert "12 Elm St" in debugged
