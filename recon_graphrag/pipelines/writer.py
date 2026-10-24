@@ -24,6 +24,31 @@ from recon_graphrag.extraction.types import GraphDocument
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.cypher import escape_cypher_identifier
 
+# Properties the writer's own Cypher sets. A free-form metadata/property map
+# that carries one would overwrite SDK-owned graph state after MERGE.
+_SDK_OWNED_KEYS = frozenset(
+    {
+        "id",
+        "graph_name",
+        "created",
+        "updated",
+        "embedding",
+        "description_summary_status",
+        "description_input_fingerprint",
+        "description_summary_updated",
+        "description_summary_error",
+        "description_summary_fallback",
+    }
+)
+_DOCUMENT_METADATA_RESERVED = _SDK_OWNED_KEYS | {"text_hash"}
+_CHUNK_METADATA_RESERVED = _SDK_OWNED_KEYS | {"text", "index"}
+_ENTITY_PROPERTIES_RESERVED = _SDK_OWNED_KEYS | {
+    "type",
+    "descriptions",
+    "observation_count",
+}
+_RELATIONSHIP_PROPERTIES_RESERVED = _SDK_OWNED_KEYS | {"descriptions"}
+
 
 class CypherGraphWriter:
     """Write GraphDocument records to a Cypher graph store."""
@@ -32,6 +57,7 @@ class CypherGraphWriter:
         self.graph_store = graph_store
 
     def write_graph_document(self, graph_document: GraphDocument) -> dict[str, int]:
+        self._reject_reserved_keys(graph_document)
         self._write_documents([graph_document.document])
         self._write_chunks(graph_document.chunks)
         self._write_entities(graph_document.entities)
@@ -40,6 +66,29 @@ class CypherGraphWriter:
         self._write_claims(graph_document.claims)
 
         return self._stats_for(graph_document)
+
+    def _reject_reserved_keys(self, graph_document: GraphDocument) -> None:
+        """Fail before any query when a free-form map would overwrite SDK fields."""
+        sources = (
+            ("DocumentRecord.metadata", _DOCUMENT_METADATA_RESERVED,
+             [graph_document.document.metadata]),
+            ("ChunkRecord.metadata", _CHUNK_METADATA_RESERVED,
+             [chunk.metadata for chunk in graph_document.chunks]),
+            ("EntityRecord.properties", _ENTITY_PROPERTIES_RESERVED,
+             [entity.properties for entity in graph_document.entities]),
+            ("RelationshipRecord.properties", _RELATIONSHIP_PROPERTIES_RESERVED,
+             [rel.properties for rel in graph_document.relationships]),
+        )
+        for record_map, reserved, maps in sources:
+            offending = sorted({key for m in maps for key in m if key in reserved})
+            if offending:
+                raise ValueError(
+                    f"{record_map} contains reserved persistence field(s) "
+                    f"{', '.join(offending)}; these graph properties are owned by "
+                    "the SDK. Supply document identity via metadata['document_id'], "
+                    "and rename application identifiers to a nonreserved name such "
+                    "as 'external_id' or 'employee_id', then resubmit."
+                )
 
     def _write_documents(self, documents: list) -> None:
         if not documents:

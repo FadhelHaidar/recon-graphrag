@@ -1,27 +1,27 @@
 """Tests for GraphBuilderPipeline."""
 
-from typing import cast
-from unittest.mock import AsyncMock, MagicMock
-
 import asyncio
 import logging
 import re
+from typing import cast
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from recon_graphrag.extraction.chunking import TextChunker
+from recon_graphrag.extraction.description_summarizer import DescriptionSummarizer
 from recon_graphrag.extraction.schema import (
     GraphSchema,
     NodeType,
     PropertyType,
     RelationshipType,
 )
-from recon_graphrag.extraction.chunking import TextChunker
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.memgraph.store import MemgraphGraphStore
 from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
-from recon_graphrag.extraction.description_summarizer import DescriptionSummarizer
 from recon_graphrag.observability import UsageTrackingLLM, track_usage
 from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
+from recon_graphrag.pipelines.writer import CypherGraphWriter
 
 
 
@@ -182,6 +182,30 @@ class FakeGraphStore:
 
 class MyGraphStore(FakeGraphStore):
     pass
+
+
+class RealWriterFakeGraphStore(FakeGraphStore):
+    """FakeGraphStore whose writes go through the real CypherGraphWriter."""
+
+    def __init__(self):
+        super().__init__()
+        self.params = []
+
+    def execute_query(self, query, parameters=None):
+        self.params.append(parameters or {})
+        return super().execute_query(query, parameters)
+
+    def write_graph_document(self, graph_document):
+        return CypherGraphWriter(cast(GraphStore, self)).write_graph_document(
+            graph_document
+        )
+
+
+def _write_rows(store, query_fragment):
+    for query, parameters in zip(store.queries, store.params, strict=True):
+        if query_fragment in query:
+            return next(iter(parameters.values()))
+    raise AssertionError(f"no writer query matching {query_fragment!r}")
 
 
 class CustomBackend(FakeGraphStore):

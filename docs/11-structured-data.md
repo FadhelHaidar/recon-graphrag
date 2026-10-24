@@ -178,6 +178,14 @@ column names. Both surface later in search results through
 `citation.metadata` — so an answer can cite `order O-1, region EU` instead of
 an opaque chunk id.
 
+Column names in `metadata_columns` must avoid the writer's reserved chunk
+persistence fields, including `id`, `text`, and `index`. A collision raises
+`ValueError` before that artifact is written — rename the column or drop it from
+`metadata_columns`. The separate `metadata=` argument to `build_from_rows`
+follows document-metadata rules, not chunk-metadata rules. The full list,
+per-record rules, and recovery steps are in
+[Reserved persistence fields](09-workflows.md#reserved-persistence-fields).
+
 ---
 
 ## Type coercion

@@ -427,6 +427,68 @@ pipeline = GraphBuilderPipeline(
 )
 ```
 
+### Reserved persistence fields
+
+User-controlled maps (`document.metadata`, `chunk.metadata`,
+`entity.properties`, `relationship.properties`) must not carry the reserved keys
+listed below. Unrestricted assignments can overwrite SDK-owned graph state after
+`MERGE`, such as an entity `id` or chunk `text`.
+
+`CypherGraphWriter` checks every record map in the artifact *before* running a
+single query. If any key is reserved it raises `ValueError` naming the record
+type and the offending keys, and nothing is written, so a rejected artifact
+leaves the database untouched.
+
+SDK-owned keys rejected in every map: `id`, `graph_name`, `created`, `updated`,
+`embedding`, `description_summary_status`, `description_input_fingerprint`,
+`description_summary_updated`, `description_summary_error`,
+`description_summary_fallback`.
+
+Rejected on top of those:
+
+| Map | Additional reserved keys |
+| --- | --- |
+| `document.metadata` | `text_hash` |
+| `chunk.metadata` | `text`, `index` |
+| `entity.properties` | `type`, `descriptions`, `observation_count` |
+| `relationship.properties` | `descriptions` |
+
+Existing supported inputs remain unchanged:
+
+- Use `metadata["document_id"]` for document identity. It stays authoritative
+  for the document record and for chunk `document_id` references; no key
+  rename happens.
+- Page metadata `id` is converted to `source_ids` by the page-window path, so
+  page IDs are preserved without a reserved key.
+- Schema-declared properties are validated normally; an application field that
+  really is named `id` is still rejected at write time. Rename it (for example
+  `external_id`) and resubmit. Undeclared properties continue to be filtered by
+  schema validation as before.
+
+- Canonical IDs, entity names/titles/descriptions, and relationship evidence IDs
+  remain supported. Relationship `weight` and `observation_count` retain their
+  existing derived-value handling; strength handling is unchanged.
+
+Recovering from a rejection:
+
+1. Read the error: it names the record map and the offending keys.
+2. For document identity, use metadata `document_id`. For descriptive identifiers,
+   rename the key to a nonreserved name such as `external_document_id` or
+   `employee_id`. If the conflicting field is schema-declared, update the schema
+   and rerun extraction; repeating the unchanged schema will not fix it.
+3. Resubmit the corrected input. If you already have a `GraphDocument`, correct
+   its property map and retry the write without extraction, leaving its typed
+   identity fields intact. The SDK does not rename, drop, or retry automatically.
+
+For pipeline document identity, a nonempty metadata `document_id` takes precedence
+over `source`, then `title`, then the text-derived ID. Changing a lower-priority
+value does not replace an explicit identity.
+
+The guarantee is per artifact and applies to reserved-key rejection only:
+previously written artifacts are not rolled back, and unrelated database failures
+can still leave partial writes. Extraction may already have incurred provider
+costs before validation; a high-level retry may repeat that work.
+
 ### Implement a custom GraphStore
 
 Implement every method in `GraphStore` to add a new backend. The protocol defines around 30 methods spanning index management, entity resolution, vector/keyword search, community detection/persistence, and validation. The Neo4j and Memgraph store tests show the shared contract alongside backend-specific query behavior.

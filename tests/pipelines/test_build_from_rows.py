@@ -18,7 +18,7 @@ from recon_graphrag.extraction.structured import (
     TextColumn,
 )
 from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
-from tests.pipelines.test_graph_builder import FakeGraphStore
+from tests.pipelines.test_graph_builder import FakeGraphStore, RealWriterFakeGraphStore
 
 
 def _hashed_doc_id(source):
@@ -395,3 +395,25 @@ async def test_row_text_provider_value_error_cannot_supply_parser_field_context(
     assert provider_message not in "".join(traceback.format_exception(caught.value))
     assert "field=" not in str(caught.value)
     fake_writer.write_graph_document.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_build_from_rows_rejects_reserved_metadata_without_writing(mapping):
+    store = RealWriterFakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=MagicMock(),
+        embedder=MagicMock(),
+        perform_entity_resolution=False,
+        embed_entities=False,
+        summarize_descriptions=False,
+    )
+
+    with pytest.raises(ValueError, match="DocumentRecord.metadata"):
+        await pipeline.build_from_rows(
+            [dict(row, notes="") for row in ROWS],
+            mapping,
+            metadata={"source": "orders", "id": "O-1"},
+        )
+
+    assert store.queries == []
