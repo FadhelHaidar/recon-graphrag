@@ -11,6 +11,7 @@ from tests.integration.factories import get_memgraph_store
 from tests.integration.database_scenarios import (
     assert_cross_document_rerun_idempotent,
     assert_graph_document_write,
+    assert_uid_contract,
     cleanup_graph,
 )
 from tests.integration.support import require_integration_env
@@ -48,6 +49,12 @@ def memgraph_store():
 @pytest.mark.database
 def test_memgraph_writes_graph_document_and_reports_counts(memgraph_store):
     assert_graph_document_write(memgraph_store, GRAPH_NAME)
+
+
+@pytest.mark.integration
+@pytest.mark.database
+def test_memgraph_uid_contract_is_written_backfilled_and_enforced(memgraph_store):
+    assert_uid_contract(memgraph_store, GRAPH_NAME)
 
 
 @pytest.mark.integration

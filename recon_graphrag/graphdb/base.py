@@ -71,6 +71,7 @@ class GraphStore(Protocol):
         graph_name: str = "entity-graph",
         resolve_property: str = "name",
         dry_run: bool = False,
+        *,
         conflict_properties: dict[str, list[str]] | list[str] | None = None,
     ) -> dict:
         """Merge duplicate entity nodes using normalized matching."""

@@ -42,7 +42,7 @@ These constraints do **not** establish a production capacity. Unattended mutable
 | F5 | High | Community and index maintenance delete existing resources before replacement succeeds. | Confirmed ordering |
 | F6 | High | Embedding failures can be reported as success; graph writes are partial and reported counts are input counts. | Confirmed |
 | F7 | High | Default entity resolution merges homonyms; extraction identity mistakes can collapse entities before resolution. | Fixed |
-| F8 | High for concurrent use | Synchronous database operations block async callers; core node identities lack uniqueness constraints. | Confirmed mechanisms; load/race impact unmeasured |
+| F8 | High for concurrent use | Synchronous database operations block async callers; core node identities lack uniqueness constraints. | Fixed (mechanisms); live race/heartbeat measurement outstanding |
 | F9 | High as data grows | Full materialization, quadratic candidate generation, and unbounded neighborhood expansion create scaling limits. | Confirmed mechanisms; thresholds unmeasured |
 | F10 | Medium | Citation failures can disappear silently; one retrieval mode ignores citation-metadata options. | Confirmed |
 | F11 | Medium | Invalid concurrency can hang ingestion; malformed externally written reports can cause a non-progress loop. | Reproduced, with qualifications |
@@ -235,6 +235,10 @@ Index setup creates a community uniqueness constraint, but not corresponding ide
 
 **Validation:** Measure event-loop heartbeat during delayed queries; run simultaneous ingestion of identical IDs and verify one logical node per identity. Use `EXPLAIN`/`PROFILE` to verify lookup plans—no query-plan performance claim is established here.
 
+**Fix status:** Fixed on `prod-hardening` (mechanisms; live load/race measurement outstanding). Blocking database work is offloaded from the event loop with `asyncio.to_thread` at defined boundaries: graph-document writes, validation, description backfill, the strict unembedded check, description summarizer fetch/persist (including the error path), entity-embedding fetch/upsert, and entity-resolution loads/merges. A heartbeat regression test (`tests/pipelines/test_async_offload.py`) pins that writes and validation no longer block the loop.
+
+Identity is now database-enforced: the writer records a length-prefixed graph-scoped `uid` (`len(graph_name):graph_name:id`) on Document, Chunk, and `__Entity__` (reserved key, so callers cannot spoof it), and both index managers preflight existing duplicates (raising a `ValueError` that names label/graph/id/count and advises re-ingestion), backfill missing `uid` values with the same encoding in Cypher, and create a uniqueness constraint per label (Neo4j `REQUIRE n.uid IS UNIQUE`, Memgraph `ASSERT n.uid IS UNIQUE`). Community constraint failures now fail loudly instead of being swallowed. Live-backend coverage of the contract exists as an integration scenario (`assert_uid_contract`, both smoke suites) that backfills a legacy node, verifies the encoded id including a graph name containing `:`, and asserts a duplicate-uid write is rejected with identical counts before/after; it was **not** executed here (no live database), and simultaneous identical-ID ingestion remains unmeasured.
+
 ### F9 — Bounded concurrency does not bound memory or total work
 
 | Operation | Evidence and growth mechanism |
@@ -320,9 +324,9 @@ The maintainability issues are concentrated at shared boundaries—identity, wri
 3. Make strict failures and persistence counts truthful.
 4. ~~Define replacement/replay semantics; reconcile obsolete evidence and invalidate stale vectors.~~ Fixed; sub-problem 3 of F6 (persistence counts) remains.
 5. Protect existing communities/indexes during failed maintenance.
-6. Establish safe identity-resolution defaults and database identity constraints.
+6. ~~Establish safe identity-resolution defaults and database identity constraints.~~ Fixed: chunk-local extracted IDs and homonyms stay separate until a merge is safe (defended by conflict checks for both hybrid and default normalized resolution), and Document/Chunk/__Entity__ identities gained a graph-scoped `uid` with uniqueness constraints on both backends.
 
-Concurrent serving additionally requires addressing blocking database calls and measuring race behavior.
+Concurrent serving additionally requires measuring race behavior under load; blocking database calls are now offloaded from the event loop.
 
 ### Near-term improvements
 
@@ -368,6 +372,7 @@ Use deterministic providers first to isolate SDK/database behavior, then a budge
 |---|---|
 | `.venv/bin/python -m pytest -m 'not integration' -q` | **1,042 passed, 22 deselected**; latest audit run 2.24 seconds. |
 | `uv run pytest -m "not integration" -q` (after F6 sub-problem 1 fix) | **1,082 passed**; plus `RUN_WORKFLOW_INTEGRATION_TESTS=1` deterministic workflow suite Neo4j + Memgraph, and live strict-embedding-failure/recovery probe on a disposable graph for both backends. |
+| `uv run pytest -q -m "not integration"` (after F4/F7/F8 fixes) | **1,122 passed, 22 deselected** on branch `prod-hardening`. |
 | Targeted deterministic probes | **11 behavior checks confirmed**, using real SDK code with fake stores/providers. |
 | `uv lock --check --offline` | Failed: committed lockfile needs updating. **Resolved** by commit `aee4ba8` (lockfile updated to match `0.10.1`); not re-run since. |
 | Independent source review | Findings challenged using `deepseek-v4.1-flash`; reachability qualifications above incorporated. |

@@ -51,6 +51,7 @@ _SDK_OWNED_KEYS = frozenset(
         "embedding_input_fingerprint",
         "embedding_content_fingerprint",
         "embedding_model_fingerprint",
+        "uid",
     }
 )
 _DOCUMENT_METADATA_RESERVED = _SDK_OWNED_KEYS | {"text_hash"}
@@ -87,6 +88,11 @@ def _description_entries(value: Any) -> list[list[str]]:
             if str(text).strip():
                 entries.append([str(document_id), str(text)])
     return entries
+
+
+def _build_uid(graph_name: str, node_id: str) -> str:
+    # Length-prefixed encoding keeps graph names containing ":" unambiguous.
+    return f"{len(graph_name)}:{graph_name}:{node_id}"
 
 
 def _merge_contributions(
@@ -317,6 +323,7 @@ class CypherGraphWriter:
                     "id": entity.id,
                     "type": entity.type,
                     "graph_name": entity.graph_name,
+                    "uid": _build_uid(entity.graph_name, entity.id),
                     "canonical_key": entity.canonical_key,
                     "human_readable_id": entity.human_readable_id,
                     "description_sources": merged_entries,
@@ -407,6 +414,7 @@ class CypherGraphWriter:
             MERGE (d:Document {id: row.id, graph_name: row.graph_name})
             SET d += row.metadata,
                 d.text_hash = row.text_hash,
+                d.uid = row.uid,
                 d.updated = timestamp(),
                 d.created = coalesce(d.created, timestamp())
             """,
@@ -424,6 +432,7 @@ class CypherGraphWriter:
             MERGE (c:Chunk {id: row.id, graph_name: row.graph_name})
             SET c.text = row.text,
                 c.index = row.index,
+                c.uid = row.uid,
                 c += row.metadata,
                 c.updated = timestamp(),
                 c.created = coalesce(c.created, timestamp())
@@ -445,7 +454,8 @@ class CypherGraphWriter:
                 f"""
                 UNWIND $entities AS row
                 MERGE (e:__Entity__:{label} {{id: row.id, graph_name: row.graph_name}})
-                SET e += row.properties,
+                SET e.uid = row.uid,
+                    e += row.properties,
                     e.type = row.type,
                     e.canonical_key = coalesce(row.canonical_key, row.properties.canonical_key),
                     e.human_readable_id = coalesce(row.human_readable_id, row.properties.human_readable_id),
@@ -850,6 +860,7 @@ class CypherGraphWriter:
                 "id": doc.id,
                 "text_hash": doc.text_hash,
                 "graph_name": doc.graph_name,
+                "uid": _build_uid(doc.graph_name, doc.id),
                 "metadata": doc.metadata,
             }
             for doc in documents
@@ -863,6 +874,7 @@ class CypherGraphWriter:
                 "text": chunk.text,
                 "index": chunk.index,
                 "graph_name": chunk.graph_name,
+                "uid": _build_uid(chunk.graph_name, chunk.id),
                 "metadata": chunk.metadata,
             }
             for chunk in chunks

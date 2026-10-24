@@ -1,7 +1,10 @@
 """Tests for the Neo4j index manager and internal entity resolver."""
 
+from typing import Any, cast
+
 import pytest
 
+from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.neo4j.index_manager import IndexManager
 
 
@@ -53,7 +56,7 @@ class FakeGraphStore:
 
 def test_index_manager_create_indexes_uses_graph_store_methods():
     store = FakeGraphStore()
-    manager = IndexManager(store, embedding_dim=42)
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
 
     manager.create_indexes()
 
@@ -67,14 +70,18 @@ def test_index_manager_create_indexes_uses_graph_store_methods():
         }
     ]
     constraint_calls = [call for call in store.calls if "CREATE CONSTRAINT" in call[0]]
-    assert len(constraint_calls) == 1
-    assert "(c.graph_name, c.level, c.id) IS UNIQUE" in constraint_calls[0][0]
+    assert len(constraint_calls) == 4
+    assert (
+        "(c.graph_name, c.level, c.id) IS UNIQUE" in [c[0] for c in constraint_calls][0]
+    )
+    # F8: per-label uid uniqueness for Document/Chunk/__Entity__.
+    assert sum("REQUIRE n.uid IS UNIQUE" in c[0] for c in constraint_calls) == 3
 
 
 @pytest.mark.asyncio
 async def test_index_manager_resolve_entities_normalized_forwards_graph_name():
     store = FakeGraphStore(apoc_available=True)
-    manager = IndexManager(store)
+    manager = IndexManager(cast(GraphStore, store))
 
     result = await manager.resolve_entities_normalized(
         graph_name="movie-graph",
@@ -84,7 +91,8 @@ async def test_index_manager_resolve_entities_normalized_forwards_graph_name():
     assert result["strategy"] == "normalized"
     assert result["merged_groups"] == 1
     load_call = next(
-        call for call in store.calls
+        call
+        for call in store.calls
         if "MATCH (e:__Entity__)" in call[0] and "elementId(e) AS node_id" in call[0]
     )
     assert load_call[1]["graph_name"] == "movie-graph"
@@ -93,8 +101,8 @@ async def test_index_manager_resolve_entities_normalized_forwards_graph_name():
 @pytest.mark.asyncio
 async def test_index_manager_resolve_entities_hybrid_uses_embedder():
     store = FakeGraphStore(apoc_available=True)
-    embedder = object()
-    manager = IndexManager(store, embedder=embedder)
+    embedder = cast(Any, object())
+    manager = IndexManager(cast(GraphStore, store), embedder=embedder)
     captured = {}
 
     class CapturingResolver:
@@ -106,6 +114,7 @@ async def test_index_manager_resolve_entities_hybrid_uses_embedder():
             return {"strategy": "hybrid"}
 
     import recon_graphrag.graphdb.neo4j.index_manager as im
+
     original_resolver = im._Neo4jEntityResolver
     im._Neo4jEntityResolver = CapturingResolver
     try:

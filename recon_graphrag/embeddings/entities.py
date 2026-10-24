@@ -55,7 +55,8 @@ class EntityEmbedder:
         model_fingerprint = self.model_fingerprint
 
         while True:
-            entities = self.graph_store.get_unembedded_entities(
+            entities = await asyncio.to_thread(
+                self.graph_store.get_unembedded_entities,
                 graph_name=self.graph_name,
                 limit=batch_size,
                 model_fingerprint=model_fingerprint,
@@ -89,8 +90,8 @@ class EntityEmbedder:
                         )
                         embedding = await self.embedder.async_embed_query(text)
                         return entity["id"], embedding, text
-                    except Exception as e:
-                        return e
+                    except Exception as embed_error:
+                        return embed_error
 
             results = await tqdm_asyncio.gather(
                 *[_embed(e) for e in entities],
@@ -99,7 +100,7 @@ class EntityEmbedder:
             )
 
             ids, embeddings, fingerprints = [], [], []
-            for entity, result in zip(entities, results):
+            for entity, result in zip(entities, results, strict=True):
                 if isinstance(result, Exception):
                     name = value_to_text(
                         entity.get("name", entity.get("description", ""))
@@ -117,7 +118,8 @@ class EntityEmbedder:
                     )
 
             if ids:
-                self.graph_store.upsert_vectors(
+                await asyncio.to_thread(
+                    self.graph_store.upsert_vectors,
                     ids,
                     "embedding",
                     embeddings,

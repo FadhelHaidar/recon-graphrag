@@ -161,7 +161,7 @@ class BaseEntityResolver(ABC):
         preflight_result = self._preflight(dry_run=dry_run)
         if preflight_result is not None:
             return preflight_result
-        entities = self._load_entities(graph_name, resolve_property)
+        entities = await asyncio.to_thread(self._load_entities, graph_name, resolve_property)
         groups, review_groups = self._build_exact_groups(entities)
         return await self._finish_resolution(
             groups=groups,
@@ -183,7 +183,7 @@ class BaseEntityResolver(ABC):
         preflight_result = self._preflight(dry_run=dry_run)
         if preflight_result is not None:
             return preflight_result
-        entities = self._load_entities(graph_name, resolve_property)
+        entities = await asyncio.to_thread(self._load_entities, graph_name, resolve_property)
         groups, review_groups = self._build_normalized_groups(entities)
         groups, review_groups = self._build_normalized_groups(entities)
         groups, review_groups = self._apply_conflict_rules(
@@ -211,7 +211,7 @@ class BaseEntityResolver(ABC):
         preflight_result = self._preflight(dry_run=dry_run)
         if preflight_result is not None:
             return preflight_result
-        entities = self._load_entities(graph_name, resolve_property)
+        entities = await asyncio.to_thread(self._load_entities, graph_name, resolve_property)
         groups, review_groups, _ = self._build_fuzzy_groups(
             entities,
             merge_threshold=merge_threshold,
@@ -248,7 +248,7 @@ class BaseEntityResolver(ABC):
         preflight_result = self._preflight(dry_run=dry_run)
         if preflight_result is not None:
             return preflight_result
-        entities = self._load_entities(graph_name, resolve_property)
+        entities = await asyncio.to_thread(self._load_entities, graph_name, resolve_property)
         groups, review_groups, ai_merged_review_groups = await self._build_hybrid_groups(
             entities,
             merge_threshold=merge_threshold,
@@ -297,7 +297,9 @@ class BaseEntityResolver(ABC):
             self._merge_summaries = await self._prepare_merge_summaries(
                 groups, llm, concurrency=self._llm_concurrency
             )
-            merged_nodes = self._merge_groups(groups, resolve_property)
+            merged_nodes = await asyncio.to_thread(
+                self._merge_groups, groups, resolve_property
+            )
 
         return {
             "skipped": False,

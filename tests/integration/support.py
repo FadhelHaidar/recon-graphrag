@@ -12,6 +12,7 @@ RUN_ENTITY_RESOLUTION_AI_TESTS   - secondary gate for AI-assisted entity resolut
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 
 import pytest
 from dotenv import load_dotenv
@@ -55,7 +56,7 @@ PROVIDER_REQUIREMENTS: dict[str, dict[str, list[EnvRequirement]]] = {
 }
 
 
-def _missing_env(required_env: list[EnvRequirement]) -> list[str]:
+def _missing_env(required_env: Sequence[EnvRequirement]) -> list[str]:
     """Return variable names only, never credential values."""
     missing = set()
     for requirement in required_env:
@@ -67,7 +68,7 @@ def _missing_env(required_env: list[EnvRequirement]) -> list[str]:
 
 def require_integration_env(
     run_flag: str,
-    required_env: list[EnvRequirement],
+    required_env: Sequence[EnvRequirement],
     description: str,
     *,
     fail_on_missing: bool = False,

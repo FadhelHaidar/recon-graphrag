@@ -93,6 +93,7 @@ class Neo4jGraphStore(BaseGraphStore):
         graph_name: str = "entity-graph",
         resolve_property: str = "name",
         dry_run: bool = False,
+        *,
         conflict_properties: dict[str, list[str]] | list[str] | None = None,
     ) -> dict:
         from recon_graphrag.graphdb.neo4j.entity_resolution import (

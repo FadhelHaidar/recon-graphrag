@@ -58,6 +58,8 @@ from recon_graphrag.observability import (
 from recon_graphrag.utils.tokens import TiktokenTokenCounter, TokenCounter
 
 logger = logging.getLogger(__name__)
+# Default tiktoken encoding for token-based chunking (not a secret).
+_DEFAULT_CHUNK_ENCODING = "cl100k_base"
 
 
 class GraphBuilderPipeline:
@@ -153,8 +155,7 @@ class GraphBuilderPipeline:
         chunk_overlap: int = 100,
         chunk_unit: str = "tokens",
         token_counter: TokenCounter | None = None,
-        # pi-lens-ignore: python-hardcoded-secrets
-        token_encoding: str = "cl100k_base",
+        token_encoding: str = _DEFAULT_CHUNK_ENCODING,
     ) -> dict:
         """Build knowledge graph from raw text.
 
@@ -252,9 +253,8 @@ class GraphBuilderPipeline:
         chunk_size: int = 1200,
         chunk_overlap: int = 100,
         chunk_unit: str = "tokens",
-        # pi-lens-ignore: python-hardcoded-secrets
         token_counter: TokenCounter | None = None,
-        token_encoding: str = "cl100k_base",
+        token_encoding: str = _DEFAULT_CHUNK_ENCODING,
         window_size: int = 2,
         window_overlap: int = 1,
     ) -> list[dict]:
@@ -481,7 +481,9 @@ class GraphBuilderPipeline:
                 graph_name=self.graph_name,
                 identity_properties=self._identity_properties(llm_schema),
             )
-            write_stats = self.graph_writer.write_graph_document(graph_document)
+            write_stats = await asyncio.to_thread(
+                self.graph_writer.write_graph_document, graph_document
+            )
             logger.info(
                 "write complete to %s: %s entities, %s relationships",
                 self._graph_store_name(),
@@ -776,7 +778,7 @@ class GraphBuilderPipeline:
         once per build batch, not once per document.
         """
         logger.info("backfilling missing entity descriptions")
-        self._backfill_descriptions()
+        await self._backfill_descriptions()
 
         resolution = None
         if self.perform_entity_resolution:
@@ -798,7 +800,7 @@ class GraphBuilderPipeline:
             await self._embed_entities()
 
         logger.info("validating graph build")
-        validation = self._validate_graph_build()
+        validation = await self._validate_graph_build()
         token_usage = usage_snapshot(self.llm)
         self._write_finalize_summary(resolution, validation, token_usage)
         return validation
@@ -918,7 +920,9 @@ class GraphBuilderPipeline:
             chunk_claims=chunk_claims if chunk_claims else None,
         )
 
-        write_stats = self.graph_writer.write_graph_document(graph_document)
+        write_stats = await asyncio.to_thread(
+            self.graph_writer.write_graph_document, graph_document
+        )
         logger.info(
             "write complete to %s: %s entities, %s relationships, %s claims",
             self._graph_store_name(),
@@ -933,7 +937,7 @@ class GraphBuilderPipeline:
             "write_stats": write_stats,
         }
 
-    def _backfill_descriptions(self):
+    async def _backfill_descriptions(self):
         """Set description = '' on __Entity__ nodes missing the property."""
         self.graph_store.backfill_descriptions()
 
@@ -996,10 +1000,13 @@ class GraphBuilderPipeline:
         strict = require_complete or self.fail_on_embedding_error
         try:
             await embedder.embed_entities()
-            if strict and self.graph_store.get_unembedded_entities(
-                graph_name=self.graph_name,
-                limit=1,
-                model_fingerprint=embedder.model_fingerprint,
+            if strict and (
+                await asyncio.to_thread(
+                    self.graph_store.get_unembedded_entities,
+                    graph_name=self.graph_name,
+                    limit=1,
+                    model_fingerprint=embedder.model_fingerprint,
+                )
             ):
                 raise RuntimeError(
                     "Entity embedding incomplete: unembedded entities remain "
@@ -1022,8 +1029,8 @@ class GraphBuilderPipeline:
         """
         await self._embed_entities(require_complete=True)
 
-    def _validate_graph_build(self) -> dict:
-        return self.graph_store.validate_graph_build()
+    async def _validate_graph_build(self) -> dict:
+        return await asyncio.to_thread(self.graph_store.validate_graph_build)
 
     def _graph_store_name(self) -> str:
         """Return a human-readable name derived from the graph store class."""

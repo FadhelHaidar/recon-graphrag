@@ -110,6 +110,7 @@ _COMMON_RESERVED = (
     "embedding_input_fingerprint",
     "embedding_content_fingerprint",
     "embedding_model_fingerprint",
+    "uid",
 )
 _MAP_CASES = [
     ("DocumentRecord.metadata", _COMMON_RESERVED + ("text_hash",)),

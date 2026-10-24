@@ -122,6 +122,7 @@ class StatefulFakeGraphStore:
             node.update(row.get("properties") or {})
             node["type"] = row["type"]
             node["labels"] = ["__Entity__", row["type"]]
+            node["uid"] = row.get("uid")
             node["canonical_key"] = row.get("canonical_key")
             node["human_readable_id"] = row.get("human_readable_id")
             node["name"] = (

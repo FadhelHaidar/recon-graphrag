@@ -79,9 +79,7 @@ def build_document(
             for rel_type, source, target, description in relationships
         ],
         evidence_links=[
-            EvidenceLink(
-                chunk_id=chunk_id, entity_id=entity_id, graph_name=graph_name
-            )
+            EvidenceLink(chunk_id=chunk_id, entity_id=entity_id, graph_name=graph_name)
             for chunk_id, entity_id in evidence
         ],
         claims=[
@@ -331,3 +329,30 @@ def test_stored_descriptions_without_provenance_fail_loudly() -> None:
                 chunks=["a:c0"], entities=[("e1", "Alice", "Replacement fact.")]
             )
         )
+
+
+def test_uid_written_for_document_chunk_and_entity() -> None:
+    store = StatefulFakeGraphStore()
+    writer = make_writer(store)
+    writer.write_graph_document(
+        build_document(chunks=["doc:1:c0"], entities=[("p1", "John", None)])
+    )
+
+    # Length-prefixed uid: "entity-graph" has 12 characters.
+    stored_doc = store._documents[("entity-graph", "doc:1")]
+    assert stored_doc["uid"] == "12:entity-graph:doc:1"
+    stored_chunk = store._chunks[("entity-graph", "doc:1:c0")]
+    assert stored_chunk["uid"] == "12:entity-graph:doc:1:c0"
+    node = store.get_node("p1")
+    assert node is not None
+    assert node["uid"] == "12:entity-graph:p1"
+
+
+def test_uid_is_a_reserved_property_key() -> None:
+    store = StatefulFakeGraphStore()
+    writer = make_writer(store)
+    document = build_document(chunks=["a:c0"], entities=[("e1", "Alice", None)])
+    document.chunks[0].metadata["uid"] = "user-supplied"
+
+    with pytest.raises(ValueError, match="uid"):
+        writer.write_graph_document(document)

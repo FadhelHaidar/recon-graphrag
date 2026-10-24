@@ -78,7 +78,17 @@ class IndexManager:
                 pass
 
     def _create_constraints(self):
-        """Create constraints required by the community hierarchy."""
+        """Create constraints required by the SDK.
+
+        Community hierarchy needs a composite uniqueness constraint; the
+        writer needs per-label uid uniqueness for safe concurrent upserts
+        (F8). Unexpected failures now propagate instead of being muted so
+        a silently missing constraint cannot corrupt later ingestion.
+        """
+        self._create_community_constraint()
+        self._create_uid_constraints()
+
+    def _create_community_constraint(self):
         try:
             self.graph_store.execute_query(
                 """
@@ -88,7 +98,60 @@ class IndexManager:
                 """
             )
         except Exception as e:
-            logger.warning("community uniqueness constraint failed: %s", e)
+            raise RuntimeError(
+                "Failed to create the Community uniqueness constraint; "
+                "duplicate communities already in the graph must be resolved "
+                "before ingestion can continue safely."
+            ) from e
+
+    # Labels whose per-graph (graph_name, id) pair must be unique.
+    _UID_LABELS = ("Document", "Chunk", "__Entity__")
+
+    def _create_uid_constraints(self):
+        for label in self._UID_LABELS:
+            self._preflight_unique_uids(label)
+            self._backfill_uids(label)
+            self.graph_store.execute_query(
+                f"""
+                CREATE CONSTRAINT uid_{label}_unique IF NOT EXISTS
+                FOR (n:{label})
+                REQUIRE n.uid IS UNIQUE
+                """
+            )
+
+    def _preflight_unique_uids(self, label: str) -> None:
+        rows = self.graph_store.execute_query(
+            f"""
+            MATCH (n:{label})
+            WITH n.graph_name AS graph_name, n.id AS id, count(*) AS duplicates
+            WHERE duplicates > 1
+            RETURN graph_name, id, duplicates
+            ORDER BY duplicates DESC
+            LIMIT 50
+            """
+        )
+        if rows:
+            dup = rows[0]
+            raise ValueError(
+                f"Cannot create the uid uniqueness constraint for label "
+                f"'{label}': the graph already contains duplicate (graph_name, id) "
+                f"pairs, e.g. graph_name={dup['graph_name']!r}, id={dup['id']!r} "
+                f"with {dup['duplicates']} duplicates. Resolve existing "
+                "duplicates (for example by re-ingesting the affected documents "
+                "after upgrading) before re-running index setup."
+            )
+
+    def _backfill_uids(self, label: str) -> None:
+        # Same length-prefixed encoding as the writer, so backfilled uids
+        # match newly written ones for graphs ingested before F8.
+        self.graph_store.execute_query(
+            f"""
+            MATCH (n:{label})
+            WHERE n.uid IS NULL
+            SET n.uid = toString(size(n.graph_name)) + ':' + n.graph_name + ':' + n.id
+            RETURN count(n) AS backfilled
+            """
+        )
 
     async def resolve_entities_exact(
         self,

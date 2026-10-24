@@ -89,7 +89,7 @@ class DescriptionSummarizer:
         total = 0
         batches = 0
         while True:
-            candidates = fetch(self.graph_name, limit=limit)
+            candidates = await asyncio.to_thread(fetch, self.graph_name, limit=limit)
             if not candidates:
                 return {"summarized": total, "batches": batches}
 
@@ -98,7 +98,7 @@ class DescriptionSummarizer:
                 summaries = await self._summary_payload(
                     candidates, fingerprints, prompt, label
                 )
-                persist(self.graph_name, summaries)
+                await asyncio.to_thread(persist, self.graph_name, summaries)
             except Exception as exc:
                 error_rows = [
                     {
@@ -112,7 +112,7 @@ class DescriptionSummarizer:
                     }
                     for item in candidates
                 ]
-                persist(self.graph_name, error_rows)
+                await asyncio.to_thread(persist, self.graph_name, error_rows)
                 raise DescriptionSummarizationError(
                     f"Failed to summarize {label} descriptions: {exc}"
                 ) from exc

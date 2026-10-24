@@ -120,6 +120,7 @@ class MemgraphGraphStore(BaseGraphStore):
         graph_name: str = "entity-graph",
         resolve_property: str = "name",
         dry_run: bool = False,
+        *,
         conflict_properties: dict[str, list[str]] | list[str] | None = None,
     ) -> dict:
         from recon_graphrag.graphdb.memgraph.entity_resolution import (
