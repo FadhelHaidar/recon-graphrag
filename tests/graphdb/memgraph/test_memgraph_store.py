@@ -51,11 +51,32 @@ class FakeSession:
         self.params.append(parameters or {})
         return self._next_result
 
+    def begin_transaction(self):
+        return FakeTransaction(self)
+
     def __enter__(self):
         return self
 
     def __exit__(self, *args):
         pass
+
+
+class FakeTransaction:
+    """Explicit transaction over FakeSession; records commit/rollback."""
+
+    def __init__(self, session: FakeSession):
+        self._session = session
+        self.committed = False
+        self.rolled_back = False
+
+    def run(self, query: str, parameters: dict | None = None):
+        return self._session.run(query, parameters)
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
 
 
 class FakeDriver:

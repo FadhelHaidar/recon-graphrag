@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, LiteralString, Optional, cast
 
 if TYPE_CHECKING:
@@ -17,7 +19,7 @@ from recon_graphrag.graphdb.cypher import (
 from recon_graphrag.graphdb.memgraph.index_manager import IndexManager
 from recon_graphrag.models.types import IndexConfig
 from recon_graphrag.pipelines.writer import CypherGraphWriter
-from recon_graphrag.graphdb.store_base import BaseGraphStore
+from recon_graphrag.graphdb.store_base import BaseGraphStore, TransactionExecutor
 
 
 def _escape_tantivy_term(value: str) -> str:
@@ -75,6 +77,19 @@ class MemgraphGraphStore(BaseGraphStore):
             # parameterized with escaped identifiers only (trusted code).
             result = session.run(cast(LiteralString, query), parameters or {})
             return [dict(record) for record in result]
+
+    @contextmanager
+    def _transaction(self) -> Iterator[TransactionExecutor]:
+        """Yield an executor on one transaction: commit, or roll back on error."""
+        with self._driver.session(database=self._database) as session:
+            transaction = session.begin_transaction()
+            try:
+                yield TransactionExecutor(transaction)
+            except BaseException:
+                transaction.rollback()
+                raise
+            else:
+                transaction.commit()
 
     # ------------------------------------------------------------------
     # Write

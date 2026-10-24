@@ -7,12 +7,34 @@ shape is part of the shared GraphStore contract.
 
 from __future__ import annotations
 
+from typing import LiteralString, cast
+
 from recon_graphrag.models.artifacts import (
     CommunityReport,
     report_to_json,
     report_to_text,
 )
 from recon_graphrag.graphdb.cypher import escape_cypher_identifier
+
+
+class TransactionExecutor:
+    """Run ``execute_query`` on one open driver transaction.
+
+    The writer only needs ``execute_query``, so this can stand in for the store
+    for the duration of one document write; the owning ``_transaction`` context
+    commits or rolls it back.
+    """
+
+    def __init__(self, transaction) -> None:
+        self._transaction = transaction
+
+    def execute_query(
+        self, query: str, parameters: dict | None = None
+    ) -> list[dict]:
+        # Driver typing narrows to LiteralString; queries are built from escaped
+        # identifiers in trusted code, exactly as in the store's execute_query.
+        result = self._transaction.run(cast(LiteralString, query), parameters or {})
+        return [dict(record) for record in result]
 
 
 class BaseGraphStore:

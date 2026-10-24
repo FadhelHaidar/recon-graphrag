@@ -25,6 +25,7 @@ detection:
 from __future__ import annotations
 
 from collections import defaultdict
+from copy import copy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -128,6 +129,17 @@ class CypherGraphWriter:
         self.graph_store = graph_store
 
     def write_graph_document(self, graph_document: GraphDocument) -> dict[str, int]:
+        transaction = getattr(self.graph_store, "_transaction", None)
+        if transaction is None:
+            return self._write_document(graph_document)
+        # One transaction per document, so a mid-write failure leaves nothing
+        # behind. A store without the hook keeps the auto-commit path.
+        with transaction() as executor:
+            scoped = copy(self)
+            scoped.graph_store = executor
+            return scoped._write_document(graph_document)
+
+    def _write_document(self, graph_document: GraphDocument) -> dict[str, int]:
         self._reject_reserved_keys(graph_document)
         state = self._read_document_state(graph_document)
         entity_rows = self._entity_rows(graph_document, state)
