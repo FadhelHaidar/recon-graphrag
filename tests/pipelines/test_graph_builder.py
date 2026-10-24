@@ -17,6 +17,7 @@ from recon_graphrag.extraction.schema import (
     PropertyType,
     RelationshipType,
 )
+from recon_graphrag.extraction.structured import ColumnEntity, RowMapping
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.memgraph.store import MemgraphGraphStore
 from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
@@ -24,7 +25,6 @@ from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.observability import UsageTrackingLLM, track_usage
 from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
 from recon_graphrag.pipelines.writer import CypherGraphWriter
-
 
 
 class FakeGraphStore:
@@ -1843,3 +1843,53 @@ async def test_strict_completion_lookup_failure_propagates():
 
     with pytest.raises(RuntimeError, match="completion query failed"):
         await asyncio.wait_for(pipeline._embed_entities(), timeout=5)
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+@pytest.mark.asyncio
+async def test_non_positive_concurrency_raises_before_any_work(
+    movie_schema, fake_llm, fake_embedder, fake_writer, bad
+):
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=fake_llm,
+        embedder=fake_embedder,
+        graph_writer=fake_writer,
+        perform_entity_resolution=False,
+        embed_entities=False,
+        summarize_descriptions=False,
+    )
+    mapping = RowMapping(
+        entities=[ColumnEntity(label="Company", identity_column="supplier_name")],
+        record_id_column="order_id",
+    )
+
+    with pytest.raises(ValueError, match="extraction_concurrency"):
+        await pipeline.build_from_text(
+            "Alice directed Inception.",
+            schema=movie_schema,
+            extraction_concurrency=bad,
+        )
+    with pytest.raises(ValueError, match="extraction_concurrency"):
+        await pipeline.build_from_documents(
+            [{"text": "Alice directed Inception."}],
+            schema=movie_schema,
+            extraction_concurrency=bad,
+        )
+    with pytest.raises(ValueError, match="document_concurrency"):
+        await pipeline.build_from_documents(
+            [{"text": "Alice directed Inception."}],
+            schema=movie_schema,
+            document_concurrency=bad,
+        )
+    with pytest.raises(ValueError, match="extraction_concurrency"):
+        await pipeline.build_from_rows(
+            [{"supplier_name": "Acme", "order_id": "O-1"}],
+            mapping,
+            extraction_concurrency=bad,
+        )
+
+    assert fake_llm.ainvoke.await_count == 0
+    assert fake_writer.write_graph_document.call_count == 0
+    assert store.queries == []

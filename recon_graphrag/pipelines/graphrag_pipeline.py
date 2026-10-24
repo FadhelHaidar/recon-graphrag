@@ -169,6 +169,7 @@ class GraphBuilderPipeline:
         Steps 4-5 must be run separately via CommunityPipeline.
         """
         self._require_schema(schema)
+        self._require_concurrency(extraction_concurrency)
         with run_scope():
             result = await self._ingest_text(
                 text=text,
@@ -272,6 +273,7 @@ class GraphBuilderPipeline:
         Returns one result dict per input envelope.
         """
         self._require_schema(schema)
+        self._require_concurrency(extraction_concurrency, document_concurrency)
         self._validate_document_envelopes(documents)
 
         with run_scope():
@@ -442,6 +444,7 @@ class GraphBuilderPipeline:
         extracted entities are linked to the row's anchor entity and merge with
         same-label/same-name direct entities during finalize entity resolution.
         """
+        self._require_concurrency(extraction_concurrency)
         mapping.validate()
         rows = [dict(row) for row in rows]
         metadata = metadata or {}
@@ -682,6 +685,15 @@ class GraphBuilderPipeline:
                 "schema must be a GraphSchema; to auto-generate one from sample "
                 "text, call analyze_schema/aanalyze_schema and pass the result"
             )
+
+    @staticmethod
+    def _require_concurrency(
+        extraction_concurrency: int, document_concurrency: int | None = None
+    ) -> None:
+        if extraction_concurrency < 1:
+            raise ValueError("extraction_concurrency must be at least 1")
+        if document_concurrency is not None and document_concurrency < 1:
+            raise ValueError("document_concurrency must be at least 1")
 
     @staticmethod
     def _identity_properties(schema: GraphSchema) -> dict[str, str] | None:
