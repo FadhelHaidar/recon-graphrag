@@ -164,6 +164,7 @@ async def test_resolve_entities_normalized_forwards_basic_parameters(monkeypatch
         "graph_name": "movie-graph",
         "resolve_property": "title",
         "dry_run": True,
+        "conflict_properties": None,
     }
 
 

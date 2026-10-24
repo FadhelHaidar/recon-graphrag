@@ -13,19 +13,22 @@ import asyncio
 import hashlib
 import logging
 import re
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any
 
 from tqdm.asyncio import tqdm_asyncio
 
 from recon_graphrag.embeddings import EntityEmbedder
+from recon_graphrag.embeddings.base import BaseEmbedder
+from recon_graphrag.extraction.assembler import GraphDocumentAssembler
 from recon_graphrag.extraction.chunking import (
     PageWindowBuilder,
     TextChunker,
     _page_text,
 )
-from recon_graphrag.extraction.extractor import LLMGraphExtractor
 from recon_graphrag.extraction.description_summarizer import DescriptionSummarizer
+from recon_graphrag.extraction.extractor import LLMGraphExtractor
 from recon_graphrag.extraction.parser import _PropertyValidationError
 from recon_graphrag.extraction.prompts import SchemaPromptBuilder
 from recon_graphrag.extraction.schema import GraphSchema
@@ -37,14 +40,12 @@ from recon_graphrag.extraction.structured import (
     row_text,
     rows_to_chunks_and_extractions,
 )
-from recon_graphrag.extraction.assembler import GraphDocumentAssembler
 from recon_graphrag.extraction.types import (
     ExtractedClaim,
     ExtractedRelationship,
     GraphExtraction,
 )
 from recon_graphrag.extraction.validator import SchemaValidator
-from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graphdb.base import GraphStore, GraphWriter
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.observability import (
@@ -54,8 +55,7 @@ from recon_graphrag.observability import (
     usage_delta,
     usage_snapshot,
 )
-from recon_graphrag.utils.tokens import TokenCounter, TiktokenTokenCounter
-
+from recon_graphrag.utils.tokens import TiktokenTokenCounter, TokenCounter
 
 logger = logging.getLogger(__name__)
 
@@ -75,17 +75,17 @@ class GraphBuilderPipeline:
         llm: BaseLLM,
         embedder: BaseEmbedder,
         graph_name: str = "entity-graph",
-        graph_writer: Optional[GraphWriter] = None,
+        graph_writer: GraphWriter | None = None,
         perform_entity_resolution: bool = True,
         entity_resolution_strategy: str = "normalized",
-        entity_resolution_aliases: Optional[dict] = None,
-        entity_resolution_llm_guidance: Optional[str] = None,
-        entity_resolution_context_properties: Optional[
-            dict[str, list[str]] | list[str]
-        ] = None,
-        entity_resolution_conflict_properties: Optional[
-            dict[str, list[str]] | list[str]
-        ] = None,
+        entity_resolution_aliases: dict | None = None,
+        entity_resolution_llm_guidance: str | None = None,
+        entity_resolution_context_properties: dict[str, list[str]]
+        | list[str]
+        | None = None,
+        entity_resolution_conflict_properties: dict[str, list[str]]
+        | list[str]
+        | None = None,
         entity_resolution_context_mode: str = "safe_defaults",
         allow_ai_auto_merge: bool = False,
         embed_entities: bool = True,
@@ -112,9 +112,7 @@ class GraphBuilderPipeline:
         self.entity_resolution_strategy = entity_resolution_strategy
         self.entity_resolution_aliases = entity_resolution_aliases
         self.entity_resolution_llm_guidance = entity_resolution_llm_guidance
-        self.entity_resolution_context_properties = (
-            entity_resolution_context_properties
-        )
+        self.entity_resolution_context_properties = entity_resolution_context_properties
         self.entity_resolution_conflict_properties = (
             entity_resolution_conflict_properties
         )
@@ -145,7 +143,7 @@ class GraphBuilderPipeline:
     async def build_from_text(
         self,
         text: str,
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
         *,
         schema: GraphSchema,
         extraction_concurrency: int = 5,
@@ -155,6 +153,7 @@ class GraphBuilderPipeline:
         chunk_overlap: int = 100,
         chunk_unit: str = "tokens",
         token_counter: TokenCounter | None = None,
+        # pi-lens-ignore: python-hardcoded-secrets
         token_encoding: str = "cl100k_base",
     ) -> dict:
         """Build knowledge graph from raw text.
@@ -253,6 +252,7 @@ class GraphBuilderPipeline:
         chunk_size: int = 1200,
         chunk_overlap: int = 100,
         chunk_unit: str = "tokens",
+        # pi-lens-ignore: python-hardcoded-secrets
         token_counter: TokenCounter | None = None,
         token_encoding: str = "cl100k_base",
         window_size: int = 2,
@@ -349,7 +349,9 @@ class GraphBuilderPipeline:
             completed: list[dict] = []
             for result in results:
                 if result is None:
-                    raise RuntimeError("Document batch aborted before all documents completed")
+                    raise RuntimeError(
+                        "Document batch aborted before all documents completed"
+                    )
                 completed.append(result)
             validation = await self._finalize_graph()
             for result in completed:
@@ -377,7 +379,11 @@ class GraphBuilderPipeline:
         logger.info(
             "graph build start from pages: document_id=%s pages=%s chars=%s "
             "window_size=%s window_overlap=%s",
-            document_id, len(pages), len(text), window_size, window_overlap,
+            document_id,
+            len(pages),
+            len(text),
+            window_size,
+            window_overlap,
         )
 
         window_builder = PageWindowBuilder(
@@ -393,7 +399,8 @@ class GraphBuilderPipeline:
         if chunks:
             logger.info(
                 "built page windows: document_id=%s chunks=%s first_page=%s last_page=%s",
-                document_id, len(chunks),
+                document_id,
+                len(chunks),
                 chunks[0].metadata.get("page_start"),
                 chunks[-1].metadata.get("page_end"),
             )
@@ -420,9 +427,9 @@ class GraphBuilderPipeline:
         self,
         rows: Iterable[dict],
         mapping: RowMapping,
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
         *,
-        extraction_schema: Optional[GraphSchema] = None,
+        extraction_schema: GraphSchema | None = None,
         extraction_concurrency: int = 5,
         max_gleanings: int = 1,
         finalize: bool = True,
@@ -446,7 +453,8 @@ class GraphBuilderPipeline:
             text_hash = self._hash_text(text)
             logger.info(
                 "graph build start from rows: document_id=%s rows=%s",
-                document_id, len(rows),
+                document_id,
+                len(rows),
             )
 
             chunks, extractions, llm_rows = rows_to_chunks_and_extractions(
@@ -471,6 +479,7 @@ class GraphBuilderPipeline:
                 chunk_extractions=extractions,
                 metadata=metadata,
                 graph_name=self.graph_name,
+                identity_properties=self._identity_properties(llm_schema),
             )
             write_stats = self.graph_writer.write_graph_document(graph_document)
             logger.info(
@@ -500,7 +509,7 @@ class GraphBuilderPipeline:
         self,
         path: str | Path,
         mapping: RowMapping,
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
         *,
         encoding: str = "utf-8-sig",
         **row_kwargs: Any,
@@ -515,9 +524,9 @@ class GraphBuilderPipeline:
         self,
         path: str | Path,
         mapping: RowMapping,
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
         *,
-        sheet: Optional[str] = None,
+        sheet: str | None = None,
         **row_kwargs: Any,
     ) -> dict:
         """Build knowledge graph from an Excel worksheet (requires openpyxl)."""
@@ -531,7 +540,7 @@ class GraphBuilderPipeline:
         connection: Any,
         query: str,
         mapping: RowMapping,
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
         *,
         params: Any = None,
         **row_kwargs: Any,
@@ -577,7 +586,9 @@ class GraphBuilderPipeline:
 
         tasks = [asyncio.create_task(_extract_one(chunk)) for chunk in pending]
         try:
-            with tqdm_asyncio(total=len(tasks), desc="Extracting rows", disable=None) as bar:
+            with tqdm_asyncio(
+                total=len(tasks), desc="Extracting rows", disable=None
+            ) as bar:
                 for future in asyncio.as_completed(tasks):
                     result = await future
                     if result is None:  # A sibling failed; its exception follows.
@@ -619,8 +630,7 @@ class GraphBuilderPipeline:
         # Public IDs may contain source/title metadata. Use an opaque document
         # fingerprint and chunk ordinal in errors, never text or provider errors.
         context = (
-            f"document={self._hash_text(document_id)[:16]} "
-            f"chunk={chunk.index + 1}"
+            f"document={self._hash_text(document_id)[:16]} chunk={chunk.index + 1}"
         )
         try:
             raw = await self.extractor.extract(
@@ -671,6 +681,16 @@ class GraphBuilderPipeline:
                 "text, call analyze_schema/aanalyze_schema and pass the result"
             )
 
+    @staticmethod
+    def _identity_properties(schema: GraphSchema) -> dict[str, str] | None:
+        """Map node label to a non-name identity property for entity keys."""
+        identity_properties = {
+            node_type.label: node_type.identity_property
+            for node_type in schema.node_types
+            if node_type.identity_property and node_type.identity_property != "name"
+        }
+        return identity_properties or None
+
     def _validate_document_envelopes(self, documents: list[dict]) -> None:
         if not isinstance(documents, list):
             raise ValueError("documents must be a list")
@@ -683,9 +703,13 @@ class GraphBuilderPipeline:
             has_pages = "pages" in envelope
 
             if has_text and has_pages:
-                raise ValueError("document envelope must not contain both 'text' and 'pages'")
+                raise ValueError(
+                    "document envelope must not contain both 'text' and 'pages'"
+                )
             if not has_text and not has_pages:
-                raise ValueError("document envelope must contain either 'text' or 'pages'")
+                raise ValueError(
+                    "document envelope must contain either 'text' or 'pages'"
+                )
 
             if has_text and not isinstance(envelope["text"], str):
                 raise ValueError("document envelope 'text' must be a string")
@@ -789,9 +813,7 @@ class GraphBuilderPipeline:
             f"{validation.get('entity_relationship_count')} relationships",
         ]
         if resolution and resolution.get("skipped"):
-            lines.append(
-                f"  entity resolution: skipped ({resolution.get('reason')})"
-            )
+            lines.append(f"  entity resolution: skipped ({resolution.get('reason')})")
         elif resolution:
             merged_groups = resolution.get("merged_groups", 0)
             llm_merged = len(resolution.get("ai_merged_review_groups", []))
@@ -827,7 +849,9 @@ class GraphBuilderPipeline:
 
         logger.info(
             "extraction start: document_id=%s chunks=%s concurrency=%s",
-            document_id, total, extraction_concurrency,
+            document_id,
+            total,
+            extraction_concurrency,
         )
 
         semaphore = asyncio.Semaphore(extraction_concurrency)
@@ -890,6 +914,7 @@ class GraphBuilderPipeline:
             chunk_extractions=chunk_extractions,
             metadata=metadata,
             graph_name=self.graph_name,
+            identity_properties=self._identity_properties(schema),
             chunk_claims=chunk_claims if chunk_claims else None,
         )
 
@@ -923,6 +948,7 @@ class GraphBuilderPipeline:
             elif strategy == "normalized":
                 result = await self.graph_store.resolve_entities_normalized(
                     graph_name=self.graph_name,
+                    conflict_properties=self.entity_resolution_conflict_properties,
                 )
             elif strategy == "fuzzy":
                 result = await self.graph_store.resolve_entities_fuzzy(
@@ -946,7 +972,9 @@ class GraphBuilderPipeline:
                 for rg in result.get("review_groups", []):
                     logger.debug(
                         "review group: names=%s scores=%s decision=%s",
-                        rg.get("names"), rg.get("scores"), rg.get("decision"),
+                        rg.get("names"),
+                        rg.get("scores"),
+                        rg.get("decision"),
                     )
             return result if isinstance(result, dict) else None
         except Exception as e:

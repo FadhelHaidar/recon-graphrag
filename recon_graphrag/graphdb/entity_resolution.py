@@ -178,12 +178,17 @@ class BaseEntityResolver(ABC):
         graph_name: str = "entity-graph",
         resolve_property: str = "name",
         dry_run: bool = False,
+        conflict_properties: dict[str, list[str]] | list[str] | None = None,
     ) -> dict:
         preflight_result = self._preflight(dry_run=dry_run)
         if preflight_result is not None:
             return preflight_result
         entities = self._load_entities(graph_name, resolve_property)
         groups, review_groups = self._build_normalized_groups(entities)
+        groups, review_groups = self._build_normalized_groups(entities)
+        groups, review_groups = self._apply_conflict_rules(
+            groups, review_groups, entities, conflict_properties
+        )
         return await self._finish_resolution(
             groups=groups,
             review_groups=review_groups,
@@ -236,8 +241,8 @@ class BaseEntityResolver(ABC):
         llm=None,
         llm_guidance: Optional[str] = None,
         allow_ai_auto_merge: bool = False,
-        context_properties: Optional[dict[str, list[str]] | list[str]] = None,
-        conflict_properties: Optional[dict[str, list[str]] | list[str]] = None,
+        context_properties: dict[str, list[str]] | list[str] | None = None,
+        conflict_properties: dict[str, list[str]] | list[str] | None = None,
         context_mode: str = "safe_defaults",
     ) -> dict:
         preflight_result = self._preflight(dry_run=dry_run)
@@ -662,7 +667,7 @@ class BaseEntityResolver(ABC):
             node_ids = rg.get("node_ids") or []
             confidence = llm_review.get("confidence")
             try:
-                confidence_value = float(confidence)
+                confidence_value = float(confidence or 0.0)
             except (TypeError, ValueError):
                 confidence_value = 0.0
 

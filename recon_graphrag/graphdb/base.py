@@ -6,7 +6,7 @@ plus GraphWriter protocol for write operations.
 
 from __future__ import annotations
 
-from typing import Any, Optional, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from recon_graphrag.extraction.types import GraphDocument
 from recon_graphrag.models.artifacts import CommunityReport
@@ -25,7 +25,7 @@ class GraphStore(Protocol):
     # Escape hatch — backend-specific query language
     # ------------------------------------------------------------------
     def execute_query(
-        self, query: str, parameters: Optional[dict] = None
+        self, query: str, parameters: dict | None = None
     ) -> list[dict]:
         """Execute a raw query and return results as list of dicts.
 
@@ -45,12 +45,12 @@ class GraphStore(Protocol):
     # Indexes
     # ------------------------------------------------------------------
     def create_indexes(
-        self, config: Optional[IndexConfig] = None, embedding_dim: int = 1536
+        self, config: IndexConfig | None = None, embedding_dim: int = 1536
     ) -> None:
         """Create all required vector, fulltext, and uniqueness indexes."""
         ...
 
-    def drop_indexes(self, config: Optional[IndexConfig] = None) -> None:
+    def drop_indexes(self, config: IndexConfig | None = None) -> None:
         """Drop existing indexes so they can be recreated."""
         ...
 
@@ -71,6 +71,7 @@ class GraphStore(Protocol):
         graph_name: str = "entity-graph",
         resolve_property: str = "name",
         dry_run: bool = False,
+        conflict_properties: dict[str, list[str]] | list[str] | None = None,
     ) -> dict:
         """Merge duplicate entity nodes using normalized matching."""
         ...
@@ -95,13 +96,13 @@ class GraphStore(Protocol):
         merge_threshold: float = 95.0,
         review_threshold: float = 85.0,
         max_candidates_per_entity: int = 20,
-        aliases: Optional[dict] = None,
-        embedder: Optional[Any] = None,
-        llm: Optional[Any] = None,
-        llm_guidance: Optional[str] = None,
+        aliases: dict | None = None,
+        embedder: Any | None = None,
+        llm: Any | None = None,
+        llm_guidance: str | None = None,
         allow_ai_auto_merge: bool = False,
-        context_properties: Optional[dict[str, list[str]] | list[str]] = None,
-        conflict_properties: Optional[dict[str, list[str]] | list[str]] = None,
+        context_properties: dict[str, list[str]] | list[str] | None = None,
+        conflict_properties: dict[str, list[str]] | list[str] | None = None,
         context_mode: str = "safe_defaults",
     ) -> dict:
         """Merge duplicate entity nodes using hybrid fuzzy + embedding + LLM matching."""
@@ -181,8 +182,8 @@ class GraphStore(Protocol):
         index_name: str,
         query_vector: list[float],
         k: int,
-        label: Optional[str] = None,
-        filters: Optional[dict] = None,
+        label: str | None = None,
+        filters: dict | None = None,
     ) -> list[dict]:
         """Vector search returning rows with 'id' and 'score' keys."""
         ...
@@ -192,8 +193,8 @@ class GraphStore(Protocol):
         index_name: str,
         query_text: str,
         k: int,
-        label: Optional[str] = None,
-        filters: Optional[dict] = None,
+        label: str | None = None,
+        filters: dict | None = None,
     ) -> list[dict]:
         """Keyword/fulltext search returning rows with 'id' and 'score' keys."""
         ...
@@ -201,8 +202,8 @@ class GraphStore(Protocol):
     def fetch_entity_context(
         self,
         matches: list[dict],
-        retrieval_query: Optional[str] = None,
-        query_params: Optional[dict] = None,
+        retrieval_query: str | None = None,
+        query_params: dict | None = None,
         mode: str = "local",
         graph_name: str | None = None,
     ) -> list[dict]:
@@ -215,13 +216,13 @@ class GraphStore(Protocol):
     def detect_communities(
         self,
         graph_name: str,
-        relationship_types: Optional[list[str]] = None,
+        relationship_types: list[str] | None = None,
         max_levels: int = 3,
         gamma: float = 1.0,
         theta: float = 0.01,
         tolerance: float = 1e-4,
-        relationship_weight_property: Optional[str] = None,
-        random_seed: Optional[int] = 42,
+        relationship_weight_property: str | None = None,
+        random_seed: int | None = 42,
         entity_label: str = "__Entity__",
         community_label: str = "Community",
     ) -> list[dict]:
@@ -235,7 +236,7 @@ class GraphStore(Protocol):
     def get_communities(
         self,
         graph_name: str,
-        level: Optional[int] = None,
+        level: int | None = None,
     ) -> list[dict]:
         """Get communities at a given level."""
         ...

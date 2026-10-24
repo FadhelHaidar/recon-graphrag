@@ -172,15 +172,19 @@ async def test_text_columns_merge_llm_extraction_and_anchor(mapping, fake_writer
 
     doc = fake_writer.write_graph_document.call_args.args[0]
     entities = {e.canonical_key for e in doc.entities}
-    # Direct scoped keys plus LLM name-keyed entities (merged later by resolution).
-    assert entities == {"Company:Acme Corp", "Product:Widget", "Widget", "ChipCo"}
+    # Direct scoped keys plus LLM name-keyed entities. F7: the LLM's local IDs
+    # are document-scoped, so they stay separate from the structured rows here
+    # and merge later via resolution on real evidence.
+    llm_keys = entities - {"Company:Acme Corp", "Product:Widget"}
+    assert len(llm_keys) == 2
+    assert all(k.startswith(doc.document.id + ":") for k in llm_keys)
 
     mentions = [r for r in doc.relationships if r.type == "MENTIONS"]
     # Anchor edge to ChipCo; the self-link to "Widget" is skipped.
     assert len(mentions) == 1
     (mention,) = mentions
     assert mention.properties["source_canonical_key"] == "Product:Widget"
-    assert mention.properties["target_canonical_key"] == "ChipCo"
+    assert mention.properties["target_canonical_key"] in llm_keys
 
 
 @pytest.mark.asyncio
@@ -217,8 +221,8 @@ async def test_custom_extraction_schema_constrains_llm_pass(mapping, fake_writer
     doc = fake_writer.write_graph_document.call_args.args[0]
     keys = {e.canonical_key for e in doc.entities}
     # Component "AX-9" was dropped by the validator against the custom schema.
-    assert "AX-9" not in keys
-    assert "ChipCo" in keys
+    assert not any(k.endswith(":Component:AX-9") for k in keys)
+    assert any(k.endswith(":Company:ChipCo") for k in keys)
 
 
 @pytest.mark.asyncio

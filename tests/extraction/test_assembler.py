@@ -42,7 +42,13 @@ def test_assembler_deduplicates_entities():
         graph_name="entity-graph",
     )
     assert len(result.entities) == 2
-    assert {e.canonical_key for e in result.entities} == {"p1", "p2"}
+    # Reused chunk-local IDs must not be global identity: they are scoped to
+    # their own document so re-occurring "p1" from another document stays a
+    # separate node until resolution merges on real evidence.
+    assert {e.canonical_key for e in result.entities} == {
+        "doc1:Person:p1",
+        "doc1:Person:p2",
+    }
     assert {e.human_readable_id for e in result.entities} == {"p1", "p2"}
     assert all(UUID(e.id) for e in result.entities)
 
@@ -96,8 +102,14 @@ def test_assembler_deduplicates_relationships_and_aggregates_weight():
     assert rel.observation_count == 2
     assert rel.strength == 1.0  # first extracted weight
     assert rel.properties["weight"] == 2.0  # Leiden observation weight
-    assert rel.properties["canonical_key"] == "p1:KNOWS:p2"
-    assert rel.properties["human_readable_id"] == "p1:KNOWS:p2"
+    assert rel.properties["canonical_key"] == (
+        "doc1:Person:p1:KNOWS:doc1:Person:p2"
+    )
+    assert rel.properties["human_readable_id"] == (
+        "doc1:Person:p1:KNOWS:doc1:Person:p2"
+    )
+    assert rel.properties["source_canonical_key"] == "doc1:Person:p1"
+    assert rel.properties["target_canonical_key"] == "doc1:Person:p2"
     assert set(rel.properties["source_chunk_ids"]) == {"c1", "c2"}
 
 
@@ -263,7 +275,10 @@ def test_assembler_claims_from_multiple_chunks():
     assert len(result.claims) == 2
     entity_ids = {c.entity_id for c in result.claims}
     assert entity_ids == {e.id for e in result.entities}
-    assert {e.canonical_key for e in result.entities} == {"person:alice", "person:bob"}
+    assert {e.canonical_key for e in result.entities} == {
+        "doc1:Person:person:alice",
+        "doc1:Person:person:bob",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +318,8 @@ def make_cross_chunk_graph_document(graph_name: str = "entity-graph"):
     - Document A (chunks c1, c2): same entity e1 with two descriptions; same
       relationship e1-[WORKS_AT]->e2 in both chunks.
     - Document B (chunk c3): repeats the relationship and adds a third e1 description.
+      Both endpoints are present because the validator drops relationships whose
+      endpoints are missing from the same chunk extraction.
     - The same logical IDs are also returned under a different graph_name by callers.
     """
     assembler = _make_assembler()
@@ -321,7 +338,7 @@ def make_cross_chunk_graph_document(graph_name: str = "entity-graph"):
             relationships=[_rel()],
         ),
         "c3": GraphExtraction(
-            nodes=[_node("e1", "desc from c3")],
+            nodes=[_node("e1", "desc from c3"), _node("e2", "desc from c2")],
             relationships=[_rel()],
         ),
     }
@@ -337,7 +354,7 @@ def make_cross_chunk_graph_document(graph_name: str = "entity-graph"):
 
 def test_entity_descriptions_accumulated_and_consolidated():
     doc = make_cross_chunk_graph_document()
-    e1 = next(e for e in doc.entities if e.canonical_key == "e1")
+    e1 = next(e for e in doc.entities if e.canonical_key == "doc1:Person:e1")
     assert UUID(e1.id)
     # All three unique descriptions are consolidated
     assert "desc from c1" in e1.properties["description"]
@@ -367,7 +384,7 @@ def test_entity_empty_descriptions_excluded_from_consolidation():
         metadata={},
         graph_name="entity-graph",
     )
-    e1 = next(e for e in doc.entities if e.canonical_key == "e1")
+    e1 = next(e for e in doc.entities if e.canonical_key == "doc1:Person:e1")
     # Empty description excluded from consolidation
     assert e1.properties["description"] == ""
     assert len(e1.description_observations) == 1
@@ -423,17 +440,22 @@ def test_relationship_source_chunk_ids_accumulated():
 
 def test_evidence_links_count():
     doc = make_cross_chunk_graph_document()
-    # c1 links e1 and e2; c2 links e1 and e2; c3 links e1.
-    assert len(doc.evidence_links) == 5
+    # c1 links e1 and e2; c2 links e1 and e2; c3 links e1 and e2.
+    assert len(doc.evidence_links) == 6
 
 
 def test_rerun_does_not_inflate_entities():
     assembler = _make_assembler()
     first = make_cross_chunk_graph_document()
+    # first.chunks are ChunkRecord; rewrap as TextChunk for the rerun input.
+    rerun_chunks = [
+        TextChunk(id=c.id, text=c.text, index=c.index, metadata=c.metadata)
+        for c in first.chunks
+    ]
     second = assembler.assemble(
         document_id=first.document.id,
         text_hash=first.document.text_hash,
-        chunks=first.chunks,
+        chunks=rerun_chunks,
         chunk_extractions={
             chunk.id: GraphExtraction(
                 nodes=[
@@ -453,7 +475,10 @@ def test_rerun_does_not_inflate_entities():
     )
     assert len(second.entities) == 2
     assert {e.id for e in second.entities} == {e.id for e in first.entities}
-    assert {e.canonical_key for e in second.entities} == {"e1", "e2"}
+    assert {e.canonical_key for e in second.entities} == {
+        "doc1:Person:e1",
+        "doc1:Person:e2",
+    }
 
 
 def test_graph_name_stamped_on_all_records():
@@ -475,3 +500,233 @@ def test_graph_name_isolation_at_assembler_level():
         e.canonical_key for e in doc_b.entities
     }
     assert {e.id for e in doc_a.entities} != {e.id for e in doc_b.entities}
+
+
+# ---------------------------------------------------------------------------
+# F7 identity scoping: extracted local IDs are not global identity
+# ---------------------------------------------------------------------------
+
+
+def _single_doc(
+    chunk_id: str, nodes: list[ExtractedNode], relationships=None
+) -> dict[str, GraphExtraction]:
+    return {
+        chunk_id: GraphExtraction(nodes=nodes, relationships=relationships or []),
+    }
+
+
+def test_reused_local_id_across_documents_stays_separate():
+    """The same extracted ID "p1" in two documents is not one entity."""
+    assembler = GraphDocumentAssembler()
+    nodes = [ExtractedNode(id="p1", label="Person", properties={"name": "Alice"})]
+    doc1 = assembler.assemble(
+        document_id="doc1",
+        text_hash="hash",
+        chunks=[TextChunk(id="doc1:chunk:0", text="...", index=0, metadata={})],
+        chunk_extractions=_single_doc("doc1:chunk:0", nodes),
+        metadata={},
+        graph_name="entity-graph",
+    )
+    doc2 = assembler.assemble(
+        document_id="doc2",
+        text_hash="hash",
+        chunks=[TextChunk(id="doc2:chunk:0", text="...", index=0, metadata={})],
+        chunk_extractions=_single_doc(
+            "doc2:chunk:0",
+            [ExtractedNode(id="p1", label="Person", properties={"name": "Alice"})],
+        ),
+        metadata={},
+        graph_name="entity-graph",
+    )
+    assert doc1.entities[0].canonical_key == "doc1:Person:p1"
+    assert doc2.entities[0].canonical_key == "doc2:Person:p1"
+    assert doc1.entities[0].id != doc2.entities[0].id
+
+
+def test_relationship_endpoints_map_to_extracted_nodes():
+    assembler = GraphDocumentAssembler()
+    chunks = [TextChunk(id="c1", text="Alice knows Bob", index=0, metadata={})]
+    extractions = {
+        "c1": GraphExtraction(
+            nodes=[
+                ExtractedNode(id="p1", label="Person", properties={"name": "Alice"}),
+                ExtractedNode(id="p2", label="Person", properties={"name": "Bob"}),
+            ],
+            relationships=[
+                ExtractedRelationship(
+                    source_id="p1", target_id="p2", type="KNOWS", properties={}
+                )
+            ],
+        ),
+    }
+    result = assembler.assemble(
+        document_id="doc1",
+        text_hash="hash",
+        chunks=chunks,
+        chunk_extractions=extractions,
+        metadata={},
+        graph_name="entity-graph",
+    )
+    alice = next(e for e in result.entities if e.properties["name"] == "Alice")
+    bob = next(e for e in result.entities if e.properties["name"] == "Bob")
+    rel = result.relationships[0]
+    assert rel.source_id == alice.id
+    assert rel.target_id == bob.id
+    assert rel.properties["source_canonical_key"] == alice.canonical_key
+    assert rel.properties["target_canonical_key"] == bob.canonical_key
+
+
+def test_relationship_falls_back_to_legacy_key_for_unknown_endpoint():
+    """Endpoints with no matching node keep the pre-F7 global raw-ID mapping."""
+    assembler = GraphDocumentAssembler()
+    chunks = [TextChunk(id="c1", text="...", index=0, metadata={})]
+    extractions = {
+        "c1": GraphExtraction(
+            nodes=[
+                ExtractedNode(id="p1", label="Person", properties={"name": "Alice"}),
+            ],
+            relationships=[
+                ExtractedRelationship(
+                    source_id="p1", target_id="ghost", type="KNOWS", properties={}
+                )
+            ],
+        ),
+    }
+    result = assembler.assemble(
+        document_id="doc1",
+        text_hash="hash",
+        chunks=chunks,
+        chunk_extractions=extractions,
+        metadata={},
+        graph_name="entity-graph",
+    )
+    alice = result.entities[0]
+    rel = result.relationships[0]
+    assert rel.source_id == alice.id
+    assert rel.properties["target_canonical_key"] == "ghost"
+
+
+def test_claim_endpoints_map_to_extracted_nodes():
+    assembler = GraphDocumentAssembler()
+    chunks = [TextChunk(id="c1", text="Alice is CEO.", index=0, metadata={})]
+    extractions = {
+        "c1": GraphExtraction(
+            nodes=[
+                ExtractedNode(id="p1", label="Person", properties={"name": "Alice"}),
+            ],
+            relationships=[],
+        ),
+    }
+    chunk_claims = {
+        "c1": [
+            ExtractedClaim(
+                subject_entity_id="p1",
+                claim_type="role",
+                description="Alice is the CEO of Acme.",
+                status="active",
+            ),
+        ],
+    }
+    result = assembler.assemble(
+        document_id="doc1",
+        text_hash="hash",
+        chunks=chunks,
+        chunk_extractions=extractions,
+        metadata={},
+        graph_name="entity-graph",
+        chunk_claims=chunk_claims,
+    )
+    assert result.claims[0].entity_id == result.entities[0].id
+
+
+def test_identity_property_scopes_keys():
+    """A configured identity property gives label-scoped trusted keys."""
+    assembler = GraphDocumentAssembler()
+    chunks = [TextChunk(id="c1", text="...", index=0, metadata={})]
+    extractions = {
+        "c1": GraphExtraction(
+            nodes=[
+                ExtractedNode(
+                    id="p1",
+                    label="Person",
+                    properties={"name": "John", "person_no": "P-42"},
+                ),
+                ExtractedNode(
+                    id="p2",
+                    label="Person",
+                    properties={"name": "John", "person_no": "P-99"},
+                ),
+                ExtractedNode(
+                    id="p3",
+                    label="Person",
+                    properties={"name": "Johnny", "person_no": "P-42"},
+                ),
+            ],
+            relationships=[],
+        ),
+    }
+    result = assembler.assemble(
+        document_id="doc1",
+        text_hash="hash",
+        chunks=chunks,
+        chunk_extractions=extractions,
+        metadata={},
+        graph_name="entity-graph",
+        identity_properties={"Person": "person_no"},
+    )
+    # Same identity value merges (trusted key); same NAME does not collapse.
+    assert {e.canonical_key for e in result.entities} == {"Person:P-42", "Person:P-99"}
+    assert len(result.entities) == 2
+
+
+def test_identity_property_without_value_falls_back_to_surrogate():
+    assembler = GraphDocumentAssembler()
+    chunks = [TextChunk(id="c1", text="...", index=0, metadata={})]
+    extractions = {
+        "c1": GraphExtraction(
+            nodes=[
+                ExtractedNode(id="p1", label="Person", properties={"name": "John"}),
+            ],
+            relationships=[],
+        ),
+    }
+    result = assembler.assemble(
+        document_id="doc1",
+        text_hash="hash",
+        chunks=chunks,
+        chunk_extractions=extractions,
+        metadata={},
+        graph_name="entity-graph",
+        identity_properties={"Person": "person_no"},
+    )
+    assert result.entities[0].canonical_key == "doc1:Person:p1"
+
+
+def test_explicit_canonical_key_wins_over_surrogate():
+    assembler = GraphDocumentAssembler()
+    chunks = [TextChunk(id="c1", text="...", index=0, metadata={})]
+    extractions = {
+        "c1": GraphExtraction(
+            nodes=[
+                ExtractedNode(
+                    id="w1",
+                    label="Product",
+                    properties={
+                        "name": "Widget",
+                        "canonical_key": "Product:Widget",
+                    },
+                ),
+            ],
+            relationships=[],
+        ),
+    }
+    result = assembler.assemble(
+        document_id="doc1",
+        text_hash="hash",
+        chunks=chunks,
+        chunk_extractions=extractions,
+        metadata={},
+        graph_name="entity-graph",
+    )
+    assert result.entities[0].canonical_key == "Product:Widget"
+    assert result.entities[0].human_readable_id == "Product:Widget"

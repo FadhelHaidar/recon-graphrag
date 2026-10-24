@@ -41,7 +41,7 @@ These constraints do **not** establish a production capacity. Unattended mutable
 | F4 | High | Changed-document ingestion does not prune obsolete evidence; entity vectors are not invalidated when their input changes. | Fixed |
 | F5 | High | Community and index maintenance delete existing resources before replacement succeeds. | Confirmed ordering |
 | F6 | High | Embedding failures can be reported as success; graph writes are partial and reported counts are input counts. | Confirmed |
-| F7 | High | Default entity resolution merges homonyms; extraction identity mistakes can collapse entities before resolution. | Confirmed, conditional on inputs |
+| F7 | High | Default entity resolution merges homonyms; extraction identity mistakes can collapse entities before resolution. | Fixed |
 | F8 | High for concurrent use | Synchronous database operations block async callers; core node identities lack uniqueness constraints. | Confirmed mechanisms; load/race impact unmeasured |
 | F9 | High as data grows | Full materialization, quadratic candidate generation, and unbounded neighborhood expansion create scaling limits. | Confirmed mechanisms; thresholds unmeasured |
 | F10 | Medium | Citation failures can disappear silently; one retrieval mode ignores citation-metadata options. | Confirmed |
@@ -213,6 +213,8 @@ Separately, the assembler treats extracted node IDs as canonical identities. Reu
 **Validation:** Test same-name/different-person records, conflicting identifiers, and repeated chunk-local IDs.
 
 **Narrow additional defect:** A node's `canonical_key` override is not applied consistently to relationship endpoints. This was reproduced, but default schema filtering removes that property unless explicitly declared; it is an extension-path defect, not a default-path failure.
+
+**Fix status (F7):** Fixed in three layers. (1) The assembler now treats extracted node IDs as chunk-local references, not global identities: relationship and claim endpoints resolve through a per-chunk mapping that must contain both endpoints (mirroring validator rules). Entity keys are `label:value` when a non-name identity property is configured (schema `identity_property`), document-scoped surrogates (`document_id:label:local_id`) for name-only records, explicit `canonical_key` when provided, and legacy global keys only as a fallback for endpoints missing from the chunk's extraction. Reused local IDs like `p1` therefore stay separate until resolution distinguishes them on real evidence. (2) Normalized resolution accepts the same optional `conflict_properties` argument as hybrid resolution; groups whose configured properties differ on non-empty values are moved to blocked review groups instead of auto-merging, while missing values do not conflict. The pipeline's default normalized strategy now passes configured `entity_resolution_conflict_properties` through, and derives the identity-property map from the active schema for both extraction paths. (3) Both backends share the resolver base class so the behavior is identical on Neo4j and Memgraph. Coverage: 8 new assembler tests (reused local IDs, endpoint mapping, fallback, identity-property scoping, explicit keys), 3 new normalized-conflict resolver tests, and updated pipeline tests pinning document-scoped LLM keys; full suite 1,107 passed. Not run: live-backend conflict scenarios on an existing graph with previously merged wrong entities (re-ingestion or rebuilds required).
 
 ### F8 — Async concurrency and database identity guarantees are insufficient
 

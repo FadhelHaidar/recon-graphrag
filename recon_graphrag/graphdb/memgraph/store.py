@@ -120,6 +120,7 @@ class MemgraphGraphStore(BaseGraphStore):
         graph_name: str = "entity-graph",
         resolve_property: str = "name",
         dry_run: bool = False,
+        conflict_properties: dict[str, list[str]] | list[str] | None = None,
     ) -> dict:
         from recon_graphrag.graphdb.memgraph.entity_resolution import (
             _MemgraphEntityResolver,
@@ -130,6 +131,7 @@ class MemgraphGraphStore(BaseGraphStore):
             graph_name=graph_name,
             resolve_property=resolve_property,
             dry_run=dry_run,
+            conflict_properties=conflict_properties,
         )
 
     async def resolve_entities_fuzzy(
