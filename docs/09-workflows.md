@@ -485,9 +485,12 @@ over `source`, then `title`, then the text-derived ID. Changing a lower-priority
 value does not replace an explicit identity.
 
 The guarantee is per artifact and applies to reserved-key rejection only:
-previously written artifacts are not rolled back, and unrelated database failures
-can still leave partial writes. Extraction may already have incurred provider
-costs before validation; a high-level retry may repeat that work.
+previously written artifacts are not rolled back when a later document in the
+same build is rejected, and a custom store without the `_transaction` hook can
+still leave partial writes. Built-in Neo4j and Memgraph stores write one
+document inside one transaction, so a failure inside a single document write
+rolls that document back. Extraction may already have incurred provider costs
+before validation; a high-level retry may repeat that work.
 
 ### Implement a custom GraphStore
 
