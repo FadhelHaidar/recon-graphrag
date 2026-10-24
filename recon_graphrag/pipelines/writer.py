@@ -138,12 +138,15 @@ class CypherGraphWriter:
         )
         # Validate removed contributions too, before the first mutation.
         self._rebuild_entity_rows(graph_document, state, entity_rows)
-        self._write_documents([graph_document.document])
-        self._write_chunks(graph_document.chunks)
-        self._write_entities(graph_document.entities, entity_rows)
-        self._write_evidence_links(graph_document.evidence_links)
-        self._write_relationships(graph_document, relationship_rows, rebuild_relationships)
-        self._write_claims(graph_document.claims)
+        self._validate_references(graph_document, state)
+        documents = self._write_documents([graph_document.document])
+        chunks = self._write_chunks(graph_document.chunks)
+        entities = self._write_entities(graph_document.entities, entity_rows)
+        evidence_links = self._write_evidence_links(graph_document.evidence_links)
+        relationships = self._write_relationships(
+            graph_document, relationship_rows, rebuild_relationships
+        )
+        claims = self._write_claims(graph_document.claims)
         self._reconcile(
             graph_document,
             state,
@@ -152,7 +155,15 @@ class CypherGraphWriter:
             rebuild_relationships,
         )
 
-        return self._stats_for(graph_document)
+        # A receipt of what the database confirmed, not of what was submitted.
+        return {
+            "documents": documents,
+            "chunks": chunks,
+            "entities": entities,
+            "relationships": relationships,
+            "evidence_links": evidence_links,
+            "claims": claims,
+        }
 
     def _reject_reserved_keys(self, graph_document: GraphDocument) -> None:
         """Fail before any query when a free-form map would overwrite SDK fields."""
@@ -176,6 +187,67 @@ class CypherGraphWriter:
                     "and rename application identifiers to a nonreserved name such "
                     "as 'external_id' or 'employee_id', then resubmit."
                 )
+
+    def _validate_references(
+        self, graph_document: GraphDocument, state: _DocumentState
+    ) -> None:
+        """Fail before the first write when a reference will not resolve.
+
+        The write queries MATCH their endpoints, so a record naming a missing
+        entity or chunk is dropped without an error. Endpoints owned by other
+        documents resolve against the graph.
+        """
+        chunk_ids = {chunk.id for chunk in graph_document.chunks}
+        chunk_ids.update(state.chunk_ids)
+        entity_ids = {entity.id for entity in graph_document.entities}
+        entity_ids.update(state.entities)
+
+        chunk_refs = [link.chunk_id for link in graph_document.evidence_links]
+        chunk_refs += [claim.source.chunk_id for claim in graph_document.claims]
+        entity_refs = [link.entity_id for link in graph_document.evidence_links]
+        entity_refs += [claim.entity_id for claim in graph_document.claims]
+        for relationship in graph_document.relationships:
+            entity_refs += [relationship.source_id, relationship.target_id]
+
+        missing_chunks = {
+            ref for ref in chunk_refs if ref and ref not in chunk_ids
+        }
+        missing_entities = {
+            ref for ref in entity_refs if ref and ref not in entity_ids
+        }
+        if missing_entities:
+            missing_entities -= self._existing_entity_ids(
+                graph_document.document.graph_name, sorted(missing_entities)
+            )
+        if not missing_chunks and not missing_entities:
+            return
+
+        missing = []
+        if missing_chunks:
+            missing.append(f"chunk(s) {', '.join(sorted(missing_chunks))}")
+        if missing_entities:
+            missing.append(f"entity(ies) {', '.join(sorted(missing_entities))}")
+        raise ValueError(
+            f"GraphDocument {graph_document.document.id!r} references missing "
+            f"{' and '.join(missing)}; relationships, evidence links, and claims "
+            "are only written when their endpoints exist. Include the referenced "
+            "records in the document, or write them first."
+        )
+
+    def _existing_entity_ids(
+        self, graph_name: str, entity_ids: list[str]
+    ) -> set[str]:
+        return {
+            row["id"]
+            for row in self.graph_store.execute_query(
+                """
+                UNWIND $entity_ids AS id
+                MATCH (e:__Entity__ {id: id, graph_name: $graph_name})
+                RETURN e.id AS id
+                """,
+                {"graph_name": graph_name, "entity_ids": entity_ids},
+            )
+        }
 
     # ------------------------------------------------------------------
     # Existing contribution state
@@ -404,11 +476,12 @@ class CypherGraphWriter:
     # ------------------------------------------------------------------
     # Writes
     # ------------------------------------------------------------------
-    def _write_documents(self, documents: list) -> None:
+    def _write_documents(self, documents: list) -> int:
         if not documents:
-            return
+            return 0
 
-        self.graph_store.execute_query(
+        rows = self._document_rows(documents)
+        result = self.graph_store.execute_query(
             """
             UNWIND $documents AS row
             MERGE (d:Document {id: row.id, graph_name: row.graph_name})
@@ -417,15 +490,18 @@ class CypherGraphWriter:
                 d.uid = row.uid,
                 d.updated = timestamp(),
                 d.created = coalesce(d.created, timestamp())
+            RETURN count(*) AS written
             """,
-            {"documents": self._document_rows(documents)},
+            {"documents": rows},
         )
+        return _confirmed(result, len(rows))
 
-    def _write_chunks(self, chunks: list) -> None:
+    def _write_chunks(self, chunks: list) -> int:
         if not chunks:
-            return
+            return 0
 
-        self.graph_store.execute_query(
+        rows = self._chunk_rows(chunks)
+        result = self.graph_store.execute_query(
             """
             UNWIND $chunks AS row
             MATCH (d:Document {id: row.document_id, graph_name: row.graph_name})
@@ -437,20 +513,24 @@ class CypherGraphWriter:
                 c.updated = timestamp(),
                 c.created = coalesce(c.created, timestamp())
             MERGE (c)-[:PART_OF]->(d)
+            RETURN count(*) AS written
             """,
-            {"chunks": self._chunk_rows(chunks)},
+            {"chunks": rows},
         )
+        return _confirmed(result, len(rows))
 
     def _write_entities(
         self, entities: list, rows: list[dict[str, Any]]
-    ) -> None:
+    ) -> int:
         if not entities:
-            return
+            return 0
 
+        written = 0
         for entity_type, group in self._group_by_type(entities).items():
             label = escape_cypher_identifier(entity_type)
             group_ids = {entity.id for entity in group}
-            self.graph_store.execute_query(
+            group_rows = [row for row in rows if row["id"] in group_ids]
+            result = self.graph_store.execute_query(
                 f"""
                 UNWIND $entities AS row
                 MERGE (e:__Entity__:{label} {{id: row.id, graph_name: row.graph_name}})
@@ -489,36 +569,47 @@ class CypherGraphWriter:
                         ELSE e.description_input_fingerprint
                     END
                 """,
-                {"entities": [row for row in rows if row["id"] in group_ids]},
+                {"entities": group_rows},
             )
+            written += _confirmed(result, len(group_rows))
+        return written
 
-    def _write_evidence_links(self, links: list) -> None:
+    def _write_evidence_links(self, links: list) -> int:
         if not links:
-            return
+            return 0
 
-        self.graph_store.execute_query(
+        rows = self._evidence_link_rows(links)
+        result = self.graph_store.execute_query(
             """
             UNWIND $links AS row
             MATCH (c:Chunk {id: row.chunk_id, graph_name: row.graph_name})
             MATCH (e:__Entity__ {id: row.entity_id, graph_name: row.graph_name})
             MERGE (c)-[r:FROM_CHUNK]->(e)
             SET r.graph_name = row.graph_name
+            RETURN count(*) AS written
             """,
-            {"links": self._evidence_link_rows(links)},
+            {"links": rows},
         )
+        return _confirmed(result, len(rows))
 
     def _write_relationships(
         self,
         graph_document: GraphDocument,
         rows: list[dict[str, Any]],
         rebuild: list[dict[str, Any]],
-    ) -> None:
+    ) -> int:
         """Write this document's relationships, plus provenance-only rebuilds."""
         relationships = graph_document.relationships
         by_key = {_relationship_key(row): row for row in rows}
+        written = 0
         for rel_type, group in self._group_by_type(relationships).items():
             rel_label = escape_cypher_identifier(rel_type)
-            self.graph_store.execute_query(
+            group_rows = [
+                by_key[_relationship_key(rel)]
+                for rel in group
+                if _relationship_key(rel) in by_key
+            ]
+            result = self.graph_store.execute_query(
                 f"""
                 UNWIND $relationships AS row
                 MATCH (source:__Entity__ {{id: row.source_id, graph_name: row.graph_name}})
@@ -557,15 +648,11 @@ class CypherGraphWriter:
                         WHEN row.descriptions_changed THEN NULL
                         ELSE r.description_input_fingerprint
                     END
+                RETURN count(*) AS written
                 """,
-                {
-                    "relationships": [
-                        by_key[_relationship_key(rel)]
-                        for rel in group
-                        if _relationship_key(rel) in by_key
-                    ]
-                },
+                {"relationships": group_rows},
             )
+            written += _confirmed(result, len(group_rows))
 
         if rebuild:
             self.graph_store.execute_query(
@@ -604,13 +691,15 @@ class CypherGraphWriter:
                     "relationships": rebuild,
                 },
             )
+        return written
 
-    def _write_claims(self, claims: list) -> None:
+    def _write_claims(self, claims: list) -> int:
         """Write Claim nodes with SUBJECT_OF and SOURCED_FROM edges."""
         if not claims:
-            return
+            return 0
 
-        self.graph_store.execute_query(
+        rows = self._claim_rows(claims)
+        result = self.graph_store.execute_query(
             """
             UNWIND $claims AS row
             MERGE (c:Claim {id: row.id, graph_name: row.graph_name})
@@ -630,9 +719,12 @@ class CypherGraphWriter:
             WITH c, row
             MATCH (ch:Chunk {id: row.chunk_id, graph_name: row.graph_name})
             MERGE (c)-[:SOURCED_FROM]->(ch)
+            RETURN count(*) AS written
             """,
-            {"claims": self._claim_rows(claims)},
+            {"claims": rows},
         )
+        # Rows that survived both endpoint MATCHes: fully linked claims.
+        return _confirmed(result, len(rows))
 
     # ------------------------------------------------------------------
     # Reconciliation
@@ -882,16 +974,6 @@ class CypherGraphWriter:
     # ------------------------------------------------------------------
     # Row shapes
     # ------------------------------------------------------------------
-    def _stats_for(self, graph_document: GraphDocument) -> dict[str, int]:
-        return {
-            "documents": 1,
-            "chunks": len(graph_document.chunks),
-            "entities": len(graph_document.entities),
-            "relationships": len(graph_document.relationships),
-            "evidence_links": len(graph_document.evidence_links),
-            "claims": len(graph_document.claims),
-        }
-
     def _document_rows(self, documents: list) -> list[dict[str, Any]]:
         return [
             {
@@ -983,6 +1065,16 @@ def _relationship_key(rel: Any) -> tuple[str, str, str]:
             str(rel.get("type") or ""),
         )
     return (str(rel.source_id), str(rel.target_id), str(rel.type))
+
+
+def _confirmed(result: Any, submitted: int) -> int:
+    """Rows the database confirmed, or the submitted rows when it reports none."""
+    # shortcut: an aggregate always returns one row on the Cypher backends, so an
+    # empty result means the store did not report (test double, custom query
+    # escape hatch); upgrade to a hard requirement if that ever changes.
+    if result and isinstance(result[0], dict) and "written" in result[0]:
+        return int(result[0]["written"])
+    return submitted
 
 
 def _replace_strength(
