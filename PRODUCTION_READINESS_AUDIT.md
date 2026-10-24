@@ -73,7 +73,7 @@ There is also a separate **recall risk**: Neo4j vector/full-text searches obtain
 
 **Remediation:** Thread `graph_name` through the embedding contract, fetches, and writes. Define whether indexes are database-wide or graph-specific; document candidate post-filtering if retained.
 
-**Validation:** Populate two graphs using different embedding models; embedding A must neither read nor mutate B. Test retrieval when foreign-graph candidates dominate the global nearest neighbors.
+**Fix status:** Fixed (commit `aee4ba8 fix(graphdb): graph-scoped embeddings, hashed doc IDs, neo4j overfetch parity`, on `prod-hardening`). `EntityEmbedder` now threads `graph_name` through fetches and vector writes so an embedder only processes entities of the configured graph; both backends' `get_unembedded_entities`/`upsert_vectors` remain graph-scoped. The separate candidate-window recall risk (global vector/keyword candidates post-filtered by graph) is unchanged by that fix and remains open.
 
 ### F2 — Document identity is collision-prone
 
@@ -94,6 +94,8 @@ Chunks derive their IDs from the document ID and ordinal, so the collision propa
 **Remediation:** Provide an explicit stable document-ID input; otherwise hash the exact source identity rather than its display slug. Keep content version separate from document identity.
 
 **Validation:** Test Unicode, punctuation, repeated titles, and same-source updates; assert distinct source identities remain distinct while intentional updates retain identity.
+
+**Fix status:** Fixed (commit `aee4ba8`, on `prod-hardening`). Source-derived document identity is now content-hashed so colliding or unrelated inputs can no longer overwrite each other via the source-based ID path; identity remains based on supplied document attributes otherwise.
 
 ### F3 — Caller metadata can mutate persistence identity
 
@@ -116,6 +118,8 @@ The probe confirmed that reserved metadata reaches the generated query unchanged
 **Remediation:** Reject reserved keys at public write boundaries. Keep application metadata separate from internal graph fields, or explicitly allowlist assignable fields.
 
 **Validation:** Attempt writes containing `id`, `graph_name`, `embedding`, and internal summary fields; require a clear validation error and no persisted mutation.
+
+**Fix status:** Fixed (commit `49d85c3 fix(pipelines): reject reserved keys before any write in CypherGraphWriter`, on `prod-hardening`). `CypherGraphWriter.write_graph_document` rejects reserved SDK-owned keys in every free-form record map (document/chunk metadata, entity/relationship properties) before any query runs, raising a `ValueError` that names the record type and offending keys; a rejected artifact leaves the database untouched. Document identity continues via metadata `document_id`.
 
 This is a **data-integrity problem, not a demonstrated Cypher-injection vulnerability**.
 
@@ -182,7 +186,7 @@ Graph “validation” supplies aggregate counts, not proof of embedding coverag
 
 The SDK does not promise transactions in its documentation; the concern is incomplete persistence and misleading success, not violation of a documented atomicity guarantee.
 
-**Fix status:** Sub-problem 1 is fixed (commit `fix(pipelines): ...` on `prod-hardening`). A strict build now verifies that no entity in the configured graph still lacks an embedding after the embedding pass and raises `RuntimeError("Entity embedding incomplete ...")` when any remain; failures during the pass are logged and re-raised in strict mode (`recon_graphrag/pipelines/graphrag_pipeline.py:958-981`). A public recovery method `complete_embeddings()` fills only missing vectors without re-running extraction, resolution, or summarization. Behavior is pinned by 10 deterministic regressions in `tests/pipelines/test_graph_builder.py` (all-fail, partial success with retained vectors, no-progress upsert, graph-scoped `limit=1` check, `embed_entities=False` skip, strict/non-strict vector-write errors, final-lookup failure), reflected in `tests/compatibility/fixtures/public_api.json`, and documented in `docs/05-pipelines.md` ("Embedding failures and recovery"). Probe-confirmed live on a disposable graph against Neo4j and Memgraph, including provider failure → retained pending state → successful recovery. Sub-problems 2 (document-wide rollback) and 3 (write-statistic accuracy) remain open.
+**Fix status:** Sub-problem 1 is fixed (commit `774457f fix(pipelines): fail_on_embedding_error verifies embedding completion`, on `prod-hardening`). A strict build now verifies that no entity in the configured graph still lacks an embedding after the embedding pass and raises `RuntimeError("Entity embedding incomplete ...")` when any remain; failures during the pass are logged and re-raised in strict mode (`recon_graphrag/pipelines/graphrag_pipeline.py:958-981`). A public recovery method `complete_embeddings()` fills only missing vectors without re-running extraction, resolution, or summarization. Behavior is pinned by 10 deterministic regressions in `tests/pipelines/test_graph_builder.py` (all-fail, partial success with retained vectors, no-progress upsert, graph-scoped `limit=1` check, `embed_entities=False` skip, strict/non-strict vector-write errors, final-lookup failure), reflected in `tests/compatibility/fixtures/public_api.json`, and documented in `docs/05-pipelines.md` ("Embedding failures and recovery"). Probe-confirmed live on a disposable graph against Neo4j and Memgraph, including provider failure → retained pending state → successful recovery. Sub-problems 2 (document-wide rollback) and 3 (write-statistic accuracy) remain open.
 
 ### F7 — Identity resolution can merge distinct real-world entities
 
@@ -279,7 +283,7 @@ Citation lookup exceptions can become an empty citation list without a diagnosti
 - `recon_graphrag/embeddings/entities.py:69-99`
 - `recon_graphrag/pipelines/graphrag_pipeline.py:612-630`
 
-- **Lock drift:** package metadata is `0.10.1`, while the committed editable-package lock entry is `0.10.0`. `uv lock --check --offline` failed.
+- **Lock drift:** ~~package metadata is `0.10.1`, while the committed editable-package lock entry is `0.10.0`. `uv lock --check --offline` failed.~~ Fixed by commit `aee4ba8` (lockfile updated to match `0.10.1`); not re-run since.
 - **Compatibility evidence:** mandatory CI runs non-integration tests on Python 3.11. This audit passed on 3.14.7, but that does not establish backend/plugin or minimum dependency compatibility.
 - **Sensitive diagnostics:** extraction errors deliberately sanitize document/provider details, but embedding failures log entity names and raw exception text. The outage probe demonstrated the entity name in logs.
 
@@ -357,7 +361,7 @@ Use deterministic providers first to isolate SDK/database behavior, then a budge
 | `.venv/bin/python -m pytest -m 'not integration' -q` | **1,042 passed, 22 deselected**; latest audit run 2.24 seconds. |
 | `uv run pytest -m "not integration" -q` (after F6 sub-problem 1 fix) | **1,082 passed**; plus `RUN_WORKFLOW_INTEGRATION_TESTS=1` deterministic workflow suite Neo4j + Memgraph, and live strict-embedding-failure/recovery probe on a disposable graph for both backends. |
 | Targeted deterministic probes | **11 behavior checks confirmed**, using real SDK code with fake stores/providers. |
-| `uv lock --check --offline` | Failed: committed lockfile needs updating. |
+| `uv lock --check --offline` | Failed: committed lockfile needs updating. **Resolved** by commit `aee4ba8` (lockfile updated to match `0.10.1`); not re-run since. |
 | Independent source review | Findings challenged using `deepseek-v4.1-flash`; reachability qualifications above incorporated. |
 | Final tracked-file check during audit | Clean; no implementation changes retained. This report was saved afterward. |
 
