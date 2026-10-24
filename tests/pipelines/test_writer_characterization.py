@@ -106,6 +106,10 @@ _COMMON_RESERVED = (
     "description_summary_updated",
     "description_summary_error",
     "description_summary_fallback",
+    "description_sources",
+    "embedding_input_fingerprint",
+    "embedding_content_fingerprint",
+    "embedding_model_fingerprint",
 )
 _MAP_CASES = [
     ("DocumentRecord.metadata", _COMMON_RESERVED + ("text_hash",)),
@@ -263,7 +267,7 @@ def test_entity_supported_properties_pass_through():
     row = _write_rows(store, "UNWIND $entities")[0]
     assert row["canonical_key"] == "person:alice"
     assert row["human_readable_id"] == "person:alice"
-    assert row["description"] == "Leads Acme."
+    assert row["description_text"] == "Leads Acme."
     assert row["properties"] == {
         key: value for key, value in properties.items() if key != "description"
     }

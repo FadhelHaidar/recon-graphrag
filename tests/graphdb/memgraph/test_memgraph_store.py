@@ -308,7 +308,39 @@ def test_upsert_vectors_runs_unwind_set(store, fake_driver):
     )
     query_text = "\n".join(fake_driver.session_obj.queries)
     assert "UNWIND $rows" in query_text
-    assert "SET n.`embedding` = row.vector" in query_text
+    assert "n.`embedding` = row.vector" in query_text
+
+
+def test_get_unembedded_entities_selects_missing_or_stale_vectors(store, fake_driver):
+    fake_driver.session_obj._next_result = FakeResult([])
+
+    store.get_unembedded_entities("g", limit=5, model_fingerprint="model-1")
+
+    query_text = "\n".join(fake_driver.session_obj.queries)
+    assert "e.embedding IS NULL" in query_text
+    assert "e.embedding_content_fingerprint" in query_text
+    assert "e.embedding_input_fingerprint" in query_text
+    assert "e.embedding_model_fingerprint" in query_text
+
+
+def test_upsert_vectors_records_content_and_model_fingerprints(store, fake_driver):
+    fake_driver.session_obj._next_result = FakeResult([])
+
+    store.upsert_vectors(
+        [1],
+        "embedding",
+        [[0.1]],
+        content_fingerprints=["content-1"],
+        model_fingerprint="model-1",
+    )
+
+    query_text = "\n".join(fake_driver.session_obj.queries)
+    assert "n.embedding_content_fingerprint" in query_text
+    assert "n.embedding_input_fingerprint" in query_text
+    assert "n.embedding_model_fingerprint" in query_text
+    assert fake_driver.session_obj.params[-1]["rows"] == [
+        {"id": 1, "vector": [0.1], "content_fingerprint": "content-1"}
+    ]
 
 
 def test_upsert_vectors_rejects_mismatched_lengths(store):

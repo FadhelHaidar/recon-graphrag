@@ -212,6 +212,9 @@ class Neo4jGraphStore(BaseGraphStore):
         node_ids: list[str],
         embedding_property: str,
         vectors: list[list[float]],
+        *,
+        content_fingerprints: list[str] | None = None,
+        model_fingerprint: str | None = None,
     ) -> None:
         """Batch upsert vector embeddings onto nodes matched by elementId().
 
@@ -224,18 +227,33 @@ class Neo4jGraphStore(BaseGraphStore):
             return
 
         rows = [
-            {"id": node_id, "vector": vector}
-            for node_id, vector in zip(node_ids, vectors)
+            {
+                "id": node_id,
+                "vector": vector,
+                "content_fingerprint": fingerprint,
+            }
+            for node_id, vector, fingerprint in zip(
+                node_ids,
+                vectors,
+                content_fingerprints or [None] * len(node_ids),
+            )
         ]
         self.execute_query(
             """
             UNWIND $rows AS row
             MATCH (n)
             WHERE elementId(n) = row.id
+            SET n.embedding_content_fingerprint = coalesce(row.content_fingerprint, n.embedding_content_fingerprint),
+                n.embedding_input_fingerprint = coalesce(row.content_fingerprint, n.embedding_input_fingerprint),
+                n.embedding_model_fingerprint = coalesce($model_fingerprint, n.embedding_model_fingerprint)
             CALL db.create.setNodeVectorProperty(n, $embedding_property, row.vector)
             RETURN count(n) AS updated_count
             """,
-            {"rows": rows, "embedding_property": embedding_property},
+            {
+                "rows": rows,
+                "embedding_property": embedding_property,
+                "model_fingerprint": model_fingerprint,
+            },
         )
 
     # ------------------------------------------------------------------
@@ -422,17 +440,30 @@ class Neo4jGraphStore(BaseGraphStore):
         )
         return detector.detect()
 
-    def get_unembedded_entities(self, graph_name: str, limit: int = 500) -> list[dict]:
+    def get_unembedded_entities(
+        self, graph_name: str, limit: int = 500, model_fingerprint: str | None = None
+    ) -> list[dict]:
         query = """
         MATCH (e:__Entity__ {graph_name: $graph_name})
         WHERE e.embedding IS NULL
+           OR coalesce(e.embedding_content_fingerprint, '')
+              <> coalesce(e.embedding_input_fingerprint, '')
+           OR ($model_fingerprint IS NOT NULL
+               AND coalesce(e.embedding_model_fingerprint, '') <> $model_fingerprint)
         RETURN elementId(e) AS id, labels(e) AS labels,
                e.name AS name,
-               CASE WHEN e.description IS NOT NULL THEN e.description ELSE '' END AS description
+               CASE WHEN e.description IS NOT NULL THEN e.description ELSE '' END AS description,
+               e.embedding_content_fingerprint AS embedding_content_fingerprint,
+               e.embedding_model_fingerprint AS embedding_model_fingerprint
         LIMIT $limit
         """
         return self.execute_query(
-            query, {"graph_name": graph_name, "limit": limit}
+            query,
+            {
+                "graph_name": graph_name,
+                "limit": limit,
+                "model_fingerprint": model_fingerprint,
+            },
         )
 
     def get_entities_needing_summary(
@@ -487,6 +518,10 @@ class Neo4jGraphStore(BaseGraphStore):
             e.description = CASE
                 WHEN row.description IS NULL THEN e.description
                 ELSE row.description
+            END,
+            e.embedding_input_fingerprint = CASE
+                WHEN row.description IS NULL THEN e.embedding_input_fingerprint
+                ELSE NULL
             END
         """
         self.execute_query(query, {"graph_name": graph_name, "summaries": summaries})

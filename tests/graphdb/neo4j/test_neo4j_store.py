@@ -253,11 +253,48 @@ def test_upsert_vectors_matches_nodes_by_element_id():
     assert "db.create.setNodeVectorProperty" in query
     assert params == {
         "rows": [
-            {"id": "4:a", "vector": [0.1]},
-            {"id": "4:b", "vector": [0.2]},
+            {"id": "4:a", "vector": [0.1], "content_fingerprint": None},
+            {"id": "4:b", "vector": [0.2], "content_fingerprint": None},
         ],
         "embedding_property": "embedding",
+        "model_fingerprint": None,
     }
+
+
+def test_get_unembedded_entities_selects_missing_or_stale_vectors():
+    driver = FakeDriver()
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    store.get_unembedded_entities("g", limit=5, model_fingerprint="model-1")
+
+    query, params = driver.calls[0]
+    assert "e.embedding IS NULL" in query
+    assert "e.embedding_content_fingerprint" in query
+    assert "e.embedding_input_fingerprint" in query
+    assert "e.embedding_model_fingerprint" in query
+    assert params == {"graph_name": "g", "limit": 5, "model_fingerprint": "model-1"}
+
+
+def test_upsert_vectors_records_content_and_model_fingerprints():
+    driver = FakeDriver()
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    store.upsert_vectors(
+        ["4:a"],
+        "embedding",
+        [[0.1]],
+        content_fingerprints=["content-1"],
+        model_fingerprint="model-1",
+    )
+
+    query, params = driver.calls[0]
+    assert "n.embedding_content_fingerprint" in query
+    assert "n.embedding_input_fingerprint" in query
+    assert "n.embedding_model_fingerprint" in query
+    assert params["rows"] == [
+        {"id": "4:a", "vector": [0.1], "content_fingerprint": "content-1"}
+    ]
+    assert params["model_fingerprint"] == "model-1"
 
 
 def test_upsert_vectors_rejects_mismatched_lengths():

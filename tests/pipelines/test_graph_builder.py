@@ -81,7 +81,7 @@ class FakeGraphStore:
         }
         return {"skipped": False, "merged_groups": 0, "strategy": "hybrid"}
 
-    def get_unembedded_entities(self, graph_name, limit=500):
+    def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None):
         return []
 
     def get_entities_needing_summary(self, graph_name, limit=500):
@@ -96,7 +96,7 @@ class FakeGraphStore:
     def persist_relationship_summaries(self, graph_name, summaries):
         pass
 
-    def upsert_vectors(self, node_ids, embedding_property, vectors):
+    def upsert_vectors(self, node_ids, embedding_property, vectors, **kwargs):
         pass
 
     def validate_graph_build(self):
@@ -216,7 +216,7 @@ class PendingEmbeddingFakeGraphStore(FakeGraphStore):
             )
         return super().write_graph_document(graph_document)
 
-    def get_unembedded_entities(self, graph_name, limit=500):
+    def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None):
         self.embedding_queries += 1
         self.embedding_calls.append({"graph_name": graph_name, "limit": limit})
         return [
@@ -225,7 +225,7 @@ class PendingEmbeddingFakeGraphStore(FakeGraphStore):
             if e["embedding_state"] == "pending" and e["graph_name"] == graph_name
         ][:limit]
 
-    def upsert_vectors(self, node_ids, embedding_property, vectors):
+    def upsert_vectors(self, node_ids, embedding_property, vectors, **kwargs):
         self.upsert_vectors_calls += 1
         by_id = dict(zip(node_ids, vectors, strict=True))
         for entity in self.entities:
@@ -237,7 +237,7 @@ class PendingEmbeddingFakeGraphStore(FakeGraphStore):
 class NoOpUpsertStore(PendingEmbeddingFakeGraphStore):
     """Upserts that persist nothing, so pending entities never clear."""
 
-    def upsert_vectors(self, node_ids, embedding_property, vectors):
+    def upsert_vectors(self, node_ids, embedding_property, vectors, **kwargs):
         self.upsert_vectors_calls += 1
 
 
@@ -1796,7 +1796,7 @@ async def test_strict_completion_check_is_graph_scoped_and_limit_one():
 async def test_strict_vector_write_error_propagates():
     store = PoisonEmbedderStore()
 
-    def failing_upsert(node_ids, embedding_property, vectors):
+    def failing_upsert(node_ids, embedding_property, vectors, **kwargs):
         store.upsert_vectors_calls += 1
         raise RuntimeError("database write failed")
 
@@ -1812,7 +1812,7 @@ async def test_strict_vector_write_error_propagates():
 async def test_non_strict_vector_write_error_is_logged_and_continues(caplog):
     store = PoisonEmbedderStore()
 
-    def failing_upsert(node_ids, embedding_property, vectors):
+    def failing_upsert(node_ids, embedding_property, vectors, **kwargs):
         store.upsert_vectors_calls += 1
         raise RuntimeError("database write failed")
 
@@ -1830,10 +1830,10 @@ async def test_non_strict_vector_write_error_is_logged_and_continues(caplog):
 @pytest.mark.asyncio
 async def test_strict_completion_lookup_failure_propagates():
     class FinalCheckFailureStore(PendingEmbeddingFakeGraphStore):
-        def get_unembedded_entities(self, graph_name, limit=500):
+        def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None):
             if limit == 1:
                 raise RuntimeError("completion query failed")
-            return super().get_unembedded_entities(graph_name, limit)
+            return super().get_unembedded_entities(graph_name, limit, model_fingerprint)
 
     store = FinalCheckFailureStore()
     _two_pending_entities(store)

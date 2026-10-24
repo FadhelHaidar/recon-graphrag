@@ -38,7 +38,7 @@ These constraints do **not** establish a production capacity. Unattended mutable
 | F1 | High | Entity embedding ignores graph scope; one graph's run can embed another graph's data using the wrong provider/model. | Confirmed |
 | F2 | High | Source-derived document IDs collide, allowing unrelated documents and chunks to overwrite each other. | Confirmed |
 | F3 | High | Metadata/properties can overwrite reserved identity and scope fields during persistence. | Confirmed query construction |
-| F4 | High | Changed-document ingestion does not prune obsolete evidence; entity vectors are not invalidated when their input changes. | Confirmed implementation |
+| F4 | High | Changed-document ingestion does not prune obsolete evidence; entity vectors are not invalidated when their input changes. | Fixed |
 | F5 | High | Community and index maintenance delete existing resources before replacement succeeds. | Confirmed ordering |
 | F6 | High | Embedding failures can be reported as success; graph writes are partial and reported counts are input counts. | Confirmed |
 | F7 | High | Default entity resolution merges homonyms; extraction identity mistakes can collapse entities before resolution. | Confirmed, conditional on inputs |
@@ -144,6 +144,12 @@ Entity embeddings are selected only when `embedding IS NULL`; changing names/des
 **Remediation:** Define an explicit append-versus-replace contract. For replacement, reconcile document-owned evidence and chunks. Fingerprint embedding input plus model identity and invalidate/recompute only changed vectors.
 
 **Validation:** Ingest a document, remove facts and shorten it, then reingest. Removed evidence must disappear, shared entities must survive, and changed entities must receive refreshed vectors.
+
+**Fix status:** Fixed on `prod-hardening`. `CypherGraphWriter.write_graph_document` now replaces one document's contribution inside its `graph_name`: it reads what the graph holds for that document, writes the new records first, then deletes evidence and claims on removed chunks, detaches removed chunks, prunes relationships whose `source_chunk_ids` become empty, rebuilds merged descriptions for entities no longer mentioned, and deletes entities left with no edges. Description text is stored with per-document provenance (`description_sources` as `[document_id, text]` pairs, which survives APOC `mergeNodes`) and merged descriptions are rebuilt by subtracting the replaced document's contribution, so shared entities, shared relationships, and identical text contributed by another document survive. Stored descriptions without provenance raise a `ValueError` naming the document and asking for re-ingestion instead of silently keeping stale text.
+
+Vectors are now refreshed rather than only filled in: the writer records `embedding_input_fingerprint` for the text it expects to be embedded, `EntityEmbedder` records `embedding_content_fingerprint` and `embedding_model_fingerprint` when it writes a vector, `get_unembedded_entities` selects `embedding IS NULL OR content <> input OR model <> current model` (both backends), and `persist_entity_summaries` nulls the expected fingerprint so a new summary description marks its vector stale. `fail_on_embedding_error` also rejects stale vectors, not just missing ones. Legacy graphs without fingerprints are re-embedded on the next pass.
+
+Behavior is pinned by `tests/pipelines/test_writer_replacement.py` (9 cases: shorter reingestion, shared relationship chunk ids and weight, relationship deletion on evidence loss, shared entity survival, per-document description replacement, identical-text survival, summary-status/vector invalidation, graph-name isolation, legacy-provenance rejection), `tests/embeddings/test_entity_embedder.py` (changed-text and model-change re-embedding, fingerprint propagation), and backend query-shape tests. `uv run pytest -m "not integration"` passes (1097 tests). Live Neo4j and Memgraph runs of the replacement path were **not** executed; `shortcut:` per-document relationship strength is still not tracked (max of contributions is kept).
 
 ### F5 — Maintenance is destructive before successful replacement
 
@@ -310,7 +316,7 @@ The maintainability issues are concentrated at shared boundaries—identity, wri
 1. Fix graph-scoped embedding and reserve internal persistence fields.
 2. Replace lossy document identity generation.
 3. Make strict failures and persistence counts truthful.
-4. Define replacement/replay semantics; reconcile obsolete evidence and invalidate stale vectors.
+4. ~~Define replacement/replay semantics; reconcile obsolete evidence and invalidate stale vectors.~~ Fixed; sub-problem 3 of F6 (persistence counts) remains.
 5. Protect existing communities/indexes during failed maintenance.
 6. Establish safe identity-resolution defaults and database identity constraints.
 

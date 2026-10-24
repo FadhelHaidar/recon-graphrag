@@ -138,8 +138,15 @@ class GraphStore(Protocol):
         node_ids: list[str],
         embedding_property: str,
         vectors: list[list[float]],
+        *,
+        content_fingerprints: list[str] | None = None,
+        model_fingerprint: str | None = None,
     ) -> None:
-        """Batch upsert vector embeddings onto nodes by internal ID."""
+        """Batch upsert vector embeddings onto nodes by internal ID.
+
+        ``content_fingerprints`` records the text each vector was built from so
+        a later change to that text marks the vector stale.
+        """
         ...
 
     def get_entities_needing_summary(
@@ -256,9 +263,9 @@ class GraphStore(Protocol):
         ...
 
     def get_unembedded_entities(
-        self, graph_name: str, limit: int = 500
+        self, graph_name: str, limit: int = 500, model_fingerprint: str | None = None
     ) -> list[dict]:
-        """Get graph-scoped entities without embeddings."""
+        """Get graph-scoped entities whose stored vector is missing or stale."""
         ...
 
     def get_community_ranked_context(

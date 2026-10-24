@@ -969,7 +969,9 @@ class GraphBuilderPipeline:
         try:
             await embedder.embed_entities()
             if strict and self.graph_store.get_unembedded_entities(
-                graph_name=self.graph_name, limit=1
+                graph_name=self.graph_name,
+                limit=1,
+                model_fingerprint=embedder.model_fingerprint,
             ):
                 raise RuntimeError(
                     "Entity embedding incomplete: unembedded entities remain "
