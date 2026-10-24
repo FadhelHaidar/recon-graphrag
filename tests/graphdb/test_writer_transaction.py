@@ -122,3 +122,53 @@ def test_validation_error_rolls_back_before_writing(store_and_session, fail_on):
 
     assert session.transactions[0].rolled_back is True
     assert [query for query in session.queries if "MERGE" in query] == []
+
+
+class DeadlockError(Exception):
+    """Stand-in for neo4j.exceptions.TransientError on a lock cycle."""
+
+    code = "Neo.TransientError.Transaction.DeadlockDetected"
+
+
+class FlakySession(FakeSession):
+    """Fails ``failures`` write attempts with a deadlock, then succeeds."""
+
+    def __init__(self, failures: int):
+        super().__init__()
+        self.failures = failures
+
+    def run(self, query: str, parameters: dict | None = None):
+        if self.failures and "MERGE (e:__Entity__" in query:
+            self.failures -= 1
+            raise DeadlockError("DeadlockDetected: would form a cycle")
+        return super().run(query, parameters)
+
+
+def _flaky_store(name: str, failures: int) -> tuple[Any, FlakySession]:
+    session = FlakySession(failures)
+    driver = cast(Any, FakeDriver(session))
+    store = Neo4jGraphStore(driver) if name == "neo4j" else MemgraphGraphStore(driver)
+    return store, session
+
+
+@pytest.mark.parametrize("name", ["neo4j", "memgraph"])
+def test_deadlock_is_retried_inside_the_writer(name):
+    store, session = _flaky_store(name, failures=1)
+
+    store.write_graph_document(make_graph_document())
+
+    assert len(session.transactions) == 2
+    assert session.transactions[0].rolled_back is True
+    assert session.transactions[1].committed is True
+    assert session.queries, "the retry must actually write the document"
+
+
+@pytest.mark.parametrize("name", ["neo4j", "memgraph"])
+def test_persistent_deadlock_surfaces_after_bounded_retries(name):
+    store, session = _flaky_store(name, failures=99)
+
+    with pytest.raises(DeadlockError):
+        store.write_graph_document(make_graph_document())
+
+    assert len(session.transactions) == 3
+    assert all(transaction.rolled_back for transaction in session.transactions)

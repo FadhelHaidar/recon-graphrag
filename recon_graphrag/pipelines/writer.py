@@ -24,6 +24,8 @@ detection:
 
 from __future__ import annotations
 
+import logging
+import time
 from collections import defaultdict
 from copy import copy
 from dataclasses import dataclass, field
@@ -39,6 +41,14 @@ from recon_graphrag.graphdb._provenance import (
 )
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.cypher import escape_cypher_identifier
+
+logger = logging.getLogger(__name__)
+
+# A document write runs in one transaction, so a deadlock or serialization
+# abort rolls back cleanly and the same in-memory GraphDocument can be retried
+# without new entity ids. Bounded, because a persistent abort must surface.
+_WRITE_RETRY_ATTEMPTS = 3
+_WRITE_RETRY_DELAY_SECONDS = 0.05
 
 # Properties the writer's own Cypher sets. A free-form metadata/property map
 # that carries one would overwrite SDK-owned graph state after MERGE.
@@ -122,6 +132,19 @@ def _joined(descriptions: list[str]) -> str:
     return "\n".join(descriptions)
 
 
+def _is_retryable_write_error(error: BaseException) -> bool:
+    """True for an abort where retrying the same document can succeed."""
+    code = str(getattr(error, "code", "") or "")
+    if "DeadlockDetected" in code or "SerializationError" in code:
+        return True
+    return type(error).__name__ in {
+        "DeadlockDetected",
+        "TransientError",
+        "SerializationError",
+        "TransientTransactionError",
+    }
+
+
 class CypherGraphWriter:
     """Write GraphDocument records to a Cypher graph store."""
 
@@ -134,10 +157,26 @@ class CypherGraphWriter:
             return self._write_document(graph_document)
         # One transaction per document, so a mid-write failure leaves nothing
         # behind. A store without the hook keeps the auto-commit path.
-        with transaction() as executor:
-            scoped = copy(self)
-            scoped.graph_store = executor
-            return scoped._write_document(graph_document)
+        for attempt in range(1, _WRITE_RETRY_ATTEMPTS + 1):
+            try:
+                with transaction() as executor:
+                    scoped = copy(self)
+                    scoped.graph_store = executor
+                    return scoped._write_document(graph_document)
+            except Exception as error:
+                retryable = _is_retryable_write_error(error)
+                if not retryable or attempt == _WRITE_RETRY_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "write rolled back: document_id=%s attempt=%s/%s error=%s: %s",
+                    graph_document.document.id,
+                    attempt,
+                    _WRITE_RETRY_ATTEMPTS,
+                    type(error).__name__,
+                    error,
+                )
+                time.sleep(_WRITE_RETRY_DELAY_SECONDS * attempt)
+        raise AssertionError("unreachable: retry loop exhausted without raising")
 
     def _write_document(self, graph_document: GraphDocument) -> dict[str, int]:
         self._reject_reserved_keys(graph_document)
