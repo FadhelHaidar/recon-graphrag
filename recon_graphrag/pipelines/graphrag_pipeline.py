@@ -955,17 +955,42 @@ class GraphBuilderPipeline:
                 raise
             return None
 
-    async def _embed_entities(self):
-        """Step 3: Generate vector embeddings for entity nodes."""
+    async def _embed_entities(self, *, require_complete: bool = False):
+        """Step 3: Generate vector embeddings for entity nodes.
+
+        With ``require_complete`` (or ``fail_on_embedding_error``), verifies
+        that no entity in this graph still lacks an embedding after the
+        embedding pass and raises if any remain.
+        """
         embedder = EntityEmbedder(
             self.graph_store, self.embedder, graph_name=self.graph_name
         )
+        strict = require_complete or self.fail_on_embedding_error
         try:
             await embedder.embed_entities()
+            if strict and self.graph_store.get_unembedded_entities(
+                graph_name=self.graph_name, limit=1
+            ):
+                raise RuntimeError(
+                    "Entity embedding incomplete: unembedded entities remain "
+                    "in the configured graph."
+                )
         except Exception as e:
             logger.error("entity embedding failed: %s", e)
-            if self.fail_on_embedding_error:
+            if strict:
                 raise
+
+    async def complete_embeddings(self) -> None:
+        """Embed every entity in this graph that still lacks an embedding.
+
+        Recovery after a failed embedding stage: uses the configured graph
+        store, embedder, and graph name to fill only missing entity vectors,
+        then verifies completion and raises if any remain. Existing vectors
+        are not replaced; extraction, writes, resolution, and summarization
+        are not rerun. A graph without missing vectors does not prove that
+        all intended documents were ingested.
+        """
+        await self._embed_entities(require_complete=True)
 
     def _validate_graph_build(self) -> dict:
         return self.graph_store.validate_graph_build()

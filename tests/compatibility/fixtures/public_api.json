@@ -81,7 +81,8 @@
         "build_from_excel": "(self, path: 'str | Path', mapping: 'RowMapping', metadata: 'Optional[dict]' = None, *, sheet: 'Optional[str]' = None, **row_kwargs: 'Any') -> 'dict'",
         "build_from_rows": "(self, rows: 'Iterable[dict]', mapping: 'RowMapping', metadata: 'Optional[dict]' = None, *, extraction_schema: 'Optional[GraphSchema]' = None, extraction_concurrency: 'int' = 5, max_gleanings: 'int' = 1, finalize: 'bool' = True) -> 'dict'",
         "build_from_sql": "(self, connection: 'Any', query: 'str', mapping: 'RowMapping', metadata: 'Optional[dict]' = None, *, params: 'Any' = None, **row_kwargs: 'Any') -> 'dict'",
-        "build_from_text": "(self, text: 'str', metadata: 'Optional[dict]' = None, *, schema: 'GraphSchema', extraction_concurrency: 'int' = 5, max_gleanings: 'int' = 1, extract_claims: 'bool' = False, chunk_size: 'int' = 1200, chunk_overlap: 'int' = 100, chunk_unit: 'str' = 'tokens', token_counter: 'TokenCounter | None' = None, token_encoding: 'str' = 'cl100k_base') -> 'dict'"
+        "build_from_text": "(self, text: 'str', metadata: 'Optional[dict]' = None, *, schema: 'GraphSchema', extraction_concurrency: 'int' = 5, max_gleanings: 'int' = 1, extract_claims: 'bool' = False, chunk_size: 'int' = 1200, chunk_overlap: 'int' = 100, chunk_unit: 'str' = 'tokens', token_counter: 'TokenCounter | None' = None, token_encoding: 'str' = 'cl100k_base') -> 'dict'",
+        "complete_embeddings": "(self) -> 'None'"
       }
     },
     "BaseRetriever": {

@@ -238,7 +238,7 @@ How it works:
 | `summarization_limit` | Batch size for fetching unsummarized entities or relationships. Defaults to `500`. |
 | `embed_entities` | When `True` (default), embeds entity nodes after extraction and resolution. Set to `False` to skip embedding. |
 | `fail_on_resolution_error` | When `True`, raises resolution errors instead of logging and continuing. Defaults to `False`. |
-| `fail_on_embedding_error` | When `True`, raises embedding errors instead of logging and continuing. Defaults to `False`. |
+| `fail_on_embedding_error` | When `True`, the build fails instead of logging and continuing when the embedding stage cannot complete: after the embedding pass the pipeline re-checks the graph and raises if any entity in the configured graph still lacks an embedding (for example, because the embedding provider or vector write failed). Defaults to `False`. |
 
 ### `GraphBuilderPipeline` entity resolution parameters
 
@@ -397,6 +397,43 @@ layer of structured evidence when enabled.
 - The pipeline can be run multiple times on new text; it appends to the existing graph.
 - Pass `metadata` to link extracted chunks and entities back to any source
   shape: documents, pages, database rows, tickets, API objects, or list items.
+
+#### Embedding failures and recovery
+
+Entity embedding is best-effort by default: provider or vector-write errors are
+logged and the build continues. With `fail_on_embedding_error=True` (or when you
+ask for strict completion directly), the build raises
+`RuntimeError("Entity embedding incomplete ...")` if any entity in the configured
+graph still lacks an embedding after the embedding pass. The check is
+graph-wide and point-in-time: it proves "no entity is missing a vector right
+now" in `graph_name` — not global coverage, vector freshness, or that every
+intended document was ingested.
+
+A failed strict build keeps earlier work: extraction results, graph writes,
+entity resolution, and any successfully stored vectors are retained; only
+unembedded entities stay without vectors. It does not roll back partial writes,
+and extraction is not replayed for you.
+
+To recover, call `complete_embeddings()` on a pipeline pointing at the same
+graph store, embedder, and `graph_name`. It embeds only the entities that still
+lack vectors, verifies completion, and raises if anything remains:
+
+```python
+pipeline = GraphBuilderPipeline(
+    graph_store=store, llm=llm, embedder=embedder,
+    fail_on_embedding_error=True,
+)
+try:
+    await pipeline.build_from_text(text, schema=schema)
+except RuntimeError:
+    # Later, once the provider is healthy: no re-extraction, missing vectors only
+    await pipeline.complete_embeddings()
+```
+
+`complete_embeddings()` (and a strict build) does not resume interrupted
+extraction or resolve/summarize anything new; and re-running an entire
+`build_from_text(...)` after a failure re-extracts (and re-bills) documents, so
+prefer targeted recovery when only embeddings were incomplete.
 
 ---
 
