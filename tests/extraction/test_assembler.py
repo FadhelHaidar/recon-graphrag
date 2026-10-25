@@ -280,11 +280,7 @@ def test_assembler_claims_from_multiple_chunks():
     }
 
 
-# ---------------------------------------------------------------------------
 # Cross-chunk aggregation characterization tests
-# ---------------------------------------------------------------------------
-
-
 def _make_assembler() -> GraphDocumentAssembler:
     return GraphDocumentAssembler()
 
@@ -501,11 +497,7 @@ def test_graph_name_isolation_at_assembler_level():
     assert {e.id for e in doc_a.entities} != {e.id for e in doc_b.entities}
 
 
-# ---------------------------------------------------------------------------
 # F7 identity scoping: extracted local IDs are not global identity
-# ---------------------------------------------------------------------------
-
-
 def _single_doc(
     chunk_id: str, nodes: list[ExtractedNode], relationships=None
 ) -> dict[str, GraphExtraction]:

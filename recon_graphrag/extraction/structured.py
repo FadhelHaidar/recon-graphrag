@@ -354,6 +354,8 @@ def iter_excel(path: str | Path, sheet: str | None = None) -> Iterator[dict]:
     workbook = load_workbook(path, read_only=True, data_only=True)
     try:
         worksheet = workbook[sheet] if sheet else workbook.active
+        if worksheet is None:
+            raise ValueError(f"workbook has no active sheet: {path}")
         rows = worksheet.iter_rows(values_only=True)
         header = [str(cell) if cell is not None else "" for cell in next(rows, ())]
         for row in rows:

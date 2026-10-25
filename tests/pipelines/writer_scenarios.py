@@ -98,9 +98,6 @@ class StatefulFakeGraphStore:
             return self._read_relationships(params)
         raise AssertionError(f"StatefulFakeGraphStore cannot emulate query:\n{query}")
 
-    # ------------------------------------------------------------------
-    # Writes
-    # ------------------------------------------------------------------
     def _write_documents(self, rows: list[dict]) -> list:
         for row in rows:
             self._documents[(row["graph_name"], row["id"])] = dict(row)
@@ -253,9 +250,6 @@ class StatefulFakeGraphStore:
             self._entities.pop((graph_name, entity_id), None)
         return []
 
-    # ------------------------------------------------------------------
-    # State reads
-    # ------------------------------------------------------------------
     def _document_chunk_ids(self, params: dict) -> set[str]:
         return {
             chunk["id"]
@@ -329,9 +323,7 @@ class StatefulFakeGraphStore:
                 rows.append({field: node.get(field) for field in fields})
         return rows
 
-    # ------------------------------------------------------------------
     # Assertions
-    # ------------------------------------------------------------------
     def get_node(self, entity_id: str) -> dict | None:
         for (_, stored_id), node in self._entities.items():
             if stored_id == entity_id:

@@ -32,10 +32,7 @@ from recon_graphrag.utils.tokens import (
 )
 
 
-# ---------------------------------------------------------------------------
 # Prompts
-# ---------------------------------------------------------------------------
-
 DEFAULT_MAP_PROMPT = """\
 You are answering a question using community reports from a knowledge graph.
 
@@ -94,11 +91,7 @@ GENERAL_KNOWLEDGE_INSTRUCTION = (
 )
 
 
-# ---------------------------------------------------------------------------
 # Data types
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class MapBatch:
     """A prepared batch of reports for the map phase."""
@@ -140,11 +133,6 @@ class GlobalSearchDiagnostics:
     source_citations_resolved: int = 0
     source_resolution_errors: list[str] = field(default_factory=list)
     elapsed_ms: int = 0
-
-
-# ---------------------------------------------------------------------------
-# Global search retriever
-# ---------------------------------------------------------------------------
 
 
 def _diag_to_dict(diag: GlobalSearchDiagnostics) -> dict:
@@ -245,7 +233,6 @@ class GlobalSearchRetriever:
 
             diag.selected_level = resolved_level
 
-            # 1. Read all reports at this level
             reports = self._read_reports(resolved_level)
             diag.reports_available = len(reports)
 
@@ -261,7 +248,6 @@ class GlobalSearchRetriever:
                     metadata=metadata,
                 )
 
-            # 2. Filter failed/empty reports
             reports = [r for r in reports if r.get("report_text", "").strip()]
             diag.reports_used = len(reports)
 
@@ -277,10 +263,8 @@ class GlobalSearchRetriever:
                     metadata=metadata,
                 )
 
-            # 3. Shuffle
             reports = self._shuffle(reports, random_seed)
 
-            # 4. Batch
             batches = self._create_batches(query, reports)
             diag.map_batches = len(batches)
 
@@ -289,12 +273,10 @@ class GlobalSearchRetriever:
                 batches = batches[: self.max_map_calls]
                 diag.map_batches = len(batches)
 
-            # 5. Map phase
             partials = await self._map_phase(query, batches)
             diag.map_succeeded = sum(1 for p in partials if p.error is None)
             diag.map_failed = sum(1 for p in partials if p.error is not None)
 
-            # 6. Filter score=0
             scored = [p for p in partials if p.error is None and p.helpfulness > 0]
             diag.map_filtered_zero = diag.map_succeeded - len(scored)
 
@@ -315,7 +297,6 @@ class GlobalSearchRetriever:
                 use_general_knowledge = True
                 scored = [p for p in partials if p.error is None]
 
-            # 7. Sort by helpfulness DESC
             scored.sort(key=lambda p: (-p.helpfulness, p.batch_id))
 
             # Build context from scored reports
@@ -329,7 +310,6 @@ class GlobalSearchRetriever:
             # Resolve citations from explicit map references and report-derived refs.
             citations = self._resolve_source_citations(diag, scored, resolved_level)
 
-            # 8. Reduce phase (skip when synthesize_response=False)
             if not synthesize_response:
                 diag.reduce_partials_used = 0
                 diag.elapsed_ms = int((time.monotonic() - start) * 1000)
@@ -366,9 +346,6 @@ class GlobalSearchRetriever:
                 citations=citations,
             )
 
-    # ------------------------------------------------------------------
-    # Report reading
-    # ------------------------------------------------------------------
 
     def _read_reports(self, level: int) -> list[dict]:
         """Read all community reports at a given level."""
@@ -385,10 +362,7 @@ class GlobalSearchRetriever:
             query, {"graph_name": self.graph_name, "level": level}
         )
 
-    # ------------------------------------------------------------------
     # Source citation resolution
-    # ------------------------------------------------------------------
-
     def _resolve_source_citations(
         self,
         diag: GlobalSearchDiagnostics,
@@ -401,7 +375,6 @@ class GlobalSearchRetriever:
         seen_refs: set[tuple[str, str]] = set()
         errors: list[str] = []
 
-        # 1. Collect explicit map references.
         for partial in scored:
             for ref in partial.references:
                 if not isinstance(ref, dict):
@@ -416,7 +389,6 @@ class GlobalSearchRetriever:
                 seen_refs.add(key)
                 references.append({"target_type": target_type, "target_id": target_id})
 
-        # 2. Resolve validated used report IDs.
         used_report_ids: list[str] = []
         try:
             used_report_ids = self._resolve_used_report_ids(scored)
@@ -425,7 +397,6 @@ class GlobalSearchRetriever:
 
         diag.source_report_ids_used = len(used_report_ids)
 
-        # 3. Read used reports and extract references.
         extracted_refs: list[dict] = []
         try:
             reports = self._read_report_references(resolved_level, used_report_ids)
@@ -448,7 +419,6 @@ class GlobalSearchRetriever:
                     f"reference extraction failed for {report.get('id')}: {e}"
                 )
 
-        # 4. Merge report-derived references with explicit references.
         for ref in extracted_refs:
             target_type = str(ref.get("target_type", "")).strip()
             target_id = str(ref.get("target_id", "")).strip()
@@ -462,7 +432,6 @@ class GlobalSearchRetriever:
 
         diag.source_references_extracted = len(references)
 
-        # 5. Resolve citations.
         citations: list[Citation] = []
         try:
             citations = resolve_reference_citations(
@@ -571,10 +540,7 @@ class GlobalSearchRetriever:
         return refs
 
 
-    # ------------------------------------------------------------------
     # Shuffling and batching
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _shuffle(reports: list[dict], seed: int | None) -> list[dict]:
         """Shuffle reports with a reproducible seed."""
@@ -640,10 +606,7 @@ class GlobalSearchRetriever:
 
         return batches
 
-    # ------------------------------------------------------------------
     # Map phase
-    # ------------------------------------------------------------------
-
     async def _map_phase(
         self, query: str, batches: list[MapBatch]
     ) -> list[PartialAnswer]:
@@ -733,10 +696,7 @@ class GlobalSearchRetriever:
                 return data
         raise ValueError("Map response did not contain a JSON object")
 
-    # ------------------------------------------------------------------
     # Reduce phase
-    # ------------------------------------------------------------------
-
     async def _reduce_phase(
         self, query: str, partials: list[PartialAnswer], *, use_general_knowledge: bool = False,
     ) -> str:

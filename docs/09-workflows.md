@@ -891,6 +891,42 @@ summarizer = CommunitySummarizer(store, llm, graph_name="entity-graph")
 reports, stats = await summarizer.generate_all(level=0)
 ```
 
+### Destruction safety
+
+`detect_communities()` replaces the graph's communities all-or-nothing. It
+computes the new hierarchy first, then deletes and writes `Community` nodes,
+`IN_COMMUNITY` memberships, and parent links inside a single transaction. If
+projection, the Leiden procedure, or any write fails, the previous communities
+and their reports stay in the graph and the error propagates.
+
+`create_indexes()` is strictly additive. It inspects the existing indexes and
+reuses any index whose definition matches the configuration. A name that is
+taken by an incompatible definition (wrong label, properties, dimensions, or
+similarity function) raises `ValueError` instead of dropping and recreating it.
+Replacing an index therefore stays an explicit administrative action:
+
+```python
+store.drop_indexes()   # explicit, drops the configured indexes
+store.create_indexes()
+```
+
+### Backend differences (verified against live containers)
+
+- **Hierarchy.** `max_levels` and `PARENT_COMMUNITY` edges are exercised on
+  Neo4j, where GDS Leiden reports intermediate communities. MAGE's
+  `leiden_community_detection.get_subgraph()` returns a single level per node,
+  so Memgraph communities are flat in practice.
+- **Determinism.** GDS honours `random_seed`; MAGE exposes no seed, so community
+  ids and counts can differ between identical reruns on Memgraph. A rerun still
+  replaces the previous hierarchy; it never accumulates stale communities.
+- **Index verification.** Neo4j exposes index names and vector configuration in
+  `SHOW INDEXES`, so compatible indexes are reused and a dimension or similarity
+  mismatch raises `ValueError`. Memgraph's `SHOW INDEX INFO` omits vector index
+  names and dimensions, so an existing vector index cannot be verified and setup
+  fails closed with an actionable message; drop it explicitly before recreating
+  it. Text indexes are fully described by type, label, and properties, so a
+  matching one is reused.
+
 ---
 
 ## LLM / embedder base classes

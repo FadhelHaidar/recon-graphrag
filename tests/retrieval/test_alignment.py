@@ -21,11 +21,6 @@ from recon_graphrag.retrieval.search_local import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Fakes
-# ---------------------------------------------------------------------------
-
-
 class FakeGraphStore:
     def __init__(self, *, reports=None):
         self.calls: list[tuple[str, dict]] = []
@@ -127,11 +122,7 @@ class NoReportSearchStore(FakeGraphStore):
         raise RuntimeError("No such index")
 
 
-# ---------------------------------------------------------------------------
 # P1: top_k_relationships
-# ---------------------------------------------------------------------------
-
-
 class TestTopKRelationships:
     def test_format_entity_context_caps_relationships(self):
         """_format_entity_context respects top_k_relationships."""
@@ -228,7 +219,6 @@ class TestTopKRelationships:
         assert result.context.count("REL_") == 10
 
 
-
 def _make_gk_reports(n: int = 2) -> list[dict]:
     return [
         {"id": f"report:{i}:0", "level": 0, "report_text": f"Summary {i}."}
@@ -284,9 +274,10 @@ class TestAllowGeneralKnowledge:
             def __init__(self):
                 self.prompts = []
             async def ainvoke(self, prompt):
+                from unittest.mock import MagicMock
+
                 self.prompts.append(prompt)
                 if "Synthesize" in prompt or "Partial Answers" in prompt:
-                    from unittest.mock import MagicMock
                     return MagicMock(content="General knowledge answer.")
                 return MagicMock(content=_make_gk_map_response(0))
 
@@ -319,11 +310,7 @@ class TestAllowGeneralKnowledge:
         assert llm.call_count == 1
 
 
-# ---------------------------------------------------------------------------
 # P3: DRIFT HyDE, primer folds, action mixed context
-# ---------------------------------------------------------------------------
-
-
 class TestDriftHyDE:
     @pytest.mark.asyncio
     async def test_hyde_enabled_does_two_vector_searches(self):
@@ -476,4 +463,3 @@ class TestDriftActionMixedContext:
 
         # If any actions ran with mixed context, builder should exist
         # (it's created lazily in _build_action_mixed_context)
-

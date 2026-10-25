@@ -24,11 +24,6 @@ from recon_graphrag.communities.reports import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _make_context() -> CommunityContext:
     alice = EntityContext(id="person:alice", name="Alice", description="CEO of Acme", labels=["Person"], degree=5)
     bob = EntityContext(id="person:bob", name="Bob", description="CTO of Acme", labels=["Person"], degree=3)
@@ -71,11 +66,6 @@ def _make_valid_report_json() -> str:
     })
 
 
-# ---------------------------------------------------------------------------
-# Prompt builder tests
-# ---------------------------------------------------------------------------
-
-
 class TestBuildReportPrompt:
     def test_prompt_includes_context_and_ids(self):
         context = _make_context()
@@ -103,11 +93,6 @@ class TestBuildReportPrompt:
         assert "5" in prompt
 
 
-# ---------------------------------------------------------------------------
-# Reference ID extraction tests
-# ---------------------------------------------------------------------------
-
-
 class TestExtractReferenceIds:
     def test_extracts_all_ids(self):
         ids = extract_reference_ids(
@@ -131,11 +116,6 @@ class TestBuildReferenceIds:
         assert "claim:1" in ids
         # Relationship keys
         assert any("WORKS_AT" in rid for rid in ids)
-
-
-# ---------------------------------------------------------------------------
-# Parser tests
-# ---------------------------------------------------------------------------
 
 
 class TestReportParser:
@@ -253,11 +233,6 @@ class TestReportParser:
         assert len(report.findings) == 1
 
 
-# ---------------------------------------------------------------------------
-# Repair tests
-# ---------------------------------------------------------------------------
-
-
 class TestRepair:
     def test_build_repair_prompt(self):
         prompt = build_repair_prompt(
@@ -269,11 +244,6 @@ class TestRepair:
         assert "Empty findings" in prompt
         assert "e1" in prompt
         assert "bad json" in prompt
-
-
-# ---------------------------------------------------------------------------
-# Context enrichment tests
-# ---------------------------------------------------------------------------
 
 
 class TestContextEnrichment:

@@ -47,26 +47,182 @@ class IndexManager:
             self.embedding_dim = 1536
 
     def create_indexes(self):
-        """Create all required vector and text indexes."""
-        self._drop_indexes()
-        self.graph_store.create_vector_index(
+        """Create the required indexes, reusing compatible existing ones.
+
+        Existing indexes are never dropped implicitly: a dropped vector index
+        makes retrieval fail or degrade until it is rebuilt, so replacing an
+        index stays an explicit administrative action (``drop_indexes()``).
+        """
+        existing = self._inspect_indexes()
+        self._ensure_vector_index(
+            existing,
             name=self.config.entity_vector_index,
             label=self.config.entity_label,
             embedding_property="embedding",
-            dimensions=self.embedding_dim,
         )
-        self.graph_store.create_fulltext_index(
+        self._ensure_text_index(
+            existing,
             name=self.config.entity_fulltext_index,
             label=self.config.entity_label,
-            node_properties=["name"],
+            properties=["name"],
         )
-        self.graph_store.create_vector_index(
+        self._ensure_vector_index(
+            existing,
             name=self.config.community_vector_index,
             label=self.config.community_label,
             embedding_property=self.config.community_report_embedding_property,
-            dimensions=self.embedding_dim,
         )
         self._create_constraints()
+
+    def _inspect_indexes(self) -> list[dict]:
+        """Inspect indexes without treating an inspection failure as absence."""
+        try:
+            return self.graph_store.execute_query("SHOW INDEX INFO")
+        except Exception:
+            raise RuntimeError(
+                "Cannot verify existing Memgraph indexes. Grant index-inspection "
+                "access and retry; no indexes were changed."
+            ) from None
+
+    @staticmethod
+    def _index_signature(row: dict) -> tuple[str | None, str, str | None, list[str]]:
+        """Return (name, type, label, properties) from a SHOW INDEX INFO row.
+
+        Memgraph reports index types as ``label+property_vector`` and
+        ``label_text (name: <index>)``, labels with a leading colon, and omits
+        the name for vector indexes. Normalising here keeps compatibility
+        checks operating on one shape.
+        """
+        raw_kind = str(row.get("index type") or "")
+        lowered = raw_kind.lower()
+        name = row.get("index name") or row.get("name")
+        if lowered.startswith("label_text"):
+            kind = "text"
+            if "name:" in raw_kind:
+                name = raw_kind.split("name:", 1)[1].split(")", 1)[0].strip()
+        elif "vector" in lowered:
+            kind = "vector"
+        elif lowered.startswith("label+property"):
+            kind = "range"
+        else:
+            kind = lowered
+        label = row.get("label")
+        if isinstance(label, str):
+            label = label.rsplit(":", 1)[-1] or None
+        properties = row.get("property")
+        if isinstance(properties, str):
+            properties = [properties]
+        elif properties is None:
+            properties = []
+        else:
+            properties = list(properties)
+        return name, kind, label, properties
+
+    def _ensure_vector_index(
+        self, existing: list[dict], *, name: str, label: str, embedding_property: str
+    ) -> None:
+        for row in existing:
+            row_name, kind, row_label, properties = self._index_signature(row)
+            if row_name == name:
+                self._raise_if_incompatible(
+                    name,
+                    self._definition_problems(
+                        kind,
+                        row_label,
+                        properties,
+                        expected_kind="vector",
+                        expected_label=label,
+                        expected_properties=[embedding_property],
+                    ),
+                )
+                self._reject_unverifiable(name)
+                return
+            if kind == "vector" and row_label == label and properties == [embedding_property]:
+                if row_name is None:
+                    # Memgraph omits vector index names, so this is the same
+                    # index under an unreported name: it cannot be verified.
+                    self._reject_unverifiable(name)
+                self._raise_if_incompatible(
+                    name, [f"schema is indexed under another name {row_name!r}"]
+                )
+
+        self.graph_store.create_vector_index(
+            name=name,
+            label=label,
+            embedding_property=embedding_property,
+            dimensions=self.embedding_dim,
+        )
+
+    def _ensure_text_index(
+        self, existing: list[dict], *, name: str, label: str, properties: list[str]
+    ) -> None:
+        for row in existing:
+            row_name, kind, row_label, row_properties = self._index_signature(row)
+            if row_name == name:
+                self._raise_if_incompatible(
+                    name,
+                    self._definition_problems(
+                        kind,
+                        row_label,
+                        row_properties,
+                        expected_kind="text",
+                        expected_label=label,
+                        expected_properties=properties,
+                    ),
+                )
+                return
+            if kind == "text" and row_label == label and row_properties == properties:
+                if row_name is None:
+                    # An unnamed text index is fully described by type, label and
+                    # properties, so a schema match is a usable existing index.
+                    return
+                self._raise_if_incompatible(
+                    name, [f"schema is indexed under another name {row_name!r}"]
+                )
+
+        self.graph_store.create_fulltext_index(
+            name=name, label=label, node_properties=properties
+        )
+
+    @staticmethod
+    def _definition_problems(
+        kind: str,
+        label: str | None,
+        properties: list[str],
+        *,
+        expected_kind: str,
+        expected_label: str,
+        expected_properties: list[str],
+    ) -> list[str]:
+        problems = []
+        if kind != expected_kind:
+            problems.append(f"type={kind!r}, expected {expected_kind!r}")
+        if label != expected_label:
+            problems.append(f"label={label!r}, expected {expected_label!r}")
+        if properties != expected_properties:
+            problems.append(
+                f"properties={properties!r}, expected {expected_properties!r}"
+            )
+        return problems
+
+    @staticmethod
+    def _reject_unverifiable(name: str) -> None:
+        raise ValueError(
+            f"Cannot verify dimensions and similarity for Memgraph index {name!r}: "
+            "SHOW INDEX INFO does not expose its vector configuration. "
+            "Verify it administratively and explicitly rebuild the index before "
+            "running setup; existing indexes are never dropped automatically."
+        )
+
+    @staticmethod
+    def _raise_if_incompatible(name: str, problems: list[str]) -> None:
+        if not problems:
+            return
+        raise ValueError(
+            f"Index {name!r} already exists with an incompatible definition "
+            f"({'; '.join(problems)}). Drop it explicitly and re-run index setup; "
+            "existing indexes are never dropped automatically."
+        )
 
     def _drop_indexes(self):
         """Drop existing indexes so they can be recreated with updated settings."""

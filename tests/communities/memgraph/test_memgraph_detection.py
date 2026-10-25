@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from typing import Any, cast
+
 from recon_graphrag.communities.memgraph.detection import CommunityDetector
+from recon_graphrag.graphdb.base import GraphStore
 
 
 class FakeGraphStore:
     def __init__(self):
         self.queries: list[tuple[str, dict]] = []
+
+    @contextmanager
+    def _transaction(self) -> Any:
+        yield self
 
     def execute_query(self, query: str, parameters: dict | None = None):
         self.queries.append((query.strip(), parameters or {}))
@@ -62,7 +70,7 @@ class FakeGraphStore:
 
 def test_detect_communities_returns_hierarchical_communities():
     store = FakeGraphStore()
-    detector = CommunityDetector(store, graph_name="test-graph", max_levels=3)
+    detector = CommunityDetector(cast(GraphStore, store), graph_name="test-graph", max_levels=3)
 
     stats = detector.detect()
     assert len(stats) == 2
@@ -78,7 +86,7 @@ def test_detect_communities_returns_hierarchical_communities():
 
 def test_community_rows_include_uid():
     store = FakeGraphStore()
-    detector = CommunityDetector(store, graph_name="test-graph", max_levels=3)
+    detector = CommunityDetector(cast(GraphStore, store), graph_name="test-graph", max_levels=3)
 
     detector.detect()
 
@@ -96,8 +104,7 @@ def test_community_rows_include_uid():
 
 def test_leiden_query_uses_get_subgraph_with_weight_parameter():
     store = FakeGraphStore()
-    detector = CommunityDetector(
-        store,
+    detector = CommunityDetector(cast(GraphStore, store),
         graph_name="test-graph",
         relationship_weight_property="strength",
     )
@@ -119,7 +126,7 @@ def test_leiden_query_uses_get_subgraph_with_weight_parameter():
 
 def test_community_rows_are_deterministically_sorted():
     store = FakeGraphStore()
-    detector = CommunityDetector(store, graph_name="test-graph", max_levels=3)
+    detector = CommunityDetector(cast(GraphStore, store), graph_name="test-graph", max_levels=3)
 
     detector.detect()
 
@@ -138,7 +145,7 @@ def test_detect_communities_requires_entity_relationships():
                 return []
             return super().execute_query(query, parameters)
 
-    detector = CommunityDetector(NoRelationshipStore(), graph_name="test-graph")
+    detector = CommunityDetector(cast(GraphStore, NoRelationshipStore()), graph_name="test-graph")
 
     try:
         detector.detect()
@@ -151,7 +158,7 @@ def test_detect_communities_requires_entity_relationships():
 def test_random_seed_is_not_forwarded_to_mage():
     """MAGE does not expose a random seed; keep it for API symmetry only."""
     store = FakeGraphStore()
-    detector = CommunityDetector(store, graph_name="test-graph", random_seed=12345)
+    detector = CommunityDetector(cast(GraphStore, store), graph_name="test-graph", random_seed=12345)
 
     detector.detect()
 
@@ -161,7 +168,7 @@ def test_random_seed_is_not_forwarded_to_mage():
 
 def test_detection_queries_are_scoped_by_graph_name():
     store = FakeGraphStore()
-    detector = CommunityDetector(store, graph_name="scoped-graph")
+    detector = CommunityDetector(cast(GraphStore, store), graph_name="scoped-graph")
 
     detector.detect()
 
@@ -170,3 +177,68 @@ def test_detection_queries_are_scoped_by_graph_name():
     ]
     assert scoped_calls
     assert all(params["graph_name"] == "scoped-graph" for params in scoped_calls)
+
+
+class _RecordingTransaction:
+    def __init__(self):
+        self.queries: list[str] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def execute_query(self, query: str, parameters: dict | None = None):
+        self.queries.append(query.strip())
+        return []
+
+
+class TransactionalStore(FakeGraphStore):
+    """Fake store exposing the store's real `_transaction()` seam."""
+
+    def __init__(self, fail_on: str | None = None):
+        super().__init__()
+        self.transactions: list[_RecordingTransaction] = []
+        self.fail_on = fail_on
+
+    def execute_query(self, query: str, parameters: dict | None = None):
+        if self.fail_on and self.fail_on in query:
+            raise RuntimeError("mage leiden unavailable")
+        return super().execute_query(query, parameters)
+
+    @contextmanager
+    def _transaction(self):
+        transaction = _RecordingTransaction()
+        self.transactions.append(transaction)
+        yield transaction
+
+
+def test_hierarchy_writes_run_in_one_transaction():
+    store = TransactionalStore()
+    detector = CommunityDetector(cast(GraphStore, store), graph_name="test-graph")
+
+    detector.detect()
+
+    assert len(store.transactions) == 1
+    written = "\n".join(store.transactions[0].queries)
+    assert "DETACH DELETE c" in written
+    assert "MERGE (c:`Community`" in written
+    assert "MERGE (e)-[rel:IN_COMMUNITY]" in written
+    assert "MERGE (child)-[rel:PARENT_COMMUNITY]" in written
+    assert not any("DETACH DELETE" in query for query, _ in store.queries)
+
+
+def test_leiden_failure_leaves_existing_communities_untouched():
+    store = TransactionalStore(fail_on="leiden_community_detection.get")
+    detector = CommunityDetector(cast(GraphStore, store), graph_name="test-graph")
+
+    try:
+        detector.detect()
+    except RuntimeError as exc:
+        assert "mage leiden unavailable" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError")
+
+    assert store.transactions == []
+    assert not any("DETACH DELETE" in query for query, _ in store.queries)

@@ -1,9 +1,13 @@
 """Community detection for the Memgraph backend using MAGE Leiden.
 
 MAGE provides `leiden_community_detection.get_subgraph()`, which runs server-side
-and returns a hierarchy of community memberships per node. This module maps that
-hierarchy to the same Community/IN_COMMUNITY/PARENT_COMMUNITY structure used by
-the Neo4j backend.
+and returns community memberships per node. This module maps them to the same
+Community/IN_COMMUNITY/PARENT_COMMUNITY structure used by the Neo4j backend.
+
+Note: in practice MAGE returns a single community level per node (verified
+against `memgraph/memgraph-mage` across several `gamma` values), so hierarchies
+and `PARENT_COMMUNITY` edges only appear on Memgraph if a future MAGE release
+reports intermediate levels. `max_levels` is therefore a Neo4j-only dimension.
 
 Note: MAGE's Leiden implementation is non-deterministic and does not expose a
 random seed parameter. `random_seed` is accepted for API symmetry with the Neo4j
@@ -18,6 +22,7 @@ from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.cypher import (
     escape_cypher_identifier,
 )
+from recon_graphrag.graphdb.store_base import QueryExecutor, replacement_transaction
 
 DEFAULT_GRAPH_NAME = "entity-graph"
 
@@ -68,33 +73,40 @@ class CommunityDetector:
         """Run Leiden and create hierarchical Community nodes.
 
         Steps:
-        1. Clean up existing communities for this graph_name.
-        2. Run MAGE leiden_community_detection.get_subgraph() on the entity
+        1. Run MAGE leiden_community_detection.get_subgraph() on the entity
            subgraph. `tolerance` is mapped to MAGE's `resolution_parameter`
            because MAGE does not expose a separate tolerance parameter.
-        3. Normalize the returned community paths.
-        4. Create Community nodes and IN_COMMUNITY relationships.
-        5. Build PARENT_COMMUNITY hierarchy between adjacent levels.
+        2. Normalize the returned community paths and build every community,
+           membership, and parent row.
+        3. In one transaction: replace existing communities for this graph_name,
+           create Community nodes and IN_COMMUNITY relationships, then build the
+           PARENT_COMMUNITY hierarchy between adjacent levels.
+
+        Existing communities survive any failure before the replacement
+        transaction commits.
 
         Returns list of {community_id, level, entity_count, child_community_count}.
         """
-        self._cleanup_communities()
-
         leiden_results = self._run_leiden()
         if not leiden_results:
             raise RuntimeError("Leiden returned no community assignments.")
 
         paths = self._normalize_paths(leiden_results)
+        if not paths:
+            raise RuntimeError("Leiden returned no community assignments.")
+
         self._write_community_hierarchy(paths)
         return self._get_community_stats()
 
-    def _cleanup_communities(self):
+    def _cleanup_communities(self, executor=None):
         community_label = escape_cypher_identifier(self.community_label)
         query = f"""
         MATCH (c:{community_label} {{graph_name: $graph_name}})
         DETACH DELETE c
         """
-        self.graph_store.execute_query(query, {"graph_name": self.graph_name})
+        (executor or self.graph_store).execute_query(
+            query, {"graph_name": self.graph_name}
+        )
 
     def _get_valid_relationship_types(self) -> list[str]:
         entity_label = escape_cypher_identifier(self.entity_label)
@@ -232,15 +244,72 @@ class CommunityDetector:
         return paths
 
     def _write_community_hierarchy(self, paths: dict[int, list[int]]):
+        community_rows, membership_rows, parent_rows = self._build_hierarchy_rows(paths)
+
+        community_label = escape_cypher_identifier(self.community_label)
+        entity_label = escape_cypher_identifier(self.entity_label)
+
+        executor: QueryExecutor
+        with replacement_transaction(self.graph_store) as executor:
+            self._cleanup_communities(executor)
+            executor.execute_query(
+                f"""
+                UNWIND $rows AS row
+                MERGE (c:{community_label} {{
+                    graph_name: row.graph_name,
+                    level: row.level,
+                    id: row.community_id
+                }})
+                ON CREATE SET c.created = timestamp(), c.uid = row.uid
+                SET c.updated = timestamp(), c.uid = row.uid
+                """,
+                {"rows": community_rows},
+            )
+            executor.execute_query(
+                f"""
+                UNWIND $rows AS row
+                MATCH (e:{entity_label})
+                WHERE id(e) = row.entity_id
+                MATCH (c:{community_label} {{
+                    graph_name: $graph_name,
+                    level: row.level,
+                    id: row.community_id
+                }})
+                MERGE (e)-[rel:IN_COMMUNITY]->(c)
+                ON CREATE SET rel.created = timestamp()
+                """,
+                {"rows": membership_rows, "graph_name": self.graph_name},
+            )
+            if parent_rows:
+                executor.execute_query(
+                    f"""
+                    UNWIND $rows AS row
+                    MATCH (child:{community_label} {{
+                        graph_name: $graph_name,
+                        id: row.child_id,
+                        level: row.child_level
+                    }})
+                    MATCH (parent:{community_label} {{
+                        graph_name: $graph_name,
+                        id: row.parent_id,
+                        level: row.parent_level
+                    }})
+                    MERGE (child)-[rel:PARENT_COMMUNITY]->(parent)
+                    ON CREATE SET rel.created = timestamp()
+                    """,
+                    {"rows": parent_rows, "graph_name": self.graph_name},
+                )
+
+    def _build_hierarchy_rows(
+        self, paths: dict[int, list[int]]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        """Build and validate every row before any write happens."""
         if not paths:
             raise RuntimeError("No community paths to write.")
 
         # Limit to max_levels (finest first in path).
         max_depth = max(len(p) for p in paths.values())
         levels_to_write = min(max_depth, self.max_levels)
-
-        entity_label = escape_cypher_identifier(self.entity_label)
-        community_label = escape_cypher_identifier(self.community_label)
 
         # Level assignment is reversed: path[0] (finest) → highest level,
         # path[-1] (coarsest) → level 0.  This matches Microsoft GraphRAG
@@ -266,20 +335,6 @@ class CommunityDetector:
         # Sort for deterministic MERGE order.
         community_rows.sort(key=lambda r: (r["level"], r["community_id"]))
 
-        self.graph_store.execute_query(
-            f"""
-            UNWIND $rows AS row
-            MERGE (c:{community_label} {{
-                graph_name: row.graph_name,
-                level: row.level,
-                id: row.community_id
-            }})
-            ON CREATE SET c.created = timestamp(), c.uid = row.uid
-            SET c.updated = timestamp(), c.uid = row.uid
-            """,
-            {"rows": community_rows},
-        )
-
         # Create IN_COMMUNITY relationships.
         membership_rows = []
         for entity_id, path in sorted(paths.items()):
@@ -290,22 +345,6 @@ class CommunityDetector:
                     "community_id": str(path[index]),
                     "level": level,
                 })
-
-        self.graph_store.execute_query(
-            f"""
-            UNWIND $rows AS row
-            MATCH (e:{entity_label})
-            WHERE id(e) = row.entity_id
-            MATCH (c:{community_label} {{
-                graph_name: $graph_name,
-                level: row.level,
-                id: row.community_id
-            }})
-            MERGE (e)-[rel:IN_COMMUNITY]->(c)
-            ON CREATE SET rel.created = timestamp()
-            """,
-            {"rows": membership_rows, "graph_name": self.graph_name},
-        )
 
         # Create PARENT_COMMUNITY edges between adjacent levels.
         # After reversal: path[index] (finer) → level=max_level-index,
@@ -321,7 +360,7 @@ class CommunityDetector:
                 parent_edges.add((child_id, child_level, parent_id, parent_level))
 
         if parent_edges:
-            rows = [
+            parent_rows = [
                 {
                     "child_id": child_id,
                     "child_level": child_level,
@@ -330,24 +369,17 @@ class CommunityDetector:
                 }
                 for child_id, child_level, parent_id, parent_level in sorted(parent_edges)
             ]
-            self.graph_store.execute_query(
-                f"""
-                UNWIND $rows AS row
-                MATCH (child:{community_label} {{
-                    graph_name: $graph_name,
-                    id: row.child_id,
-                    level: row.child_level
-                }})
-                MATCH (parent:{community_label} {{
-                    graph_name: $graph_name,
-                    id: row.parent_id,
-                    level: row.parent_level
-                }})
-                MERGE (child)-[rel:PARENT_COMMUNITY]->(parent)
-                ON CREATE SET rel.created = timestamp()
-                """,
-                {"rows": rows, "graph_name": self.graph_name},
-            )
+        else:
+            parent_rows = []
+
+        for entity_id, path in paths.items():
+            if not path or any(community_id is None for community_id in path):
+                raise RuntimeError(
+                    "Leiden returned a malformed community path for entity "
+                    f"{entity_id!r}; existing communities were left untouched."
+                )
+
+        return community_rows, membership_rows, parent_rows
 
     def _get_community_stats(self) -> list[dict[str, Any]]:
         entity_label = escape_cypher_identifier(self.entity_label)

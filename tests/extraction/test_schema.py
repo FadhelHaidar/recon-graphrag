@@ -169,11 +169,6 @@ def test_unknown_pattern_relationship_rejected():
         )
 
 
-# ---------------------------------------------------------------------------
-# Default property auto-injection tests
-# ---------------------------------------------------------------------------
-
-
 def test_auto_injects_name_and_description_when_missing():
     schema = GraphSchema(
         node_types=[NodeType(label="Person", properties=[PropertyType(name="age", type="INTEGER")])],

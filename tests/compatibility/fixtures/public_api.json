@@ -327,13 +327,13 @@
           "init": true,
           "kw_only": false,
           "name": "failures",
-          "type": "list[str]"
+          "type": "list[str | dict[str, str]]"
         }
       ],
       "frozen": false,
       "import_path": "recon_graphrag.retrieval.drift_types.DriftQueryState",
       "methods": {},
-      "signature": "(query: 'str' = '', primer_reports: 'list[dict]' = <factory>, actions: 'list[DriftAction]' = <factory>, stopping_reason: 'str' = '', total_llm_calls: 'int' = 0, phase_tokens: 'dict' = <factory>, failures: 'list[str]' = <factory>) -> None"
+      "signature": "(query: 'str' = '', primer_reports: 'list[dict]' = <factory>, actions: 'list[DriftAction]' = <factory>, stopping_reason: 'str' = '', total_llm_calls: 'int' = 0, phase_tokens: 'dict' = <factory>, failures: 'list[str | dict[str, str]]' = <factory>) -> None"
     },
     "DriftSearchConfig": {
       "fields": [
@@ -517,6 +517,7 @@
       "import_path": "recon_graphrag.graphdb.base.GraphStore",
       "methods": {
         "backfill_descriptions": "(self) -> 'None'",
+        "count_communities_with_reports": "(self, graph_name: 'str') -> 'int'",
         "create_fulltext_index": "(self, name: 'str', label: 'str', node_properties: 'list[str]') -> 'None'",
         "create_indexes": "(self, config: 'IndexConfig | None' = None, embedding_dim: 'int' = 1536) -> 'None'",
         "create_vector_index": "(self, name: 'str', label: 'str', embedding_property: 'str', dimensions: 'int', similarity_fn: 'str' = 'cosine') -> 'None'",
@@ -689,6 +690,7 @@
       "import_path": "recon_graphrag.graphdb.memgraph.store.MemgraphGraphStore",
       "methods": {
         "backfill_descriptions": "(self) -> 'None'",
+        "count_communities_with_reports": "(self, graph_name: 'str') -> 'int'",
         "create_fulltext_index": "(self, name: 'str', label: 'str', node_properties: 'list[str]') -> 'None'",
         "create_indexes": "(self, config: 'Optional[IndexConfig]' = None, embedding_dim: 'int' = 1536) -> 'None'",
         "create_vector_index": "(self, name: 'str', label: 'str', embedding_property: 'str', dimensions: 'int', similarity_fn: 'str' = 'cosine') -> 'None'",
@@ -741,6 +743,7 @@
       "import_path": "recon_graphrag.graphdb.neo4j.store.Neo4jGraphStore",
       "methods": {
         "backfill_descriptions": "(self) -> 'None'",
+        "count_communities_with_reports": "(self, graph_name: 'str') -> 'int'",
         "create_fulltext_index": "(self, name: 'str', label: 'str', node_properties: 'list[str]') -> 'None'",
         "create_indexes": "(self, config: 'Optional[IndexConfig]' = None, embedding_dim: 'int' = 1536) -> 'None'",
         "create_vector_index": "(self, name: 'str', label: 'str', embedding_property: 'str', dimensions: 'int', similarity_fn: 'str' = 'cosine') -> 'None'",
@@ -1320,7 +1323,7 @@
     "recon_graphrag.extraction.chunking.PageWindowBuilder": {
       "import_path": "recon_graphrag.extraction.chunking.PageWindowBuilder",
       "methods": {
-        "build_windows": "(self, pages: 'list[str | dict]', document_id: 'str', metadata: 'dict | None' = None) -> 'list[TextChunk]'"
+        "build_windows": "(self, pages: 'Sequence[str | dict]', document_id: 'str', metadata: 'dict | None' = None) -> 'list[TextChunk]'"
       },
       "signature": "(window_size: 'int' = 2, window_overlap: 'int' = 1)"
     },

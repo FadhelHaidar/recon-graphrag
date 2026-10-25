@@ -15,10 +15,7 @@ from recon_graphrag.extraction.schema import (
 )
 from tests.integration.support import cleanup_graph, single_count
 
-# ---------------------------------------------------------------------------
 # Corpus
-# ---------------------------------------------------------------------------
-
 SYNTHETIC_PAGES = [
     {
         "text": """
@@ -48,10 +45,7 @@ SYNTHETIC_PAGES = [
     },
 ]
 
-# ---------------------------------------------------------------------------
 # Schema
-# ---------------------------------------------------------------------------
-
 SYNTHETIC_SCHEMA = GraphSchema(
     node_types=[
         NodeType(
@@ -164,11 +158,7 @@ Query: {query}
 
 Answer:"""
 
-# ---------------------------------------------------------------------------
 # Structural assertion helpers
-# ---------------------------------------------------------------------------
-
-
 def assert_extraction_invariants(
     graph_document,
     schema: GraphSchema,

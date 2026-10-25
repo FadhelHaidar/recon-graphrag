@@ -37,10 +37,8 @@ class LLMGraphExtractor:
         Returns:
             Merged GraphExtraction from initial + all gleaning iterations.
         """
-        # 1. Initial extraction
         current = await self._single_extract(text, schema)
 
-        # 2. Gleaning loop
         for _iteration in range(max_gleanings):
             # Assessment: did we miss anything?
             missed = await self._assess(text, schema, current)

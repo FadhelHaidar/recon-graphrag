@@ -1,47 +1,31 @@
 """Recon-GraphRAG: a GraphRAG SDK for Neo4j and Memgraph."""
 
+from typing import TYPE_CHECKING
+
 from recon_graphrag._version import __version__, get_git_sha
 
-# Pipelines
-from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
-
-# Retrieval
-from recon_graphrag.retrieval.base import BaseRetriever
-from recon_graphrag.retrieval.search_local import LocalSearchRetriever
-from recon_graphrag.retrieval.search_global import GlobalSearchRetriever
-from recon_graphrag.retrieval.search_drift import DriftSearchRetriever
-from recon_graphrag.retrieval.drift_types import (
-    DriftAction,
-    DriftQueryState,
-    DriftSearchConfig,
+# Communities
+from recon_graphrag.communities import (
+    CommunityPipeline,
+    CommunitySummarizer,
 )
 
-# Providers
-from recon_graphrag.llm import create_llm, BaseLLM, LLMResponse, LLMUsage
-from recon_graphrag.observability import (
-    UsageTrackingLLM,
-    TokenUsageEvent,
-    TokenUsageLedger,
-    token_stage,
-    run_scope,
-    track_usage,
-    usage_snapshot,
-    usage_delta,
-    render_usage_table,
-    JsonlUsageSink,
-    load_usage_events,
-    summarize_events,
-)
+# Config
+from recon_graphrag.config.settings import PipelineConfig
 from recon_graphrag.embeddings import (
-    create_embedder,
     BaseEmbedder,
     CommunityReportEmbedder,
     EntityEmbedder,
     ModelParamsEmbedder,
+    create_embedder,
 )
-
-# Graph store
-from recon_graphrag.graphdb import GraphStore
+from recon_graphrag.extraction.artifacts import (
+    graph_document_from_dict,
+    graph_document_to_dict,
+    load_graph_document_json,
+    save_graph_document_json,
+)
+from recon_graphrag.extraction.prompts import SchemaPromptBuilder
 
 # Schema
 from recon_graphrag.extraction.schema import (
@@ -55,7 +39,6 @@ from recon_graphrag.extraction.schema import (
     schema_to_dict,
 )
 from recon_graphrag.extraction.schema_analyzer import aanalyze_schema, analyze_schema
-from recon_graphrag.extraction.prompts import SchemaPromptBuilder
 
 # Structured data
 from recon_graphrag.extraction.structured import (
@@ -68,23 +51,50 @@ from recon_graphrag.extraction.structured import (
     iter_sql,
 )
 
+# Graph store
+from recon_graphrag.graphdb import GraphStore
+
+# Providers
+from recon_graphrag.llm import BaseLLM, LLMResponse, LLMUsage, create_llm
+
 # Models
-from recon_graphrag.models.types import SearchResult, IndexConfig
-from recon_graphrag.extraction.artifacts import (
-    graph_document_from_dict,
-    graph_document_to_dict,
-    load_graph_document_json,
-    save_graph_document_json,
+from recon_graphrag.models.types import IndexConfig, SearchResult
+from recon_graphrag.observability import (
+    JsonlUsageSink,
+    TokenUsageEvent,
+    TokenUsageLedger,
+    UsageTrackingLLM,
+    load_usage_events,
+    render_usage_table,
+    run_scope,
+    summarize_events,
+    token_stage,
+    track_usage,
+    usage_delta,
+    usage_snapshot,
 )
 
-# Communities
-from recon_graphrag.communities import (
-    CommunitySummarizer,
-    CommunityPipeline,
-)
+# Pipelines
+from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
 
-# Config
-from recon_graphrag.config.settings import PipelineConfig
+# Retrieval
+from recon_graphrag.retrieval.base import BaseRetriever
+from recon_graphrag.retrieval.drift_types import (
+    DriftAction,
+    DriftQueryState,
+    DriftSearchConfig,
+)
+from recon_graphrag.retrieval.search_drift import DriftSearchRetriever
+from recon_graphrag.retrieval.search_global import GlobalSearchRetriever
+from recon_graphrag.retrieval.search_local import LocalSearchRetriever
+
+# The names below are served lazily by __getattr__ to keep driver imports off
+# the import path; declare them here so type checkers see the real classes.
+if TYPE_CHECKING:
+    from recon_graphrag.communities.neo4j.detection import CommunityDetector
+    from recon_graphrag.graphdb.index_manager import IndexManager
+    from recon_graphrag.graphdb.memgraph.store import MemgraphGraphStore
+    from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
 
 __all__ = [
     # Version

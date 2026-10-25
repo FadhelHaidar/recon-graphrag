@@ -10,21 +10,26 @@ answers anchored to particular entities and their local graph neighborhood.
 
 from __future__ import annotations
 
-import json
-from typing import Optional
+from typing import Any, Optional
 
 from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.models.artifacts import Citation
 from recon_graphrag.models.types import SearchResult
-from recon_graphrag.observability import run_scope, token_stage, track_usage, usage_snapshot
-
-from recon_graphrag.retrieval.citations import resolve_chunk_citations
+from recon_graphrag.observability import (
+    run_scope,
+    token_stage,
+    track_usage,
+    usage_snapshot,
+)
+from recon_graphrag.retrieval.citations import (
+    format_citation_metadata,
+    resolve_chunk_citations,
+)
 from recon_graphrag.retrieval.community_levels import CommunityLevelSelector
 from recon_graphrag.retrieval.hybrid import HybridEntityRetriever, HybridRanker
 from recon_graphrag.retrieval.mixed_context import MixedContextBuilder
-
 
 DEFAULT_ANSWER_PROMPT = """Based on the findings below, answer the query.
 
@@ -48,8 +53,8 @@ class LocalSearchRetriever:
         graph_store: GraphStore,
         llm: BaseLLM,
         embedder: BaseEmbedder,
-        retrieval_query: Optional[str] = None,
-        answer_prompt: Optional[str] = None,
+        retrieval_query: Optional[str] = None,  # noqa: UP045 - public signature compatibility
+        answer_prompt: Optional[str] = None,  # noqa: UP045 - public signature compatibility
         vector_index_name: str = "entity-embeddings",
         fulltext_index_name: str = "entity-names",
         graph_name: str = "entity-graph",
@@ -133,9 +138,11 @@ class LocalSearchRetriever:
                     synthesize_response=synthesize_response,
                     community_level=community_level,
                     token_budget=token_budget,
+                    synthesize_citation_metadata=synthesize_citation_metadata,
+                    synthesis_metadata_keys=synthesis_metadata_keys,
                 )
 
-            citations = self._resolve_citations(retriever_result)
+            citations, citation_warnings = self._resolve_citations(retriever_result)
             context = self._format_context(
                 retriever_result,
                 citations=citations if synthesize_citation_metadata else None,
@@ -143,7 +150,7 @@ class LocalSearchRetriever:
             )
             if not synthesize_response:
                 token_usage = usage_snapshot(self.llm)
-                metadata = {
+                metadata: dict[str, Any] = {
                     "synthesize_response": False,
                     "response_synthesis_skipped": True,
                 }
@@ -155,7 +162,7 @@ class LocalSearchRetriever:
                     answer="",
                     context=context,
                     citations=citations,
-                    metadata=metadata,
+                    metadata={**metadata, **({"citation_warnings": citation_warnings} if citation_warnings else {})},
                 )
             answer = await self._generate_answer(query, context)
             token_usage = usage_snapshot(self.llm)
@@ -168,7 +175,7 @@ class LocalSearchRetriever:
                 answer=answer,
                 context=context,
                 citations=citations,
-                metadata=metadata,
+                metadata={**metadata, **({"citation_warnings": citation_warnings} if citation_warnings else {})},
             )
 
     async def _search_mixed(
@@ -178,6 +185,8 @@ class LocalSearchRetriever:
         synthesize_response: bool,
         community_level: CommunityLevelSelector,
         token_budget: int,
+        synthesize_citation_metadata: bool,
+        synthesis_metadata_keys: list[str] | None,
     ) -> SearchResult:
         """Run local search with mixed-context builder."""
         if self._mixed_context_builder is None:
@@ -203,6 +212,8 @@ class LocalSearchRetriever:
             entity_context_rows=entity_context_rows,
             token_budget=token_budget,
             community_level=community_level,
+            synthesize_citation_metadata=synthesize_citation_metadata,
+            synthesis_metadata_keys=synthesis_metadata_keys,
         )
 
         if not synthesize_response:
@@ -222,7 +233,7 @@ class LocalSearchRetriever:
                 answer="",
                 context=mixed.context,
                 citations=mixed.citations,
-                metadata=metadata,
+                metadata={**metadata, **({"citation_warnings": mixed.citation_warnings} if mixed.citation_warnings else {})},
             )
 
         answer = await self._generate_answer(query, mixed.context)
@@ -240,7 +251,7 @@ class LocalSearchRetriever:
             answer=answer,
             context=mixed.context,
             citations=mixed.citations,
-            metadata=metadata,
+            metadata={**metadata, **({"citation_warnings": mixed.citation_warnings} if mixed.citation_warnings else {})},
         )
 
     def _format_context(
@@ -261,13 +272,14 @@ class LocalSearchRetriever:
     def _resolve_citations(self, retriever_result):
         chunk_ids = _source_chunk_ids_from_result(retriever_result)
         try:
-            return resolve_chunk_citations(
+            citations = resolve_chunk_citations(
                 self.graph_store,
                 self.graph_name,
                 chunk_ids,
             )
+            return citations, []
         except Exception:
-            return []
+            return [], [{"code": "citation_resolution_failed", "stage": "chunk"}]
 
     async def _generate_answer(self, query: str, context: str) -> str:
         """Generate answer from context using LLM."""
@@ -293,27 +305,6 @@ def _source_chunk_ids_from_result(retriever_result) -> list[str]:
     return chunk_ids
 
 
-def _format_citation_metadata(
-    citations: list[Citation],
-    metadata_keys: list[str] | None = None,
-) -> list[str]:
-    lines = []
-    key_filter = set(metadata_keys or [])
-    for citation in citations:
-        metadata = dict(citation.metadata or {})
-        if key_filter:
-            metadata = {
-                key: value
-                for key, value in metadata.items()
-                if key in key_filter
-            }
-        if not metadata:
-            continue
-        metadata_text = json.dumps(metadata, ensure_ascii=True, sort_keys=True, default=str)
-        lines.append(f"{citation.chunk_id}: {metadata_text}")
-    return lines
-
-
 def _format_entity_context(
     retriever_result,
     *,
@@ -322,7 +313,7 @@ def _format_entity_context(
     drift: bool = False,
     top_k_relationships: int | None = None,
 ) -> str:
-    citation_lines = _format_citation_metadata(citations or [], citation_metadata_keys)
+    citation_lines = format_citation_metadata(citations or [], citation_metadata_keys)
     heading_prefix = "  " if drift else ""
     indent = "    " if drift else "  "
     source_limit = 2 if drift else 3

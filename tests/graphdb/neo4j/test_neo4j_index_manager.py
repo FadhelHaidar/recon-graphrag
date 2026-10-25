@@ -54,6 +54,105 @@ class FakeGraphStore:
         pass
 
 
+class ExistingIndexStore(FakeGraphStore):
+    def __init__(self, existing=None, inspect_error=None):
+        super().__init__()
+        self.existing = existing or []
+        self.inspect_error = inspect_error
+
+    def execute_query(self, query, parameters=None):
+        if query.strip() == "SHOW INDEXES YIELD *":
+            self.calls.append((query.strip(), parameters or {}))
+            if self.inspect_error:
+                raise self.inspect_error
+            return self.existing
+        return super().execute_query(query, parameters)
+
+
+COMPATIBLE_INDEXES = [
+    {
+        "name": "entity-embeddings",
+        "type": "VECTOR",
+        "labelsOrTypes": ["__Entity__"],
+        "properties": ["embedding"],
+        "options": {
+            "indexConfig": {
+                "vector.dimensions": 42,
+                "vector.similarity_function": "cosine",
+            }
+        },
+    },
+    {
+        "name": "entity-names",
+        "type": "FULLTEXT",
+        "labelsOrTypes": ["__Entity__"],
+        "properties": ["name"],
+    },
+    {
+        "name": "community-report-embeddings",
+        "type": "VECTOR",
+        "labelsOrTypes": ["Community"],
+        "properties": ["report_embedding"],
+        "options": {
+            "indexConfig": {
+                "vector.dimensions": 42,
+                "vector.similarity_function": "cosine",
+            }
+        },
+    },
+]
+
+
+def test_create_indexes_reuses_compatible_existing_indexes():
+    store = ExistingIndexStore(COMPATIBLE_INDEXES)
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    manager.create_indexes()
+
+    assert store.vector_indexes == []
+    assert store.fulltext_indexes == []
+
+
+def test_create_indexes_never_drops_existing_indexes():
+    store = ExistingIndexStore(COMPATIBLE_INDEXES)
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    manager.create_indexes()
+
+    assert not any("DROP INDEX" in query for query, _ in store.calls)
+
+
+def test_create_indexes_raises_on_incompatible_definition():
+    incompatible = [dict(COMPATIBLE_INDEXES[0])]
+    incompatible[0]["options"] = {
+        "indexConfig": {
+            "vector.dimensions": 99,
+            "vector.similarity_function": "cosine",
+        }
+    }
+    store = ExistingIndexStore(incompatible)
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    with pytest.raises(ValueError) as excinfo:
+        manager.create_indexes()
+
+    message = str(excinfo.value)
+    assert "entity-embeddings" in message
+    assert "dimensions=99" in message
+    assert not any("DROP INDEX" in query for query, _ in store.calls)
+
+
+def test_create_indexes_stops_when_inspection_fails():
+    store = ExistingIndexStore(inspect_error=RuntimeError("SHOW INDEXES unsupported"))
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    with pytest.raises(RuntimeError, match="Cannot verify existing Neo4j indexes"):
+        manager.create_indexes()
+
+    assert store.vector_indexes == []
+    assert not any("DROP INDEX" in query for query, _ in store.calls)
+
+
 def test_index_manager_create_indexes_uses_graph_store_methods():
     store = FakeGraphStore()
     manager = IndexManager(cast(GraphStore, store), embedding_dim=42)

@@ -14,6 +14,7 @@ from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.models.artifacts import Citation
 from recon_graphrag.retrieval.citations import (
+    format_citation_metadata,
     resolve_chunk_citations,
     resolve_reference_citations,
 )
@@ -30,11 +31,7 @@ from recon_graphrag.utils.tokens import (
 )
 
 
-# ---------------------------------------------------------------------------
 # Data types
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class EntityCandidate:
     id: str
@@ -95,22 +92,16 @@ class MixedContextResult:
     included_claim_ids: list[str]
     used_tokens: int
     max_tokens: int
+    # Sanitized notes about citations that could not be resolved.
+    citation_warnings: list[dict[str, str]] = field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
 # Default allocation ratios
-# ---------------------------------------------------------------------------
-
 DEFAULT_ALLOCATION = {
     "text_units": 0.50,
     "community_reports": 0.10,
     "graph_facts": 0.40,
 }
-
-
-# ---------------------------------------------------------------------------
-# Builder
-# ---------------------------------------------------------------------------
 
 
 class MixedContextBuilder:
@@ -135,6 +126,8 @@ class MixedContextBuilder:
         token_budget: int,
         allocation: dict[str, float] | None = None,
         community_level: CommunityLevelSelector = "coarsest",
+        synthesize_citation_metadata: bool = False,
+        synthesis_metadata_keys: list[str] | None = None,
     ) -> MixedContextResult:
         """Build mixed context from entity matches and their context.
 
@@ -146,6 +139,9 @@ class MixedContextBuilder:
             allocation: Ratios per category. Defaults to
                 50% text units, 10% community reports, 40% graph facts.
             community_level: Which community level to fetch reports from.
+            synthesize_citation_metadata: Append the resolved citation
+                metadata to the context sent to the LLM.
+            synthesis_metadata_keys: Metadata keys to keep in that section.
 
         Returns:
             MixedContextResult with rendered context, citations, and telemetry.
@@ -163,7 +159,6 @@ class MixedContextBuilder:
         entity_ids = [m["id"] for m in entity_matches]
         entity_scores = {m["id"]: float(m.get("score", 0.0)) for m in entity_matches}
 
-        # 1. Collect candidates
         entities = self._collect_entities(entity_matches, entity_context_rows)
         relationships = self._collect_relationships(entity_context_rows)
         chunk_ids_from_context = self._collect_chunk_ids(entity_context_rows)
@@ -173,7 +168,6 @@ class MixedContextBuilder:
         )
         claims = self._collect_claims(entity_ids)
 
-        # 2. Rank each category
         entities.sort(key=lambda e: (-entity_scores.get(e.id, 0.0), e.id))
         relationships.sort(key=lambda r: (-r.weight, r.source_id, r.target_id))
         text_units.sort(key=lambda t: (-t.coverage, t.chunk_id))
@@ -182,10 +176,8 @@ class MixedContextBuilder:
         )
         claims.sort(key=lambda c: (-c.evidence_count, c.claim_id))
 
-        # 3. Compute per-category budgets with overflow
         budgets = self._compute_budgets(content_budget, alloc)
 
-        # 4. Pack each category
         entity_items = [
             PackItem(
                 id=e.id,
@@ -235,7 +227,6 @@ class MixedContextBuilder:
             graph_fact_items, budgets["graph_facts"], self.counter
         )
 
-        # 5. Overflow: redistribute unused tokens across all remaining categories.
         overflow = max(
             content_budget
             - packed_tu.used_tokens
@@ -248,7 +239,6 @@ class MixedContextBuilder:
             packed_gf, overflow = self._pack_overflow(packed_gf, graph_fact_items, overflow)
             packed_cr, overflow = self._pack_overflow(packed_cr, cr_items, overflow)
 
-        # 6. Render context
         sections: list[str] = []
         if packed_gf.included:
             sections.append(
@@ -268,7 +258,6 @@ class MixedContextBuilder:
 
         context = "\n\n".join(sections)
 
-        # 7. Collect included IDs for citation resolution
         entity_id_set = {e.id for e in entities}
         rel_key_set = {
             f"{r.source_id}:{r.relationship_type}:{r.target_id}"
@@ -288,15 +277,18 @@ class MixedContextBuilder:
             i.id for i in packed_gf.included if i.id in claim_id_set
         ]
 
-        # 8. Resolve citations only from evidence that survived packing.
+        # Citations may only reference evidence that survived packing.
         citations: list[Citation] = []
+        citation_warnings: list[dict[str, str]] = []
         if included_chunk_ids:
             try:
                 citations = resolve_chunk_citations(
                     self.graph_store, self.graph_name, included_chunk_ids
                 )
             except Exception:
-                pass
+                citation_warnings.append({
+                    "code": "citation_resolution_failed", "stage": "chunk"
+                })
         references = [
             *(
                 {"target_type": "entity", "target_id": entity_id}
@@ -319,8 +311,23 @@ class MixedContextBuilder:
                     )
                 )
             except Exception:
-                pass
+                citation_warnings.append({
+                    "code": "citation_resolution_failed", "stage": "reference"
+                })
         citations = self._dedupe_citations(citations)
+
+        if synthesize_citation_metadata:
+            citation_lines = format_citation_metadata(
+                citations, synthesis_metadata_keys
+            )
+            if citation_lines:
+                context = "\n\n".join(
+                    [
+                        context,
+                        "=== Citation metadata ===\n"
+                        + "\n".join(citation_lines),
+                    ]
+                )
 
         total_tokens = self.counter.count(context)
 
@@ -333,12 +340,10 @@ class MixedContextBuilder:
             included_claim_ids=included_claim_ids,
             used_tokens=total_tokens,
             max_tokens=token_budget,
+            citation_warnings=citation_warnings,
         )
 
-    # ------------------------------------------------------------------
     # Candidate collection
-    # ------------------------------------------------------------------
-
     def _collect_entities(
         self,
         entity_matches: list[dict],
@@ -534,10 +539,7 @@ class MixedContextBuilder:
                 )
         return list(by_claim.values())
 
-    # ------------------------------------------------------------------
     # Budget computation
-    # ------------------------------------------------------------------
-
     def _compute_budgets(
         self, total: int, alloc: dict[str, float]
     ) -> dict[str, int]:
@@ -596,14 +598,8 @@ class MixedContextBuilder:
                 result.append(citation)
         return result
 
-    # ------------------------------------------------------------------
-    # Parsing
-    # ------------------------------------------------------------------
 
-    # ------------------------------------------------------------------
     # Rendering
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _render_entity(e: EntityCandidate) -> str:
         label = e.label or "Entity"

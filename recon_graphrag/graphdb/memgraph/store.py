@@ -91,16 +91,10 @@ class MemgraphGraphStore(BaseGraphStore):
             else:
                 transaction.commit()
 
-    # ------------------------------------------------------------------
-    # Write
-    # ------------------------------------------------------------------
     def write_graph_document(self, graph_document: GraphDocument) -> dict:
         writer = CypherGraphWriter(self)
         return writer.write_graph_document(graph_document)
 
-    # ------------------------------------------------------------------
-    # Indexes
-    # ------------------------------------------------------------------
     def create_indexes(
         self, config: Optional[IndexConfig] = None, embedding_dim: int = 1536
     ) -> None:
@@ -111,9 +105,6 @@ class MemgraphGraphStore(BaseGraphStore):
         mgr = IndexManager(self, index_config=config)
         mgr._drop_indexes()
 
-    # ------------------------------------------------------------------
-    # Entity resolution
-    # ------------------------------------------------------------------
     async def resolve_entities_exact(
         self,
         graph_name: str = "entity-graph",
@@ -213,9 +204,6 @@ class MemgraphGraphStore(BaseGraphStore):
             context_mode=context_mode,
         )
 
-    # ------------------------------------------------------------------
-    # Indexes (low-level)
-    # ------------------------------------------------------------------
     def create_vector_index(
         self,
         name: str,
@@ -265,9 +253,6 @@ class MemgraphGraphStore(BaseGraphStore):
             if "already exists" not in str(exc).lower():
                 raise
 
-    # ------------------------------------------------------------------
-    # Embeddings
-    # ------------------------------------------------------------------
     def upsert_vectors(
         self,
         node_ids: list[str],
@@ -343,9 +328,6 @@ class MemgraphGraphStore(BaseGraphStore):
             {"rows": rows, "model_fingerprint": model_fingerprint},
         )
 
-    # ------------------------------------------------------------------
-    # Search
-    # ------------------------------------------------------------------
     def vector_search(
         self,
         index_name: str,
@@ -491,9 +473,6 @@ class MemgraphGraphStore(BaseGraphStore):
             },
         )
 
-    # ------------------------------------------------------------------
-    # Communities
-    # ------------------------------------------------------------------
     def detect_communities(
         self,
         graph_name: str = "entity-graph",
@@ -682,9 +661,6 @@ class MemgraphGraphStore(BaseGraphStore):
             {"keys": keys, "graph_name": graph_name, "top_k": top_k},
         )
 
-    # ------------------------------------------------------------------
-    # Stats / validation
-    # ------------------------------------------------------------------
     def backfill_descriptions(self) -> None:
         self.execute_query(
             "MATCH (e:__Entity__) WHERE e.description IS NULL SET e.description = ''"

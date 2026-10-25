@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -221,7 +222,7 @@ class PageWindowBuilder:
 
     def build_windows(
         self,
-        pages: list[str | dict],
+        pages: Sequence[str | dict],
         document_id: str,
         metadata: dict | None = None,
     ) -> list[TextChunk]:
@@ -272,7 +273,7 @@ def _page_metadata(page: str | dict) -> dict[str, Any]:
     return {}
 
 
-def _window_metadata(pages: list[str | dict]) -> dict[str, Any]:
+def _window_metadata(pages: Sequence[str | dict]) -> dict[str, Any]:
     page_metadata = [_page_metadata(page) for page in pages]
     page_metadata = [metadata for metadata in page_metadata if metadata]
     if not page_metadata:

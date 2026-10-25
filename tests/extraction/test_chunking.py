@@ -116,11 +116,6 @@ def test_page_window_builder_invalid_config():
         PageWindowBuilder(window_size=2, window_overlap=2)
 
 
-# ---------------------------------------------------------------------------
-# Token-aware chunking tests
-# ---------------------------------------------------------------------------
-
-
 def test_text_chunker_default_unit_is_characters():
     chunker = TextChunker(chunk_size=10, chunk_overlap=2)
     assert chunker.unit == "characters"

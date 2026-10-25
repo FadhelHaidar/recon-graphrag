@@ -67,16 +67,10 @@ class Neo4jGraphStore(BaseGraphStore):
             else:
                 transaction.commit()
 
-    # ------------------------------------------------------------------
-    # Write
-    # ------------------------------------------------------------------
     def write_graph_document(self, graph_document: GraphDocument) -> dict:
         writer = CypherGraphWriter(self)
         return writer.write_graph_document(graph_document)
 
-    # ------------------------------------------------------------------
-    # Indexes
-    # ------------------------------------------------------------------
     def create_indexes(
         self, config: Optional[IndexConfig] = None, embedding_dim: int = 1536
     ) -> None:
@@ -87,9 +81,6 @@ class Neo4jGraphStore(BaseGraphStore):
         mgr = IndexManager(self, index_config=config)
         mgr._drop_indexes()
 
-    # ------------------------------------------------------------------
-    # Entity resolution
-    # ------------------------------------------------------------------
     async def resolve_entities_exact(
         self,
         graph_name: str = "entity-graph",
@@ -189,9 +180,6 @@ class Neo4jGraphStore(BaseGraphStore):
             context_mode=context_mode,
         )
 
-    # ------------------------------------------------------------------
-    # Embeddings
-    # ------------------------------------------------------------------
     def create_vector_index(
         self,
         name: str,
@@ -316,9 +304,6 @@ class Neo4jGraphStore(BaseGraphStore):
             },
         )
 
-    # ------------------------------------------------------------------
-    # Search
-    # ------------------------------------------------------------------
     def vector_search(
         self,
         index_name: str,
@@ -467,9 +452,6 @@ class Neo4jGraphStore(BaseGraphStore):
             },
         )
 
-    # ------------------------------------------------------------------
-    # Communities
-    # ------------------------------------------------------------------
     def detect_communities(
         self,
         graph_name: str,
@@ -658,9 +640,6 @@ class Neo4jGraphStore(BaseGraphStore):
             {"keys": keys, "graph_name": graph_name, "top_k": top_k},
         )
 
-    # ------------------------------------------------------------------
-    # Stats / validation
-    # ------------------------------------------------------------------
     def backfill_descriptions(self) -> None:
         self.execute_query(
             "MATCH (e:__Entity__) WHERE e.description IS NULL SET e.description = ''"

@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
+import inspect
 import os
 import tempfile
 from pathlib import Path
@@ -164,7 +165,7 @@ async def main():
             print(f"  cited from order {record['record_id']} ({record['region']})")
     finally:
         close = getattr(llm, "aclose", None)
-        if callable(close):
+        if inspect.iscoroutinefunction(close):
             await close()
         driver.close()
 

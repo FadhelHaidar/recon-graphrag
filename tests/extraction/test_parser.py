@@ -88,11 +88,6 @@ def test_parse_skips_relationships_without_required_fields():
     assert len(result.relationships) == 1
 
 
-# ---------------------------------------------------------------------------
-# ClaimParser tests
-# ---------------------------------------------------------------------------
-
-
 class TestClaimParser:
     def test_parse_valid_claims(self):
         parser = ClaimParser()

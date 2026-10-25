@@ -1,6 +1,13 @@
 """Graph database package."""
 
+from typing import TYPE_CHECKING
+
 from recon_graphrag.graphdb.base import GraphStore, GraphWriter
+
+if TYPE_CHECKING:
+    from recon_graphrag.graphdb.memgraph.store import MemgraphGraphStore
+    from recon_graphrag.graphdb.neo4j.index_manager import IndexManager
+    from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
 
 __all__ = [
     "GraphStore",

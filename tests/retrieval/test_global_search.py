@@ -14,11 +14,6 @@ from recon_graphrag.retrieval.search_global import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _make_reports(n: int = 5) -> list[dict]:
     return [
         {"id": f"report:{i}:0", "level": 0, "report_text": f"Summary for community {i}."}
@@ -126,11 +121,6 @@ class FakeLLM:
         content = self._map_responses[idx]
         self._map_call_count += 1
         return MagicMock(content=content)
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 class TestShuffle:

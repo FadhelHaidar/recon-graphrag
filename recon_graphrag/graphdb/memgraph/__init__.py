@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from recon_graphrag.graphdb.memgraph.index_manager import IndexManager
+    from recon_graphrag.graphdb.memgraph.store import MemgraphGraphStore
+
 __all__ = [
     "MemgraphGraphStore",
     "IndexManager",

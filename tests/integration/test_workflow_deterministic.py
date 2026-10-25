@@ -27,10 +27,7 @@ from recon_graphrag.extraction.schema import (
 from recon_graphrag.llm.base import LLMResponse, LLMUsage
 from tests.integration.support import cleanup_graph, single_count, require_integration_env
 
-# ---------------------------------------------------------------------------
 # Schema
-# ---------------------------------------------------------------------------
-
 WORKFLOW_SCHEMA = GraphSchema(
     node_types=[
         NodeType(
@@ -56,10 +53,7 @@ WORKFLOW_SCHEMA = GraphSchema(
     ],
 )
 
-# ---------------------------------------------------------------------------
 # Deterministic fake LLM / embedder
-# ---------------------------------------------------------------------------
-
 _EXTRACTION_RESPONSE = json.dumps({
     "nodes": [
         {"id": "alice", "label": "Person", "properties": {"name": "Alice Rivera"}},
@@ -124,11 +118,6 @@ def _make_fake_embedder():
     return embedder
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
 def _make_workflow_fixture(store_factory, run_flag, required_env, graph_name):
     @pytest.fixture
     def fixture():
@@ -163,11 +152,7 @@ memgraph_workflow = _make_workflow_fixture(
 )
 
 
-# ---------------------------------------------------------------------------
 # Pipeline runner
-# ---------------------------------------------------------------------------
-
-
 async def _run_deterministic_workflow(store, graph_name: str):
     llm = _make_fake_llm()
     embedder = _make_fake_embedder()
@@ -242,11 +227,6 @@ async def _run_deterministic_workflow(store, graph_name: str):
     finally:
         await llm.aclose()
         await embedder.aclose()
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration

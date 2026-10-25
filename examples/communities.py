@@ -27,7 +27,7 @@ try:
     from .prompts import COMMUNITY_REPORT_PROMPT
     from .schema import COMMUNITY_RELATIONSHIP_TYPES
 except ImportError:
-    from common import BACKEND_CHOICES, get_backend_targets
+    from common import BACKEND_CHOICES, ensure_indexes, get_backend_targets
     from config import (
         EMBEDDING_DIM,
         get_embedder,
@@ -119,7 +119,7 @@ async def build_communities(
 
     for name, store, index_manager_cls in get_backend_targets(backend):
         print(f"\n=== Building {name} communities ===")
-        index_manager_cls(store, embedding_dim=EMBEDDING_DIM).create_indexes()
+        ensure_indexes(index_manager_cls, store, EMBEDDING_DIM)
 
         kwargs = {
             "relationship_types": COMMUNITY_RELATIONSHIP_TYPES,

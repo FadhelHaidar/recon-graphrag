@@ -1,7 +1,12 @@
 """Community detection and summarization."""
 
+from typing import TYPE_CHECKING
+
 from recon_graphrag.communities.summarization import CommunitySummarizer
 from recon_graphrag.communities.pipeline import CommunityPipeline
+
+if TYPE_CHECKING:
+    from recon_graphrag.communities.neo4j.detection import CommunityDetector
 
 __all__ = [
     "CommunityDetector",

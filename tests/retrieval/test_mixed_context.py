@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 
 from recon_graphrag.llm import LLMResponse
@@ -115,7 +117,7 @@ class FakeLLM:
 class TestMixedContextBuilder:
     def test_build_context_returns_all_candidate_types(self):
         store = FakeGraphStore()
-        builder = MixedContextBuilder(store, graph_name="entity-graph")
+        builder = MixedContextBuilder(cast(Any, store), graph_name="entity-graph")
 
         result = builder.build_context(
             entity_matches=[{"id": "a", "score": 0.8}],
@@ -168,7 +170,7 @@ class TestMixedContextBuilder:
                 return super().execute_query(query, parameters)
 
         store = IdFormStore()
-        builder = MixedContextBuilder(store, graph_name="entity-graph")
+        builder = MixedContextBuilder(cast(Any, store), graph_name="entity-graph")
         result = builder.build_context(
             entity_matches=[{"id": "a", "score": 0.8}],
             entity_context_rows=[
@@ -187,7 +189,7 @@ class TestMixedContextBuilder:
 
     def test_build_context_resolves_citations(self):
         store = FakeGraphStore()
-        builder = MixedContextBuilder(store, graph_name="entity-graph")
+        builder = MixedContextBuilder(cast(Any, store), graph_name="entity-graph")
 
         result = builder.build_context(
             entity_matches=[{"id": "a", "score": 0.8}],
@@ -208,7 +210,7 @@ class TestMixedContextBuilder:
 
     def test_build_context_respects_token_budget(self):
         store = FakeGraphStore()
-        builder = MixedContextBuilder(store, graph_name="entity-graph")
+        builder = MixedContextBuilder(cast(Any, store), graph_name="entity-graph")
 
         result = builder.build_context(
             entity_matches=[{"id": "a", "score": 0.8}],
@@ -237,7 +239,7 @@ class TestMixedContextBuilder:
                 return []
 
         store = NoCommStore()
-        builder = MixedContextBuilder(store, graph_name="entity-graph")
+        builder = MixedContextBuilder(cast(Any, store), graph_name="entity-graph")
 
         result = builder.build_context(
             entity_matches=[{"id": "a", "score": 0.8}],
@@ -262,7 +264,7 @@ class TestMixedContextBuilder:
                 return []
 
         store = NoClaimStore()
-        builder = MixedContextBuilder(store, graph_name="entity-graph")
+        builder = MixedContextBuilder(cast(Any, store), graph_name="entity-graph")
 
         result = builder.build_context(
             entity_matches=[{"id": "a", "score": 0.8}],
@@ -286,9 +288,7 @@ class TestLocalSearchMixedContext:
     async def test_mixed_context_enabled(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        retriever = LocalSearchRetriever(
-            store, llm, FakeEmbedder(), use_mixed_context=True
-        )
+        retriever = LocalSearchRetriever(cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()), use_mixed_context=True)
 
         result = await retriever.search("Who is Alice?", top_k=1, token_budget=12000)
 
@@ -301,9 +301,7 @@ class TestLocalSearchMixedContext:
     async def test_mixed_context_synthesize_false(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        retriever = LocalSearchRetriever(
-            store, llm, FakeEmbedder(), use_mixed_context=True
-        )
+        retriever = LocalSearchRetriever(cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()), use_mixed_context=True)
 
         result = await retriever.search(
             "Who is Alice?", top_k=1, synthesize_response=False, token_budget=12000
@@ -318,12 +316,159 @@ class TestLocalSearchMixedContext:
     async def test_mixed_context_disabled_uses_original(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        retriever = LocalSearchRetriever(
-            store, llm, FakeEmbedder(), use_mixed_context=False
-        )
+        retriever = LocalSearchRetriever(cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()), use_mixed_context=False)
 
         result = await retriever.search("Who is Alice?", top_k=1)
 
         assert result.mode == "local"
         assert result.metadata.get("mixed_context") is None
         assert "Finding: Alice (Person)" in result.context
+
+
+class BrokenChunkCitationStore(FakeGraphStore):
+    def resolve_chunk_citations(self, graph_name, chunk_ids):
+        raise RuntimeError("driver said: password=hunter2")
+
+
+class MetadataCitationStore(FakeGraphStore):
+    def resolve_chunk_citations(self, graph_name, chunk_ids):
+        return [
+            {
+                "chunk_id": "chunk:1",
+                "document_id": "doc:1",
+                "document_name": "Doc 1",
+                "excerpt": "Alice is the CEO of Acme Corp.",
+                "chunk_metadata": {"record_id": "row-42", "source": "row-source"},
+            }
+        ]
+
+
+ENTITY_ROWS = [
+    {
+        "title": "Alice (Person)",
+        "entity_id": "a",
+        "entity_name": "Alice",
+        "entity_labels": ["__Entity__", "Person"],
+        "relationships": [],
+        "source_text": ["Alice directed Inception."],
+        "source_chunk_ids": ["chunk:1"],
+        "score": 0.8,
+    }
+]
+
+
+class TestCitationDegradation:
+    def test_build_context_records_chunk_citation_failure(self):
+        builder = MixedContextBuilder(cast(Any, BrokenChunkCitationStore()), graph_name="g")
+
+        result = builder.build_context(
+            entity_matches=[{"id": "a", "score": 0.8}],
+            entity_context_rows=ENTITY_ROWS,
+            token_budget=12000,
+        )
+
+        assert result.citations == []
+        assert result.citation_warnings == [
+            {"code": "citation_resolution_failed", "stage": "chunk"},
+            {"code": "citation_resolution_failed", "stage": "reference"},
+        ]
+        assert "hunter2" not in str(result.citation_warnings)
+        assert result.context
+
+    def test_build_context_records_reference_citation_failure(self, monkeypatch):
+        import recon_graphrag.retrieval.mixed_context as mixed_context
+
+        def explode(*args, **kwargs):
+            raise RuntimeError("driver said: password=hunter2")
+
+        monkeypatch.setattr(
+            mixed_context, "resolve_reference_citations", explode
+        )
+        builder = MixedContextBuilder(cast(Any, FakeGraphStore()), graph_name="g")
+
+        result = builder.build_context(
+            entity_matches=[{"id": "a", "score": 0.8}],
+            entity_context_rows=ENTITY_ROWS,
+            token_budget=12000,
+        )
+
+        # Chunk citations survive; only the reference lookup degraded.
+        assert [c.chunk_id for c in result.citations] == ["chunk:1"]
+        assert len(result.citation_warnings) == 1
+        assert result.citation_warnings[0] == {
+            "code": "citation_resolution_failed", "stage": "reference"
+        }
+        assert "hunter2" not in str(result.citation_warnings)
+
+    def test_build_context_has_no_warnings_when_resolution_succeeds(self):
+        builder = MixedContextBuilder(cast(Any, FakeGraphStore()), graph_name="g")
+
+        result = builder.build_context(
+            entity_matches=[{"id": "a", "score": 0.8}],
+            entity_context_rows=ENTITY_ROWS,
+            token_budget=12000,
+        )
+
+        assert result.citation_warnings == []
+
+
+class TestMixedCitationMetadataOption:
+    def test_metadata_absent_by_default(self):
+        builder = MixedContextBuilder(cast(Any, MetadataCitationStore()), graph_name="g")
+
+        result = builder.build_context(
+            entity_matches=[{"id": "a", "score": 0.8}],
+            entity_context_rows=ENTITY_ROWS,
+            token_budget=12000,
+        )
+
+        assert "Citation metadata" not in result.context
+
+    def test_metadata_appended_with_key_filter(self):
+        builder = MixedContextBuilder(cast(Any, MetadataCitationStore()), graph_name="g")
+
+        result = builder.build_context(
+            entity_matches=[{"id": "a", "score": 0.8}],
+            entity_context_rows=ENTITY_ROWS,
+            token_budget=12000,
+            synthesize_citation_metadata=True,
+            synthesis_metadata_keys=["record_id"],
+        )
+
+        assert "=== Citation metadata ===" in result.context
+        assert '"record_id": "row-42"' in result.context
+        assert "row-source" not in result.context
+
+
+class TestLocalSearchMixedDegradation:
+    @pytest.mark.asyncio
+    async def test_mixed_search_surfaces_citation_warning(self):
+        retriever = LocalSearchRetriever(cast(Any, BrokenChunkCitationStore()), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()), use_mixed_context=True,)
+
+        result = await retriever.search("Who is Alice?", top_k=1, token_budget=12000)
+
+        assert result.citations == []
+        assert result.metadata["citation_warnings"][0] == {
+            "code": "citation_resolution_failed", "stage": "chunk"
+        }
+        assert "hunter2" not in str(result.metadata)
+        assert result.answer
+
+    @pytest.mark.asyncio
+    async def test_mixed_search_forwards_citation_metadata_options(self):
+        llm = FakeLLM()
+        retriever = LocalSearchRetriever(cast(Any, MetadataCitationStore()), cast(Any, llm), cast(Any, FakeEmbedder()), use_mixed_context=True)
+
+        result = await retriever.search(
+            "Who is Alice?",
+            top_k=1,
+            token_budget=12000,
+            synthesize_citation_metadata=True,
+            synthesis_metadata_keys=["record_id"],
+        )
+
+        assert "=== Citation metadata ===" in result.context
+        assert '"record_id": "row-42"' in result.context
+        # The context handed back must be exactly what the LLM saw.
+        assert '"record_id": "row-42"' in llm.prompts[0]
+        assert result.context in llm.prompts[0]

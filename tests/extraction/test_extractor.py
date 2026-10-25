@@ -264,11 +264,6 @@ async def test_gleaning_duplicate_entities_not_added():
     assert len(result.relationships) == 1
 
 
-# ---------------------------------------------------------------------------
-# Claim extraction tests
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_extract_claims_returns_claims():
     """extract_claims makes one LLM call and returns parsed claims."""
@@ -336,7 +331,6 @@ async def test_extract_all_propagates_exception():
         await extractor.extract_all(chunks, schema)
 
 
-
 @pytest.mark.asyncio
 async def test_extract_claims_empty_entity_ids_skips_call():
     """No LLM call is made when entity_ids is empty."""
@@ -348,11 +342,6 @@ async def test_extract_claims_empty_entity_ids_skips_call():
 
     assert llm.ainvoke.call_count == 0
     assert claims == []
-
-
-# ---------------------------------------------------------------------------
-# Custom prompt builder tests
-# ---------------------------------------------------------------------------
 
 
 class _CustomBuilder(SchemaPromptBuilder):

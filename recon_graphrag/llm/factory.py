@@ -6,6 +6,7 @@ Convenience module to create LLM instances without depending on
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Optional
 
 from recon_graphrag.llm.base import BaseLLM, LLMResponse, LLMUsage
@@ -100,7 +101,7 @@ class OpenAIChatLLM:
         if callable(close):
             close()
         async_close = getattr(self.async_client, "close", None)
-        if callable(async_close):
+        if inspect.iscoroutinefunction(async_close):
             await async_close()
 
     def _provider_error(self, exc: Exception) -> Exception:
@@ -222,7 +223,7 @@ class AnthropicLLM:
         if callable(close):
             close()
         async_close = getattr(self.async_client, "close", None)
-        if callable(async_close):
+        if inspect.iscoroutinefunction(async_close):
             await async_close()
 
 

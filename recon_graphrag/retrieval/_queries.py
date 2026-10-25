@@ -15,9 +15,7 @@ from __future__ import annotations
 
 _ORDER_BY_SCORE = "ORDER BY score DESC, title\n"
 
-# ------------------------------------------------------------------
 # Local search — core ends at the final RETURN column (no tie-break).
-# ------------------------------------------------------------------
 _LOCAL_CORE = """
 CALL (node) {
     OPTIONAL MATCH (node)-[r]->(neighbor)
@@ -76,9 +74,7 @@ RETURN node.name + ' (' + labels(node)[-1] + ')' AS title,
        score
 """
 
-# ------------------------------------------------------------------
 # DRIFT search — as local, plus community context.
-# ------------------------------------------------------------------
 _DRIFT_CORE = """
 CALL (node) {
     OPTIONAL MATCH (node)-[r]->(neighbor)
@@ -147,9 +143,7 @@ RETURN node.name + ' (' + labels(node)[-1] + ')' AS title,
        score
 """
 
-# ------------------------------------------------------------------
 # Community reporting — child report context (level > 0). Identical per backend.
-# ------------------------------------------------------------------
 COMMUNITY_CHILD_REPORT_QUERY = """
 MATCH (child:Community)-[:PARENT_COMMUNITY]->(c:Community {
     graph_name: $graph_name,
@@ -167,9 +161,7 @@ RETURN child.id AS id,
 ORDER BY context_tokens_used DESC, child.id
 """
 
-# ------------------------------------------------------------------
 # Community reports by key. Identical per backend.
-# ------------------------------------------------------------------
 COMMUNITY_REPORTS_BY_KEY_QUERY = """
 UNWIND $keys AS key
 MATCH (c:Community {
@@ -186,10 +178,8 @@ ORDER BY c.level ASC
 LIMIT $top_k
 """
 
-# ------------------------------------------------------------------
 # Community summarization — degree-ranked context (Phase 4A).
 # ``__IDFUNC__`` is replaced with the backend internal-id function.
-# ------------------------------------------------------------------
 _RANKED_CONTEXT_CORE = """
 MATCH (c:Community {
     graph_name: $graph_name,

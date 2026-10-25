@@ -21,9 +21,6 @@ class GraphStore(Protocol):
     database driver. Implement this to add a new backend.
     """
 
-    # ------------------------------------------------------------------
-    # Escape hatch — backend-specific query language
-    # ------------------------------------------------------------------
     def execute_query(
         self, query: str, parameters: dict | None = None
     ) -> list[dict]:
@@ -34,16 +31,10 @@ class GraphStore(Protocol):
         """
         ...
 
-    # ------------------------------------------------------------------
-    # Write
-    # ------------------------------------------------------------------
     def write_graph_document(self, graph_document: GraphDocument) -> dict:
         """Persist a GraphDocument to the store."""
         ...
 
-    # ------------------------------------------------------------------
-    # Indexes
-    # ------------------------------------------------------------------
     def create_indexes(
         self, config: IndexConfig | None = None, embedding_dim: int = 1536
     ) -> None:
@@ -54,9 +45,6 @@ class GraphStore(Protocol):
         """Drop existing indexes so they can be recreated."""
         ...
 
-    # ------------------------------------------------------------------
-    # Entity resolution
-    # ------------------------------------------------------------------
     async def resolve_entities_exact(
         self,
         graph_name: str = "entity-graph",
@@ -109,9 +97,6 @@ class GraphStore(Protocol):
         """Merge duplicate entity nodes using hybrid fuzzy + embedding + LLM matching."""
         ...
 
-    # ------------------------------------------------------------------
-    # Indexes (low-level)
-    # ------------------------------------------------------------------
     def create_vector_index(
         self,
         name: str,
@@ -132,9 +117,6 @@ class GraphStore(Protocol):
         """Create a fulltext index."""
         ...
 
-    # ------------------------------------------------------------------
-    # Embeddings
-    # ------------------------------------------------------------------
     def upsert_vectors(
         self,
         node_ids: list[str],
@@ -175,9 +157,6 @@ class GraphStore(Protocol):
         """Persist relationship summary text and metadata by internal ID."""
         ...
 
-    # ------------------------------------------------------------------
-    # Search
-    # ------------------------------------------------------------------
     def vector_search(
         self,
         index_name: str,
@@ -211,9 +190,6 @@ class GraphStore(Protocol):
         """Fetch formatted entity context for ranked entity matches."""
         ...
 
-    # ------------------------------------------------------------------
-    # Communities
-    # ------------------------------------------------------------------
     def detect_communities(
         self,
         graph_name: str,
@@ -327,9 +303,10 @@ class GraphStore(Protocol):
         """Fetch reports for graph-scoped community keys."""
         ...
 
-    # ------------------------------------------------------------------
-    # Community report embeddings
-    # ------------------------------------------------------------------
+    def count_communities_with_reports(self, graph_name: str) -> int:
+        """Count graph-scoped communities that already carry report text."""
+        ...
+
     def get_unembedded_community_reports(
         self,
         graph_name: str,
@@ -365,9 +342,6 @@ class GraphStore(Protocol):
         """
         ...
 
-    # ------------------------------------------------------------------
-    # Stats / validation
-    # ------------------------------------------------------------------
     def get_entity_count(self) -> int:
         """Count all __Entity__ nodes."""
         ...

@@ -46,6 +46,88 @@ class FakeGraphStore:
         pass
 
 
+class ExistingIndexStore(FakeGraphStore):
+    def __init__(self, existing=None, inspect_error=None):
+        super().__init__()
+        self.existing = existing or []
+        self.inspect_error = inspect_error
+
+    def execute_query(self, query: str, parameters: dict | None = None):
+        if query.strip() == "SHOW INDEX INFO":
+            self.calls.append((query.strip(), parameters or {}))
+            if self.inspect_error:
+                raise self.inspect_error
+            return self.existing
+        return super().execute_query(query, parameters)
+
+
+COMPATIBLE_INDEXES = [
+    {
+        "index name": "entity-embeddings",
+        "index type": "vector",
+        "label": "__Entity__",
+        "property": "embedding",
+    },
+    {
+        "index name": "entity-names",
+        "index type": "text",
+        "label": "__Entity__",
+        "property": "name",
+    },
+    {
+        "index name": "community-report-embeddings",
+        "index type": "vector",
+        "label": "Community",
+        "property": "report_embedding",
+    },
+]
+
+
+def test_create_indexes_rejects_unverifiable_vector_indexes():
+    store = ExistingIndexStore(COMPATIBLE_INDEXES)
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    with pytest.raises(ValueError, match="Cannot verify dimensions and similarity"):
+        manager.create_indexes()
+
+    assert store.vector_indexes == []
+    assert store.fulltext_indexes == []
+
+
+def test_create_indexes_never_drops_existing_indexes():
+    store = ExistingIndexStore([COMPATIBLE_INDEXES[1]])
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    manager.create_indexes()
+
+    assert not any("DROP VECTOR INDEX" in q or "DROP TEXT INDEX" in q for q, _ in store.calls)
+
+
+def test_create_indexes_raises_on_incompatible_definition():
+    incompatible = [dict(COMPATIBLE_INDEXES[0], property="other_embedding")]
+    store = ExistingIndexStore(incompatible)
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    with pytest.raises(ValueError) as excinfo:
+        manager.create_indexes()
+
+    message = str(excinfo.value)
+    assert "entity-embeddings" in message
+    assert "other_embedding" in message
+    assert not any("DROP VECTOR INDEX" in q for q, _ in store.calls)
+
+
+def test_create_indexes_stops_when_inspection_fails():
+    store = ExistingIndexStore(inspect_error=RuntimeError("SHOW INDEX INFO unsupported"))
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    with pytest.raises(RuntimeError, match="Cannot verify existing Memgraph indexes"):
+        manager.create_indexes()
+
+    assert store.vector_indexes == []
+    assert not any("DROP VECTOR INDEX" in q for q, _ in store.calls)
+
+
 def test_index_manager_create_indexes_uses_graph_store_methods():
     store = FakeGraphStore()
     manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
@@ -176,3 +258,72 @@ def test_index_manager_no_duplicates_creates_constraints():
         )
         == 4
     )
+
+
+def test_create_indexes_rejects_same_schema_under_another_name():
+    """Retrieval targets indexes by name, so a renamed index is not the request."""
+    renamed = [dict(COMPATIBLE_INDEXES[1], **{"index name": "old-name"})]
+    store = ExistingIndexStore(renamed)
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    with pytest.raises(ValueError) as excinfo:
+        manager.create_indexes()
+
+    message = str(excinfo.value)
+    assert "entity-names" in message
+    assert "old-name" in message
+    assert not any("DROP VECTOR INDEX" in q or "DROP TEXT INDEX" in q for q, _ in store.calls)
+
+
+# Rows exactly as Memgraph 2.x reports them: no vector index name, no
+# dimensions, labels prefixed with ':', text name embedded in the type string.
+MEMGRAPH_REPORTED_INDEXES = [
+    {
+        "index type": "label+property_vector",
+        "label": ":Community",
+        "property": "report_embedding",
+        "count": 0,
+    },
+    {
+        "index type": "label+property_vector",
+        "label": ":__Entity__",
+        "property": "embedding",
+        "count": 0,
+    },
+    {
+        "index type": "label_text (name: entity-names)",
+        "label": "__Entity__",
+        "property": ["name"],
+        "count": 5,
+    },
+]
+
+
+def test_index_signature_normalizes_real_memgraph_rows():
+    assert IndexManager._index_signature(MEMGRAPH_REPORTED_INDEXES[2]) == (
+        "entity-names",
+        "text",
+        "__Entity__",
+        ["name"],
+    )
+    assert IndexManager._index_signature(MEMGRAPH_REPORTED_INDEXES[1]) == (
+        None,
+        "vector",
+        "__Entity__",
+        ["embedding"],
+    )
+
+
+def test_create_indexes_fails_closed_on_real_memgraph_vector_index():
+    """Memgraph cannot report vector dimensions, so an existing index is unverifiable."""
+    store = ExistingIndexStore(MEMGRAPH_REPORTED_INDEXES)
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    with pytest.raises(ValueError) as excinfo:
+        manager.create_indexes()
+
+    message = str(excinfo.value)
+    assert "entity-embeddings" in message
+    assert "Cannot verify dimensions and similarity" in message
+    assert not any("DROP" in query for query, _ in store.calls)
+    assert store.vector_indexes == []

@@ -35,7 +35,7 @@ class DriftQueryState:
     stopping_reason: str = ""
     total_llm_calls: int = 0
     phase_tokens: dict = field(default_factory=dict)
-    failures: list[str] = field(default_factory=list)
+    failures: list[str | dict[str, str]] = field(default_factory=list)
 
 
 @dataclass

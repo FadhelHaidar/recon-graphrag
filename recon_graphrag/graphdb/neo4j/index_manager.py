@@ -42,26 +42,121 @@ class IndexManager:
             self.embedding_dim = 1536
 
     def create_indexes(self):
-        """Create all required vector, fulltext, and uniqueness indexes."""
-        self._drop_indexes()
-        self.graph_store.create_vector_index(
+        """Create the required indexes, reusing compatible existing ones.
+
+        Existing indexes are never dropped implicitly: a dropped vector index
+        makes retrieval fail or degrade until it is rebuilt, so replacing an
+        index stays an explicit administrative action (``drop_indexes()``).
+        """
+        existing = self._inspect_indexes()
+        self._ensure_vector_index(
+            existing,
             name=self.config.entity_vector_index,
             label=self.config.entity_label,
             embedding_property="embedding",
-            dimensions=self.embedding_dim,
         )
-        self.graph_store.create_fulltext_index(
+        self._ensure_fulltext_index(
+            existing,
             name=self.config.entity_fulltext_index,
             label=self.config.entity_label,
             node_properties=["name"],
         )
-        self.graph_store.create_vector_index(
+        self._ensure_vector_index(
+            existing,
             name=self.config.community_vector_index,
             label=self.config.community_label,
             embedding_property=self.config.community_report_embedding_property,
-            dimensions=self.embedding_dim,
         )
         self._create_constraints()
+
+    def _inspect_indexes(self) -> dict[str, dict]:
+        """Inspect extended columns, including the vector configuration."""
+        try:
+            rows = self.graph_store.execute_query("SHOW INDEXES YIELD *")
+        except Exception:
+            raise RuntimeError(
+                "Cannot verify existing Neo4j indexes. Grant index-inspection "
+                "access and retry; no indexes were changed."
+            ) from None
+        return {row["name"]: row for row in rows if row.get("name")}
+
+    def _ensure_vector_index(
+        self, existing: dict[str, dict], *, name: str, label: str, embedding_property: str
+    ) -> None:
+        current = existing.get(name)
+        if current is None:
+            self.graph_store.create_vector_index(
+                name=name,
+                label=label,
+                embedding_property=embedding_property,
+                dimensions=self.embedding_dim,
+            )
+            return
+
+        problems = self._definition_problems(
+            current, kind="VECTOR", label=label, properties=[embedding_property]
+        )
+        config = (current.get("options") or {}).get("indexConfig") or {}
+        if "vector.dimensions" in config:
+            if int(config["vector.dimensions"]) != int(self.embedding_dim):
+                problems.append(
+                    f"dimensions={config['vector.dimensions']}, "
+                    f"expected {self.embedding_dim}"
+                )
+            similarity = config.get("vector.similarity_function")
+            if str(similarity).lower() != "cosine":
+                problems.append(
+                    f"similarity_function={similarity!r}, expected 'cosine'"
+                )
+        else:
+            problems.append(
+                "vector configuration is unavailable; verify dimensions and "
+                "similarity or explicitly rebuild the index"
+            )
+        self._raise_if_incompatible(name, problems)
+
+    def _ensure_fulltext_index(
+        self, existing: dict[str, dict], *, name: str, label: str, node_properties: list[str]
+    ) -> None:
+        current = existing.get(name)
+        if current is None:
+            self.graph_store.create_fulltext_index(
+                name=name, label=label, node_properties=node_properties
+            )
+            return
+
+        problems = self._definition_problems(
+            current, kind="FULLTEXT", label=label, properties=node_properties
+        )
+        self._raise_if_incompatible(name, problems)
+
+    @staticmethod
+    def _definition_problems(
+        current: dict, *, kind: str, label: str, properties: list[str]
+    ) -> list[str]:
+        problems = []
+        if current.get("type") != kind:
+            problems.append(f"type={current.get('type')!r}, expected {kind!r}")
+        if list(current.get("labelsOrTypes") or []) != [label]:
+            problems.append(
+                f"labels={current.get('labelsOrTypes')!r}, expected {[label]!r}"
+            )
+        if list(current.get("properties") or []) != list(properties):
+            problems.append(
+                f"properties={current.get('properties')!r}, expected {properties!r}"
+            )
+        return problems
+
+    @staticmethod
+    def _raise_if_incompatible(name: str, problems: list[str]) -> None:
+        if not problems:
+            return
+        raise ValueError(
+            f"Index {name!r} already exists with an incompatible definition "
+            f"({'; '.join(problems)}). Drop it explicitly with "
+            f"`DROP INDEX `{name}`` and re-run index setup; existing indexes are "
+            "never dropped automatically."
+        )
 
     def _drop_indexes(self):
         """Drop existing indexes so they can be recreated with updated settings."""

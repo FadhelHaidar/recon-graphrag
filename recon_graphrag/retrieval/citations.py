@@ -6,6 +6,8 @@ with document identity, page ranges, and bounded excerpts.
 
 from __future__ import annotations
 
+import json
+
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.models.artifacts import Citation, citation_excerpt
 
@@ -228,3 +230,25 @@ def _clean_metadata(value) -> dict:
         for key, item in value.items()
         if key not in _INTERNAL_METADATA_KEYS and item is not None
     }
+
+
+def format_citation_metadata(
+    citations: list[Citation],
+    metadata_keys: list[str] | None = None,
+) -> list[str]:
+    """Render ``chunk_id: {metadata}`` lines for citation-aware prompting."""
+    lines = []
+    key_filter = set(metadata_keys or [])
+    for citation in citations:
+        metadata = dict(citation.metadata or {})
+        if key_filter:
+            metadata = {
+                key: value for key, value in metadata.items() if key in key_filter
+            }
+        if not metadata:
+            continue
+        metadata_text = json.dumps(
+            metadata, ensure_ascii=True, sort_keys=True, default=str
+        )
+        lines.append(f"{citation.chunk_id}: {metadata_text}")
+    return lines

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import os
 from pathlib import Path
 
@@ -78,7 +79,7 @@ async def main(llm_provider: str, hint: str, output: Path | None):
         return schema
     finally:
         close = getattr(llm, "aclose", None)
-        if callable(close):
+        if inspect.iscoroutinefunction(close):
             await close()
 
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import inspect
 import os
 from pathlib import Path
 
@@ -63,7 +64,7 @@ async def extract_to_artifact(output: Path, llm_provider: str):
             "page_count": len(MOVIE_EXAMPLE_PAGES),
         }
 
-        # 1. Chunk pages into overlapping windows (passing dicts preserves per-page metadata)
+        # Passing dicts preserves per-page metadata.
         chunks = PageWindowBuilder(
             window_size=2,
             window_overlap=1,
@@ -73,9 +74,7 @@ async def extract_to_artifact(output: Path, llm_provider: str):
             metadata=metadata,
         )
 
-        # 2. Extract entities and relationships per chunk, using the
-        # movie-domain extraction prompt (the backend appends the schema,
-        # rules, and JSON format sections).
+        # The backend appends the schema, rules, and JSON format sections.
         prompt_builder = SchemaPromptBuilder(extraction_prompt=EXTRACTION_PROMPT)
         extractor = LLMGraphExtractor(llm, prompt_builder=prompt_builder)
         validator = SchemaValidator()
@@ -101,7 +100,6 @@ async def extract_to_artifact(output: Path, llm_provider: str):
                 f"extracted ({node_count} nodes, {rel_count} rels)"
             )
 
-        # 3. Assemble a neutral GraphDocument
         text_hash = hashlib.sha256("\n\n".join(page_texts).encode("utf-8")).hexdigest()
         graph_document = GraphDocumentAssembler().assemble(
             document_id=document_id,
@@ -112,7 +110,6 @@ async def extract_to_artifact(output: Path, llm_provider: str):
             graph_name="entity-graph",
         )
 
-        # 4. Print a source summary from the preserved chunk metadata
         all_sources = set()
         for chunk in graph_document.chunks:
             all_sources.update(chunk.metadata.get("source_ids", []))
@@ -130,7 +127,7 @@ async def extract_to_artifact(output: Path, llm_provider: str):
         return graph_document
     finally:
         close = getattr(llm, "aclose", None)
-        if callable(close):
+        if inspect.iscoroutinefunction(close):
             await close()
 
 

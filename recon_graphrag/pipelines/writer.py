@@ -309,9 +309,6 @@ class CypherGraphWriter:
             )
         }
 
-    # ------------------------------------------------------------------
-    # Existing contribution state
-    # ------------------------------------------------------------------
     def _read_document_state(self, graph_document: GraphDocument) -> _DocumentState:
         """Read what this document previously contributed, before any write."""
         document = graph_document.document
@@ -410,9 +407,6 @@ class CypherGraphWriter:
             }
         return state
 
-    # ------------------------------------------------------------------
-    # Row construction (replacement-aware, pure)
-    # ------------------------------------------------------------------
     def _entity_rows(
         self, graph_document: GraphDocument, state: _DocumentState
     ) -> list[dict[str, Any]]:
@@ -533,9 +527,6 @@ class CypherGraphWriter:
             )
         return rows
 
-    # ------------------------------------------------------------------
-    # Writes
-    # ------------------------------------------------------------------
     def _write_documents(self, documents: list) -> int:
         if not documents:
             return 0
@@ -786,9 +777,6 @@ class CypherGraphWriter:
         # Rows that survived both endpoint MATCHes: fully linked claims.
         return _confirmed(result, len(rows))
 
-    # ------------------------------------------------------------------
-    # Reconciliation
-    # ------------------------------------------------------------------
     def _rebuild_relationship_rows(
         self,
         graph_document: GraphDocument,
@@ -1031,9 +1019,6 @@ class CypherGraphWriter:
                 {"graph_name": graph_name, "entity_ids": orphan_candidates},
             )
 
-    # ------------------------------------------------------------------
-    # Row shapes
-    # ------------------------------------------------------------------
     def _document_rows(self, documents: list) -> list[dict[str, Any]]:
         return [
             {
