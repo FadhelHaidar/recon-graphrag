@@ -153,9 +153,8 @@ class IndexManager:
             return
         raise ValueError(
             f"Index {name!r} already exists with an incompatible definition "
-            f"({'; '.join(problems)}). Drop it explicitly with "
-            f"`DROP INDEX `{name}`` and re-run index setup; existing indexes are "
-            "never dropped automatically."
+            f"({'; '.join(problems)}). Call store.drop_indexes() and re-run index "
+            "setup; existing indexes are never dropped automatically."
         )
 
     def _drop_indexes(self):

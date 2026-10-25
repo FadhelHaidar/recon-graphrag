@@ -5,12 +5,14 @@ from recon_graphrag.embeddings.base import (
     ModelParamsEmbedder,
     detect_embedding_dim,
 )
+from recon_graphrag.embeddings.chunks import ChunkEmbedder
 from recon_graphrag.embeddings.entities import EntityEmbedder
 from recon_graphrag.embeddings.community_reports import CommunityReportEmbedder
 from recon_graphrag.embeddings.factory import create_embedder
 
 __all__ = [
     "BaseEmbedder",
+    "ChunkEmbedder",
     "CommunityReportEmbedder",
     "EntityEmbedder",
     "ModelParamsEmbedder",

@@ -1,11 +1,10 @@
 """Tests for direct Neo4jGraphStore index and vector operations."""
 
 from typing import cast
-from unittest.mock import MagicMock
-
-import pytest
 
 import neo4j
+import pytest
+
 import recon_graphrag.graphdb.neo4j.entity_resolution as entity_resolution
 from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
 from recon_graphrag.models.artifacts import CommunityReport
@@ -501,3 +500,52 @@ def test_validate_graph_build_returns_counts():
         "evidence_link_count": 3,
         "entity_relationship_count": 2,
     }
+
+
+def test_fetch_entity_context_ranks_sources_only_with_a_query_vector():
+    driver = FakeDriver()
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+    matches = [{"id": "e1", "score": 0.9}]
+
+    store.fetch_entity_context(matches, graph_name="g")
+    unranked_query, unranked_params = driver.calls[-1]
+    assert "source_score" not in unranked_query
+    assert "ORDER BY chunk.id ASC" in unranked_query
+    assert "query_vector" not in unranked_params
+
+    store.fetch_entity_context(
+        matches, query_params={"query_vector": [1.0, 0.0]}, graph_name="g"
+    )
+    ranked_query, ranked_params = driver.calls[-1]
+    assert "source_score" in ranked_query
+    assert ranked_params["query_vector"] == [1.0, 0.0]
+
+
+def test_fetch_entity_context_ranks_drift_sources_too():
+    driver = FakeDriver()
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    store.fetch_entity_context(
+        [{"id": "e1", "score": 0.9}],
+        query_params={"query_vector": [1.0, 0.0]},
+        mode="drift",
+        graph_name="g",
+    )
+
+    assert "source_score" in driver.calls[-1][0]
+
+
+def test_fetch_entity_context_custom_query_wins_over_ranking():
+    driver = FakeDriver()
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    store.fetch_entity_context(
+        [{"id": "e1", "score": 0.9}],
+        retrieval_query="RETURN node AS context_row",
+        query_params={"query_vector": [1.0, 0.0]},
+        graph_name="g",
+    )
+
+    query = driver.calls[-1][0]
+    assert "RETURN node AS context_row" in query
+    assert "source_score" not in query

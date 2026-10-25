@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import re
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -83,6 +83,12 @@ class FakeGraphStore:
 
     def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None):
         return []
+
+    def get_unembedded_chunks(self, graph_name, limit=500, model_fingerprint=None):
+        return []
+
+    def count_communities_with_reports(self, graph_name: str) -> int:
+        return 0
 
     def get_entities_needing_summary(self, graph_name, limit=500):
         return []
@@ -239,6 +245,31 @@ class NoOpUpsertStore(PendingEmbeddingFakeGraphStore):
 
     def upsert_vectors(self, node_ids, embedding_property, vectors, **kwargs):
         self.upsert_vectors_calls += 1
+
+
+class ChunkEmbeddingFakeGraphStore(PendingEmbeddingFakeGraphStore):
+    """Records chunk-level embedding work separately from entity work."""
+
+    def __init__(self):
+        super().__init__()
+        self.chunks = [
+            {"id": "chunk-node-1", "chunk_id": "doc:0:0", "text": "chunk text"}
+        ]
+        self.chunk_embedding_calls = []
+        self.chunk_upserts = []
+
+    def get_unembedded_chunks(self, graph_name, limit=500, model_fingerprint=None):
+        self.chunk_embedding_calls.append({"graph_name": graph_name, "limit": limit})
+        pending, self.chunks = self.chunks[:limit], self.chunks[limit:]
+        return pending
+
+    def upsert_vectors(self, node_ids, embedding_property, vectors, **kwargs):
+        if any(str(node_id).startswith("chunk-node") for node_id in node_ids):
+            self.chunk_upserts.append(
+                (list(node_ids), embedding_property, vectors, kwargs)
+            )
+            return
+        super().upsert_vectors(node_ids, embedding_property, vectors, **kwargs)
 
 
 class RealWriterFakeGraphStore(FakeGraphStore):
@@ -858,19 +889,24 @@ async def test_concurrency_limit_respected(
 
     active = 0
     max_active = 0
+    calls = 0
     lock = asyncio.Lock()
 
     async def tracked_invoke(prompt):
-        nonlocal active, max_active
+        nonlocal active, max_active, calls
         async with lock:
             active += 1
+            calls += 1
             max_active = max(max_active, active)
         await asyncio.sleep(0.05)
         async with lock:
             active -= 1
         return MagicMock(content='{"nodes": [], "relationships": []}')
 
-    pipeline.llm.inner.ainvoke = AsyncMock(side_effect=tracked_invoke)  # type: ignore[attr-defined]
+    # The extractor awaits ``llm.ainvoke``; patching any other attribute would make
+    # this test measure nothing and pass vacuously.
+    llm_target = cast(Any, pipeline.llm)
+    llm_target.ainvoke = AsyncMock(side_effect=tracked_invoke)
 
     await pipeline._extract_and_write_chunks(
         document_id="doc:test",
@@ -883,6 +919,8 @@ async def test_concurrency_limit_respected(
         extract_claims=False,
     )
 
+    # Prove the hook is live before trusting the concurrency bound.
+    assert calls >= len(chunks)
     assert max_active <= 2
 
 
@@ -1778,6 +1816,54 @@ async def test_embed_entities_false_skips_embedding_and_completion_check(
 
 
 @pytest.mark.asyncio
+async def test_embed_chunks_flag_stores_normalized_chunk_vectors(
+    movie_schema, fake_llm, fake_embedder
+):
+    store = ChunkEmbeddingFakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=cast(GraphStore, store),
+        llm=fake_llm,
+        embedder=fake_embedder,
+        perform_entity_resolution=False,
+        summarize_descriptions=False,
+        embed_chunks=True,
+    )
+
+    await pipeline.build_from_text(
+        "Alice directed Inception in 2010.", schema=movie_schema, max_gleanings=0
+    )
+
+    assert store.chunk_embedding_calls
+    assert len(store.chunk_upserts) == 1
+    ids, property_name, vectors, kwargs = store.chunk_upserts[0]
+    assert ids == ["chunk-node-1"]
+    assert property_name == "embedding"
+    # Unit length is what makes the portable dot product a cosine similarity.
+    assert abs(sum(value * value for value in vectors[0]) - 1.0) < 1e-9
+    assert "content_fingerprints" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_embed_chunks_is_off_by_default(movie_schema, fake_llm, fake_embedder):
+    store = ChunkEmbeddingFakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=cast(GraphStore, store),
+        llm=fake_llm,
+        embedder=fake_embedder,
+        perform_entity_resolution=False,
+        summarize_descriptions=False,
+    )
+
+    await pipeline.build_from_text(
+        "Alice directed Inception in 2010.", schema=movie_schema, max_gleanings=0
+    )
+
+    # Opt-in only: one provider call per chunk is never spent unless asked for.
+    assert store.chunk_embedding_calls == []
+    assert store.chunk_upserts == []
+
+
+@pytest.mark.asyncio
 async def test_strict_completion_check_is_graph_scoped_and_limit_one():
     store = PendingEmbeddingFakeGraphStore()
     _two_pending_entities(store, graph_name="other-graph")
@@ -1893,3 +1979,98 @@ async def test_non_positive_concurrency_raises_before_any_work(
     assert fake_llm.ainvoke.await_count == 0
     assert fake_writer.write_graph_document.call_count == 0
     assert store.queries == []
+
+
+def _tracked_invoke(state: dict) -> object:
+    """Fake LLM call that records peak concurrency and peak live tasks."""
+
+    async def invoke(prompt, **kwargs):
+        state["active"] += 1
+        state["max_active"] = max(state["max_active"], state["active"])
+        state["max_tasks"] = max(state["max_tasks"], len(asyncio.all_tasks()))
+        try:
+            await asyncio.sleep(0)
+            return MagicMock(content='{"nodes": [], "relationships": []}', usage=None)
+        finally:
+            state["active"] -= 1
+
+    return invoke
+
+
+@pytest.mark.asyncio
+async def test_document_workers_bound_pending_tasks(
+    movie_schema, fake_llm, fake_embedder, fake_writer
+):
+    """Document concurrency bounds live tasks, not just active extractions."""
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=cast(GraphStore, store),
+        llm=fake_llm,
+        embedder=fake_embedder,
+        graph_writer=fake_writer,
+        perform_entity_resolution=False,
+        embed_entities=False,
+    )
+    state = {"active": 0, "max_active": 0, "max_tasks": 0}
+    fake_llm.ainvoke = AsyncMock(side_effect=_tracked_invoke(state))
+
+    document_count = 30
+    documents = [
+        {
+            "text": f"Alice directed Inception in 2010 with Christopher Nolan {i}.",
+            "metadata": {"source": f"doc-{i}"},
+        }
+        for i in range(document_count)
+    ]
+
+    results = await pipeline.build_from_documents(
+        documents,
+        schema=movie_schema,
+        document_concurrency=2,
+        extraction_concurrency=1,
+        max_gleanings=0,
+        chunk_size=64,
+        chunk_overlap=0,
+    )
+
+    assert len(results) == document_count
+    assert fake_llm.ainvoke.call_count == document_count
+    assert state["max_active"] <= 2
+    # One task per document would push live tasks past document_count.
+    assert state["max_tasks"] <= 10
+
+
+@pytest.mark.asyncio
+async def test_extraction_workers_bound_pending_tasks(
+    movie_schema, fake_llm, fake_embedder, fake_writer
+):
+    """Chunk concurrency bounds live tasks, not just active extractions."""
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=cast(GraphStore, store),
+        llm=fake_llm,
+        embedder=fake_embedder,
+        graph_writer=fake_writer,
+        perform_entity_resolution=False,
+        embed_entities=False,
+    )
+    state = {"active": 0, "max_active": 0, "max_tasks": 0}
+    fake_llm.ainvoke = AsyncMock(side_effect=_tracked_invoke(state))
+
+    text = "Alice directed Inception in 2010 with Christopher Nolan. " * 20
+    result = await pipeline.build_from_text(
+        text,
+        metadata={"source": "test"},
+        schema=movie_schema,
+        extraction_concurrency=2,
+        max_gleanings=0,
+        chunk_size=15,
+        chunk_overlap=5,
+    )
+
+    chunk_count = result["extraction"]["chunks"]
+    assert chunk_count >= 10
+    assert fake_llm.ainvoke.call_count == chunk_count
+    assert state["max_active"] <= 2
+    # One task per chunk would push live tasks past chunk_count.
+    assert state["max_tasks"] <= 10

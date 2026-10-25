@@ -792,6 +792,11 @@ retriever = HybridEntityRetriever(
 result = await retriever.search("Who directed Inception?", top_k=10)
 ```
 
+A custom `retrieval_query` is responsible for its own limits. The default query
+honours `rel_limit` and `source_limit` (passed through `query_params`); a custom
+query that ignores them returns every matched row, so a hub entity can still
+stream its whole neighborhood into Python.
+
 ### `MixedContextBuilder`
 
 Builds mixed context from an entity subgraph for local search. Collects five
@@ -1015,6 +1020,34 @@ async def extract_to_json(text: str, schema: GraphSchema, llm, out_path: Path):
 ```
 
 ---
+
+## Concurrency is not a work limit
+
+Every `*_concurrency` option in this SDK bounds how much runs **at the same
+time**. None of them bound how much a call does in total, how much memory it
+holds, or how much a provider bills for.
+
+| Knob | Bounds | Does **not** bound |
+| --- | --- | --- |
+| `extraction_concurrency`, `document_concurrency` | Chunks/documents in flight during a build | Documents passed in, results returned, total LLM calls |
+| `summarize_concurrency` | Community reports generated in parallel | Communities processed, reports returned |
+| `map_concurrency` (global search) | Concurrent map LLM calls | Reports read, batches built, total map calls or tokens |
+| `action_concurrency` (DRIFT) | Actions evaluated in parallel | Total actions, total LLM calls (`max_llm_calls` does that) |
+| `batch_size` (entity embeddings) | Entities per database round trip | Provider calls (one per entity) |
+
+Total-work limits are separate options and are often **unlimited by default**:
+`max_map_calls`, `max_map_tokens`, and `max_reports` on
+`GlobalSearchRetriever`, `max_llm_calls` on `DriftSearchConfig`,
+`top_k_relationships` and `top_k_sources` on local and DRIFT search. The database
+side of local and DRIFT limits returned relationships per direction and source
+chunks per seed in Cypher; database traversal and sorting can still grow with
+hub degree. `max_map_tokens` counts complete formatted map prompts with the
+configured token counter (approximate by default), stopping before a batch that
+does not fit. `max_reports` selects an ID-ordered subset before shuffling.
+
+Budget work separately from concurrency: raising `map_concurrency` may shorten
+a capped query, but does not reduce its total work. These input-work caps do not
+guarantee provider output-token or billed-cost ceilings.
 
 ## Token usage observability
 

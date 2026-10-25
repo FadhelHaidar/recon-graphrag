@@ -210,8 +210,8 @@ class IndexManager:
         raise ValueError(
             f"Cannot verify dimensions and similarity for Memgraph index {name!r}: "
             "SHOW INDEX INFO does not expose its vector configuration. "
-            "Verify it administratively and explicitly rebuild the index before "
-            "running setup; existing indexes are never dropped automatically."
+            "Call store.drop_indexes() and re-run index setup; existing indexes "
+            "are never dropped automatically."
         )
 
     @staticmethod
@@ -220,8 +220,8 @@ class IndexManager:
             return
         raise ValueError(
             f"Index {name!r} already exists with an incompatible definition "
-            f"({'; '.join(problems)}). Drop it explicitly and re-run index setup; "
-            "existing indexes are never dropped automatically."
+            f"({'; '.join(problems)}). Call store.drop_indexes() and re-run index "
+            "setup; existing indexes are never dropped automatically."
         )
 
     def _drop_indexes(self):

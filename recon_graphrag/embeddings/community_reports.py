@@ -42,6 +42,7 @@ class CommunityReportEmbedder:
         """
         total = 0
         semaphore = asyncio.Semaphore(self.concurrency)
+        last_batch_keys: frozenset | None = None
 
         while True:
             reports = self.graph_store.get_unembedded_community_reports(
@@ -51,12 +52,29 @@ class CommunityReportEmbedder:
             if not reports:
                 break
 
+            # No-forward-progress guard: if the store hands back the same reports
+            # it just did, processing them again cannot change the result, so a
+            # store that ignores failure marks or vector writes would loop forever.
+            batch_keys = frozenset(
+                (report.get("id"), report.get("level")) for report in reports
+            )
+            if batch_keys == last_batch_keys:
+                logger.warning(
+                    "stopping: %s community reports could not be embedded "
+                    "(no progress); leaving them unembedded",
+                    len(reports),
+                )
+                break
+            last_batch_keys = batch_keys
+
             # Returns the exception on failure so tqdm_asyncio.gather (no
             # return_exceptions=) still lets the caller sort ok/failed results.
             async def _embed(report: dict):
                 text = self._report_to_text(report)
                 if not text:
-                    return None
+                    # Returned as a failure, not skipped: an unembeddable report
+                    # left unmarked stays eligible for refetch forever.
+                    return ValueError("community report has no embeddable text")
                 async with semaphore:
                     try:
                         embedding = await self.embedder.async_embed_query(text)
@@ -90,7 +108,7 @@ class CommunityReportEmbedder:
                             rid, mark_error,
                         )
                         return total
-                elif result is not None:
+                else:
                     ids.append(result[0])
                     levels.append(result[1])
                     embeddings.append(result[2])

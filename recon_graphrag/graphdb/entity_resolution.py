@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import heapq
 import json
 import hashlib
 import math
@@ -77,6 +78,112 @@ class _EntityRecord:
     resolve_value: str
     normalized_value: str
     properties: dict = field(default_factory=dict)
+
+
+class _FuzzyCandidateIndex:
+    """Gate-compatible fuzzy candidate blocks for one resolution pass.
+
+    ``_normalize_name`` strips spaces, so every normalized value is a single
+    token and the acronym gate can only admit another record that shares the
+    leading character (or whose value is empty, which skips the gate). Blocking
+    by graph/domain/leading character then length lets an anchor inspect its
+    gate-compatible block instead of the whole singleton pool.
+
+    Gates, pool order, used/self exclusion, and the candidate cap match a full
+    scan exactly. If normalization ever stops producing single tokens the index
+    falls back to the original full scan.
+    """
+
+    def __init__(self, pool: list[_EntityRecord]) -> None:
+        self._pool = pool
+        self._single_token = all(" " not in r.normalized_value for r in pool)
+        # Candidate records inspected per pass; read by the scaling checks and
+        # the F9 benchmark, never by production control flow.
+        self.inspections = 0
+        # (graph_name, domain_label, leading_char) -> length -> [(pool_order, record)]
+        self._blocks: dict[tuple[str, str, str], dict[int, list[tuple[int, _EntityRecord]]]] = {}
+        self._leading: dict[tuple[str, str], list[str]] = {}
+        if not self._single_token:
+            return
+        for position, record in enumerate(pool):
+            scope = (record.graph_name, record.domain_label)
+            value = record.normalized_value
+            leading = value[0] if value else ""
+            self._blocks.setdefault((*scope, leading), {}).setdefault(len(value), []).append(
+                (position, record)
+            )
+            leading_chars = self._leading.setdefault(scope, [])
+            if leading not in leading_chars:
+                leading_chars.append(leading)
+
+    def candidates(
+        self,
+        entity: _EntityRecord,
+        max_candidates: int,
+        used: set,
+        is_acronym_match,
+    ) -> list[_EntityRecord]:
+        if not self._single_token:
+            return _scan_candidates(entity, self._pool, max_candidates, used, is_acronym_match)
+
+        scope = (entity.graph_name, entity.domain_label)
+        leading_chars = self._leading.get(scope)
+        if not leading_chars:
+            return []
+
+        len1 = len(entity.normalized_value)
+        # An empty value skips the leading-character gate, so it is reachable
+        # from every anchor; conversely an empty anchor skips it entirely.
+        keys = [entity.normalized_value[0], ""] if entity.normalized_value else leading_chars
+
+        found: list[tuple[int, _EntityRecord]] = []
+        for key in keys:
+            for length, records in self._blocks.get((*scope, key), {}).items():
+                if abs(len1 - length) > max(3, int(min(len1, length) * 0.4)):
+                    continue
+                self.inspections += len(records)
+                found.extend(records)
+
+        selected = heapq.nsmallest(
+            max_candidates,
+            (
+                (position, record)
+                for position, record in found
+                if record.node_id != entity.node_id and record.node_id not in used
+            ),
+            key=lambda item: item[0],
+        )
+        return [record for _, record in selected]
+
+
+def _scan_candidates(
+    entity: _EntityRecord,
+    pool: list[_EntityRecord],
+    max_candidates: int,
+    used: set,
+    is_acronym_match,
+) -> list[_EntityRecord]:
+    """Reference implementation: one linear pool scan per anchor."""
+    candidates = []
+    for other in pool:
+        if other.node_id == entity.node_id or other.node_id in used:
+            continue
+        if other.graph_name != entity.graph_name:
+            continue
+        if other.domain_label != entity.domain_label:
+            continue
+        len1 = len(entity.normalized_value)
+        len2 = len(other.normalized_value)
+        if abs(len1 - len2) > max(3, int(min(len1, len2) * 0.4)):
+            continue
+        tok1 = entity.normalized_value.split()[:1]
+        tok2 = other.normalized_value.split()[:1]
+        if tok1 and tok2 and tok1[0] != tok2[0] and not is_acronym_match(
+            entity.normalized_value, other.normalized_value
+        ):
+            continue
+        candidates.append(other)
+    return candidates[:max_candidates]
 
 
 class BaseEntityResolver(ABC):
@@ -430,6 +537,9 @@ class BaseEntityResolver(ABC):
         normalized_groups, _ = self._build_normalized_groups(entities)
         merged_ids = {e.node_id for g in normalized_groups for e in g}
         singletons = [e for e in entities if e.node_id not in merged_ids]
+        # Built once per pass: an anchor then inspects only its gate-compatible
+        # block instead of scanning the whole singleton pool.
+        index = _FuzzyCandidateIndex(singletons)
 
         fuzzy_groups: list[list[_EntityRecord]] = []
         review_groups: list[dict] = []
@@ -440,8 +550,8 @@ class BaseEntityResolver(ABC):
         for e1 in singletons:
             if e1.node_id in used:
                 continue
-            candidates = self._blocked_candidates(
-                e1, singletons, max_candidates_per_entity, used
+            candidates = index.candidates(
+                e1, max_candidates_per_entity, used, self._is_acronym_match
             )
             # Gather every candidate that matches the anchor e1 directly into a
             # single group (star, not chain), so >2 variants of one entity merge
@@ -481,35 +591,6 @@ class BaseEntityResolver(ABC):
                 fuzzy_groups.append(group)
 
         return normalized_groups + fuzzy_groups, review_groups, dropped_pairs
-
-    def _blocked_candidates(
-        self,
-        entity: _EntityRecord,
-        pool: list[_EntityRecord],
-        max_candidates: int,
-        used: set,
-    ) -> list[_EntityRecord]:
-        candidates = []
-        for other in pool:
-            if other.node_id == entity.node_id or other.node_id in used:
-                continue
-            if other.graph_name != entity.graph_name:
-                continue
-            if other.domain_label != entity.domain_label:
-                continue
-            len1 = len(entity.normalized_value)
-            len2 = len(other.normalized_value)
-            if abs(len1 - len2) > max(3, int(min(len1, len2) * 0.4)):
-                continue
-            tok1 = entity.normalized_value.split()[:1]
-            tok2 = other.normalized_value.split()[:1]
-            if tok1 and tok2 and tok1[0] != tok2[0]:
-                if not self._is_acronym_match(
-                    entity.normalized_value, other.normalized_value
-                ):
-                    continue
-            candidates.append(other)
-        return candidates[:max_candidates]
 
     @staticmethod
     def _is_acronym_match(s1: str, s2: str) -> bool:

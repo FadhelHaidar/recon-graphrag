@@ -54,7 +54,7 @@ class MemgraphGraphStore(BaseGraphStore):
     def __init__(
         self,
         driver: neo4j.Driver,
-        database: Optional[str] = None,
+        database: Optional[str] = None,  # noqa: UP045 - public signature compatibility
     ):
         self._driver = driver
         self._database = database
@@ -68,7 +68,7 @@ class MemgraphGraphStore(BaseGraphStore):
         return self._driver
 
     def execute_query(
-        self, query: str, parameters: Optional[dict] = None
+        self, query: str, parameters: Optional[dict] = None  # noqa: UP045 - public signature compatibility
     ) -> list[dict]:
         with self._driver.session(
             database=self._database,
@@ -96,12 +96,12 @@ class MemgraphGraphStore(BaseGraphStore):
         return writer.write_graph_document(graph_document)
 
     def create_indexes(
-        self, config: Optional[IndexConfig] = None, embedding_dim: int = 1536
+        self, config: Optional[IndexConfig] = None, embedding_dim: int = 1536  # noqa: UP045 - public signature compatibility
     ) -> None:
         mgr = IndexManager(self, embedding_dim=embedding_dim, index_config=config)
         mgr.create_indexes()
 
-    def drop_indexes(self, config: Optional[IndexConfig] = None) -> None:
+    def drop_indexes(self, config: Optional[IndexConfig] = None) -> None:  # noqa: UP045 - public signature compatibility
         mgr = IndexManager(self, index_config=config)
         mgr._drop_indexes()
 
@@ -173,13 +173,13 @@ class MemgraphGraphStore(BaseGraphStore):
         merge_threshold: float = 95.0,
         review_threshold: float = 85.0,
         max_candidates_per_entity: int = 20,
-        aliases: Optional[dict] = None,
+        aliases: Optional[dict] = None,  # noqa: UP045 - public signature compatibility
         embedder=None,
         llm=None,
-        llm_guidance: Optional[str] = None,
+        llm_guidance: Optional[str] = None,  # noqa: UP045 - public signature compatibility
         allow_ai_auto_merge: bool = False,
-        context_properties: Optional[dict[str, list[str]] | list[str]] = None,
-        conflict_properties: Optional[dict[str, list[str]] | list[str]] = None,
+        context_properties: Optional[dict[str, list[str]] | list[str]] = None,  # noqa: UP045 - public signature compatibility
+        conflict_properties: Optional[dict[str, list[str]] | list[str]] = None,  # noqa: UP045 - public signature compatibility
         context_mode: str = "safe_defaults",
     ) -> dict:
         from recon_graphrag.graphdb.memgraph.entity_resolution import (
@@ -333,8 +333,8 @@ class MemgraphGraphStore(BaseGraphStore):
         index_name: str,
         query_vector: list[float],
         k: int,
-        label: Optional[str] = None,
-        filters: Optional[dict] = None,
+        label: Optional[str] = None,  # noqa: UP045 - public signature compatibility
+        filters: Optional[dict] = None,  # noqa: UP045 - public signature compatibility
     ) -> list[dict]:
         filters = filters or {}
         overfetch_k = max(k * 5, k) if label or filters.get("graph_name") else k
@@ -367,8 +367,8 @@ class MemgraphGraphStore(BaseGraphStore):
         index_name: str,
         query_text: str,
         k: int,
-        label: Optional[str] = None,
-        filters: Optional[dict] = None,
+        label: Optional[str] = None,  # noqa: UP045 - public signature compatibility
+        filters: Optional[dict] = None,  # noqa: UP045 - public signature compatibility
     ) -> list[dict]:
         formatted_query = _format_tantivy_query(query_text)
         filters = filters or {}
@@ -406,21 +406,36 @@ class MemgraphGraphStore(BaseGraphStore):
     def fetch_entity_context(
         self,
         matches: list[dict],
-        retrieval_query: Optional[str] = None,
-        query_params: Optional[dict] = None,
+        retrieval_query: Optional[str] = None,  # noqa: UP045 - public signature compatibility
+        query_params: Optional[dict] = None,  # noqa: UP045 - public signature compatibility
         mode: str = "local",
         graph_name: str | None = None,
     ) -> list[dict]:
+        from recon_graphrag.retrieval._queries import set_retrieval_limit_defaults
         from recon_graphrag.retrieval.memgraph.queries import (
             DEFAULT_DRIFT_RETRIEVAL_QUERY,
             DEFAULT_LOCAL_RETRIEVAL_QUERY,
+            DRIFT_RETRIEVAL_QUERY_RANKED_SOURCES,
+            LOCAL_RETRIEVAL_QUERY_RANKED_SOURCES,
         )
+
+        # A query vector switches source-chunk selection from id order to
+        # relevance ranking; without one the previous behavior is unchanged.
+        rank_sources = bool((query_params or {}).get("query_vector"))
 
         if retrieval_query is None:
             if mode == "drift":
-                retrieval_query = DEFAULT_DRIFT_RETRIEVAL_QUERY
+                retrieval_query = (
+                    DRIFT_RETRIEVAL_QUERY_RANKED_SOURCES
+                    if rank_sources
+                    else DEFAULT_DRIFT_RETRIEVAL_QUERY
+                )
             elif mode == "local":
-                retrieval_query = DEFAULT_LOCAL_RETRIEVAL_QUERY
+                retrieval_query = (
+                    LOCAL_RETRIEVAL_QUERY_RANKED_SOURCES
+                    if rank_sources
+                    else DEFAULT_LOCAL_RETRIEVAL_QUERY
+                )
             else:
                 raise ValueError(f"mode must be 'local' or 'drift', got {mode!r}")
 
@@ -436,6 +451,7 @@ class MemgraphGraphStore(BaseGraphStore):
         if query_params:
             for key, value in query_params.items():
                 parameters.setdefault(key, value)
+        set_retrieval_limit_defaults(parameters)
         return self.execute_query(query, parameters)
 
     def vector_search_community_reports(
@@ -476,13 +492,13 @@ class MemgraphGraphStore(BaseGraphStore):
     def detect_communities(
         self,
         graph_name: str = "entity-graph",
-        relationship_types: Optional[list[str]] = None,
+        relationship_types: Optional[list[str]] = None,  # noqa: UP045 - public signature compatibility
         max_levels: int = 3,
         gamma: float = 1.0,
         theta: float = 0.01,
         tolerance: float = 1e-4,
-        relationship_weight_property: Optional[str] = None,
-        random_seed: Optional[int] = 42,
+        relationship_weight_property: Optional[str] = None,  # noqa: UP045 - public signature compatibility
+        random_seed: Optional[int] = 42,  # noqa: UP045 - public signature compatibility
         entity_label: str = "__Entity__",
         community_label: str = "Community",
     ) -> list[dict]:
@@ -518,6 +534,29 @@ class MemgraphGraphStore(BaseGraphStore):
                CASE WHEN e.description IS NOT NULL THEN e.description ELSE '' END AS description,
                e.embedding_content_fingerprint AS embedding_content_fingerprint,
                e.embedding_model_fingerprint AS embedding_model_fingerprint
+        LIMIT $limit
+        """
+        return self.execute_query(
+            query,
+            {
+                "graph_name": graph_name,
+                "limit": limit,
+                "model_fingerprint": model_fingerprint,
+            },
+        )
+
+    def get_unembedded_chunks(
+        self, graph_name: str, limit: int = 500, model_fingerprint: str | None = None
+    ) -> list[dict]:
+        query = """
+        MATCH (c:Chunk {graph_name: $graph_name})
+        WHERE c.text IS NOT NULL
+          AND (c.embedding IS NULL
+               OR ($model_fingerprint IS NOT NULL
+                   AND coalesce(c.embedding_model_fingerprint, '') <> $model_fingerprint))
+        RETURN id(c) AS id,
+               c.id AS chunk_id,
+               c.text AS text
         LIMIT $limit
         """
         return self.execute_query(

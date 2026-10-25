@@ -644,3 +644,41 @@ def test_create_indexes_runs_uid_constraint(store, fake_driver):
     assert "CREATE TEXT INDEX `entity-names`" in query_text
     assert "CREATE CONSTRAINT" in query_text
     assert "c.uid IS UNIQUE" in query_text
+
+
+def test_fetch_entity_context_ranks_sources_only_with_a_query_vector(store, fake_driver):
+    matches = [{"id": "1", "score": 0.9}]
+
+    store.fetch_entity_context(matches, graph_name="g")
+    assert "source_score" not in fake_driver.session_obj.queries[-1]
+    assert "ORDER BY chunk.id ASC" in fake_driver.session_obj.queries[-1]
+
+    store.fetch_entity_context(
+        matches, query_params={"query_vector": [1.0, 0.0]}, graph_name="g"
+    )
+    assert "source_score" in fake_driver.session_obj.queries[-1]
+    assert fake_driver.session_obj.params[-1]["query_vector"] == [1.0, 0.0]
+
+
+def test_fetch_entity_context_ranks_drift_sources_too(store, fake_driver):
+    store.fetch_entity_context(
+        [{"id": "1", "score": 0.9}],
+        query_params={"query_vector": [1.0, 0.0]},
+        mode="drift",
+        graph_name="g",
+    )
+
+    assert "source_score" in fake_driver.session_obj.queries[-1]
+
+
+def test_fetch_entity_context_custom_query_wins_over_ranking(store, fake_driver):
+    store.fetch_entity_context(
+        [{"id": "1", "score": 0.9}],
+        retrieval_query="RETURN node AS context_row",
+        query_params={"query_vector": [1.0, 0.0]},
+        graph_name="g",
+    )
+
+    query = fake_driver.session_obj.queries[-1]
+    assert "RETURN node AS context_row" in query
+    assert "source_score" not in query

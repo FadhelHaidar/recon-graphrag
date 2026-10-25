@@ -74,6 +74,7 @@ These tests may be slower, flaky if external services are unhealthy, and may inc
 | `tests/integration/memgraph/test_memgraph_community_detection_integration.py` | No | No | Yes | The same weighted Leiden scenario through MAGE. |
 | `tests/integration/neo4j/test_neo4j_store_smoke.py` | No | No | Yes | Scoped graph-document write/read checks against Neo4j. |
 | `tests/integration/test_smoke_full.py` | Yes | Yes | Yes | Synthetic corpus E2E smoke test against Neo4j and Memgraph. |
+| `tests/integration/test_stage_inspection.py` | Yes | Yes | Yes | Stage-by-stage inspection run: extraction, entity resolution, embeddings, communities, and retrieval, with per-stage observations printed. |
 | `tests/integration/test_workflow_deterministic.py` | Fake only | Fake only | Yes | Deterministic pipeline workflow against real databases. No provider cost. |
 | `tests/integration/memgraph/test_memgraph_store_smoke.py` | No | No | Yes | Scoped graph-document write/read checks against Memgraph. |
 | `tests/communities/test_summarization.py` | No | Fake only | No | Community summarization and report generation using fake LLM. |

@@ -246,6 +246,12 @@ class GraphStore(Protocol):
         """Get graph-scoped entities whose stored vector is missing or stale."""
         ...
 
+    def get_unembedded_chunks(
+        self, graph_name: str, limit: int = 500, model_fingerprint: str | None = None
+    ) -> list[dict]:
+        """Get graph-scoped source chunks whose stored vector is missing or stale."""
+        ...
+
     def get_community_ranked_context(
         self,
         graph_name: str,

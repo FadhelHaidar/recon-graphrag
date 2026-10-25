@@ -24,7 +24,7 @@ import random as _random
 import re
 import time
 import zlib
-from typing import Optional
+from typing import Any, Optional
 
 from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graphdb.base import GraphStore
@@ -205,6 +205,8 @@ class DriftSearchRetriever:
         config: DriftSearchConfig | None = None,
         token_counter: TokenCounter | None = None,
         track_token_usage: bool = True,
+        top_k_relationships: int = 10,
+        top_k_sources: int = 2,
     ):
         self.graph_store = graph_store
         self.llm = track_usage(llm) if track_token_usage else llm
@@ -216,8 +218,27 @@ class DriftSearchRetriever:
         self.graph_name = graph_name
         self.config = config or DriftSearchConfig()
         self.counter = token_counter or ApproximateTokenCounter()
+        self.top_k_relationships = top_k_relationships
+        self.top_k_sources = top_k_sources
         self._retriever = self._build_retriever()
         self._mixed_context_builder: MixedContextBuilder | None = None
+
+    def _retrieval_params(
+        self, query_params: dict | None, query_vector: list[float] | None = None
+    ) -> dict:
+        """Per-seed caps pushed into the database so hub degree cannot bound work.
+
+        Passing a query vector also switches source-chunk selection from chunk-id
+        order to relevance ranking; without one the previous order is kept.
+        """
+        params: dict[str, Any] = {
+            "rel_limit": self.top_k_relationships,
+            "source_limit": self.top_k_sources,
+        }
+        if query_vector:
+            params["query_vector"] = query_vector
+        params.update(query_params or {})
+        return params
 
     def _build_retriever(self) -> HybridEntityRetriever:
         return HybridEntityRetriever(
@@ -667,11 +688,13 @@ class DriftSearchRetriever:
         """Process a single follow-up action."""
         # Local retrieval
         try:
+            action_vector = await self.embedder.async_embed_query(action.query)
             retriever_result = await self._retriever.search(
                 query_text=action.query,
+                query_vector=action_vector,
                 top_k=top_k,
                 effective_search_ratio=effective_search_ratio,
-                query_params=query_params,
+                query_params=self._retrieval_params(query_params, action_vector),
                 ranker=ranker,
                 alpha=alpha,
             )
@@ -946,11 +969,13 @@ class DriftSearchRetriever:
     ) -> SearchResult:
         """Fall back to local-style retrieval when report embeddings missing."""
         logger.warning("DRIFT falling back to local-style retrieval: %s", reason)
+        fallback_vector = await self.embedder.async_embed_query(query)
         retriever_result = await self._retriever.search(
             query_text=query,
+            query_vector=fallback_vector,
             top_k=top_k,
             effective_search_ratio=effective_search_ratio,
-            query_params=query_params,
+            query_params=self._retrieval_params(query_params, fallback_vector),
             ranker=ranker,
             alpha=alpha,
         )

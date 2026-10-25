@@ -137,6 +137,24 @@ same call.
 | `window_size` | `build_from_documents` page envelopes | Number of pages per window. Defaults to `2`. |
 | `window_overlap` | `build_from_documents` page envelopes | Number of pages shared between consecutive windows. Defaults to `1`. |
 
+#### What concurrency bounds, and what it does not
+
+`extraction_concurrency` and `document_concurrency` bound how much work runs
+**at once**. They do not bound the work a build does in total, and they do not
+bound memory.
+
+Internally a build uses a fixed pool of workers that pull from a shared queue,
+so a 10,000-document batch with `document_concurrency=2` keeps at most two
+documents in flight rather than creating 10,000 pending tasks. Still input-sized
+and unavoidable for a single call:
+
+- the `documents` / `rows` argument you pass in;
+- the returned result list, one entry per document;
+- one document's assembled extraction state, which is written once at the end.
+
+For bounded memory on very large corpora, call the build method repeatedly with
+smaller batches rather than passing one enormous list.
+
 ### Token-based chunking
 
 By default, `chunk_size` and `chunk_overlap` are measured in tokens using
@@ -237,6 +255,7 @@ How it works:
 | `summarization_concurrency` | Maximum concurrent description summarization calls. Defaults to `5`. |
 | `summarization_limit` | Batch size for fetching unsummarized entities or relationships. Defaults to `500`. |
 | `embed_entities` | When `True` (default), embeds entity nodes after extraction and resolution. Set to `False` to skip embedding. |
+| `embed_chunks` | When `True`, also embeds source chunks after the build so search can rank source passages by similarity to the query. Defaults to `False`: it costs one embedding call per chunk and only affects which passages survive the retrieval-side source limit. See [Ranking source chunks](06-search.md#ranking-source-chunks). |
 | `fail_on_resolution_error` | When `True`, raises resolution errors instead of logging and continuing. Defaults to `False`. |
 | `fail_on_embedding_error` | When `True`, the build fails instead of logging and continuing when the embedding stage cannot complete: after the embedding pass the pipeline re-checks the graph and raises if any entity in the configured graph has a missing or stale embedding (for example, because input/model changed or the provider/vector write failed). Defaults to `False`. |
 
@@ -512,7 +531,7 @@ result = await community.build(level=0)
 | `random_seed` | Random seed for deterministic Neo4j community detection. |
 | `report_rubric` | Optional rating rubric for structured reports. |
 | `report_prompt` | Optional custom report prompt string. A simple instruction (e.g. `"You are a security analyst. Identify risks in this community."`) gets the standard structured body (community context, reference allowlist, rubric, JSON format) appended. A full template must include all placeholders in `recon_graphrag.communities.reports.REQUIRED_REPORT_PLACEHOLDERS`; a partial template raises `ValueError` at construction. |
-| `summarize_concurrency` | Maximum number of community reports to generate in parallel. Defaults to `1`. Increase for faster community builds when the LLM provider supports high throughput. |
+| `summarize_concurrency` | Maximum number of community reports to generate in parallel. Bounds concurrent reports, not total reports: every selected community is still processed and every report returned. Defaults to `1`. Increase for faster community builds when the LLM provider supports high throughput. |
 | `skip_existing` | Skip community reports whose input fingerprint has not changed. |
 | `max_context_tokens` | Maximum tokens for community context passed to the LLM. Degree-ranked context is greedily packed to fit this budget. Defaults to `8000`. Set to `None` to include all context without budgeting. |
 | `token_counter` | Token counter for context packing. Defaults to `ApproximateTokenCounter` when `max_context_tokens` is set. |

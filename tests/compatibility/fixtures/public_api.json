@@ -17,6 +17,7 @@
     "LLMUsage",
     "BaseEmbedder",
     "CommunityReportEmbedder",
+    "ChunkEmbedder",
     "EntityEmbedder",
     "ModelParamsEmbedder",
     "UsageTrackingLLM",
@@ -444,7 +445,7 @@
       "methods": {
         "search": "(self, query: 'str', top_k: 'int' = 10, community_level: 'CommunityLevelSelector' = None, query_vector: 'list[float] | None' = None, effective_search_ratio: 'int' = 1, query_params: 'dict | None' = None, ranker: 'HybridRanker | str' = 'naive', alpha: 'float | None' = None, synthesize_citation_metadata: 'bool' = False, synthesis_metadata_keys: 'list[str] | None' = None, synthesize_response: 'bool' = True, conversation_history: 'str' = '') -> 'SearchResult'"
       },
-      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', embedder: 'BaseEmbedder', retrieval_query: 'Optional[str]' = None, reduce_prompt: 'Optional[str]' = None, vector_index_name: 'str' = 'entity-embeddings', fulltext_index_name: 'str' = 'entity-names', graph_name: 'str' = 'entity-graph', config: 'DriftSearchConfig | None' = None, token_counter: 'TokenCounter | None' = None, track_token_usage: 'bool' = True)"
+      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', embedder: 'BaseEmbedder', retrieval_query: 'Optional[str]' = None, reduce_prompt: 'Optional[str]' = None, vector_index_name: 'str' = 'entity-embeddings', fulltext_index_name: 'str' = 'entity-names', graph_name: 'str' = 'entity-graph', config: 'DriftSearchConfig | None' = None, token_counter: 'TokenCounter | None' = None, track_token_usage: 'bool' = True, top_k_relationships: 'int' = 10, top_k_sources: 'int' = 2)"
     },
     "EntityEmbedder": {
       "import_path": "recon_graphrag.embeddings.entities.EntityEmbedder",
@@ -458,7 +459,7 @@
       "methods": {
         "search": "(self, query: 'str', community_level: 'CommunityLevelSelector', random_seed: 'int | None' = 42, synthesize_response: 'bool' = True) -> 'SearchResult'"
       },
-      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', map_prompt: 'Optional[str]' = None, reduce_prompt: 'Optional[str]' = None, graph_name: 'str' = 'entity-graph', token_counter: 'TokenCounter | None' = None, map_budget_tokens: 'int' = 12000, reduce_budget_tokens: 'int' = 12000, map_concurrency: 'int' = 5, max_map_calls: 'int | None' = None, allow_general_knowledge: 'bool' = False, track_token_usage: 'bool' = True)"
+      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', map_prompt: 'Optional[str]' = None, reduce_prompt: 'Optional[str]' = None, graph_name: 'str' = 'entity-graph', token_counter: 'TokenCounter | None' = None, map_budget_tokens: 'int' = 12000, reduce_budget_tokens: 'int' = 12000, map_concurrency: 'int' = 5, max_map_calls: 'int | None' = None, max_reports: 'int | None' = None, max_map_tokens: 'int | None' = None, allow_general_knowledge: 'bool' = False, track_token_usage: 'bool' = True)"
     },
     "GraphBuilderPipeline": {
       "import_path": "recon_graphrag.pipelines.graphrag_pipeline.GraphBuilderPipeline",
@@ -471,7 +472,7 @@
         "build_from_text": "(self, text: 'str', metadata: 'dict | None' = None, *, schema: 'GraphSchema', extraction_concurrency: 'int' = 5, max_gleanings: 'int' = 1, extract_claims: 'bool' = False, chunk_size: 'int' = 1200, chunk_overlap: 'int' = 100, chunk_unit: 'str' = 'tokens', token_counter: 'TokenCounter | None' = None, token_encoding: 'str' = 'cl100k_base') -> 'dict'",
         "complete_embeddings": "(self) -> 'None'"
       },
-      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', embedder: 'BaseEmbedder', graph_name: 'str' = 'entity-graph', graph_writer: 'GraphWriter | None' = None, perform_entity_resolution: 'bool' = True, entity_resolution_strategy: 'str' = 'normalized', entity_resolution_aliases: 'dict | None' = None, entity_resolution_llm_guidance: 'str | None' = None, entity_resolution_context_properties: 'dict[str, list[str]] | list[str] | None' = None, entity_resolution_conflict_properties: 'dict[str, list[str]] | list[str] | None' = None, entity_resolution_context_mode: 'str' = 'safe_defaults', allow_ai_auto_merge: 'bool' = False, embed_entities: 'bool' = True, summarize_descriptions: 'bool' = True, summarization_concurrency: 'int' = 5, summarization_limit: 'int' = 500, fail_on_resolution_error: 'bool' = False, fail_on_embedding_error: 'bool' = False, extraction_prompt: 'str | None' = None, assessment_prompt: 'str | None' = None, continuation_prompt: 'str | None' = None, claim_prompt: 'str | None' = None, entity_summary_prompt: 'str | None' = None, relationship_summary_prompt: 'str | None' = None, track_token_usage: 'bool' = True)"
+      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', embedder: 'BaseEmbedder', graph_name: 'str' = 'entity-graph', graph_writer: 'GraphWriter | None' = None, perform_entity_resolution: 'bool' = True, entity_resolution_strategy: 'str' = 'normalized', entity_resolution_aliases: 'dict | None' = None, entity_resolution_llm_guidance: 'str | None' = None, entity_resolution_context_properties: 'dict[str, list[str]] | list[str] | None' = None, entity_resolution_conflict_properties: 'dict[str, list[str]] | list[str] | None' = None, entity_resolution_context_mode: 'str' = 'safe_defaults', allow_ai_auto_merge: 'bool' = False, embed_entities: 'bool' = True, embed_chunks: 'bool' = False, summarize_descriptions: 'bool' = True, summarization_concurrency: 'int' = 5, summarization_limit: 'int' = 500, fail_on_resolution_error: 'bool' = False, fail_on_embedding_error: 'bool' = False, extraction_prompt: 'str | None' = None, assessment_prompt: 'str | None' = None, continuation_prompt: 'str | None' = None, claim_prompt: 'str | None' = None, entity_summary_prompt: 'str | None' = None, relationship_summary_prompt: 'str | None' = None, track_token_usage: 'bool' = True)"
     },
     "GraphSchema": {
       "fields": [
@@ -537,6 +538,7 @@
         "get_evidence_link_count": "(self) -> 'int'",
         "get_relationship_count": "(self) -> 'int'",
         "get_relationships_needing_summary": "(self, graph_name: 'str', limit: 'int' = 500) -> 'list[dict]'",
+        "get_unembedded_chunks": "(self, graph_name: 'str', limit: 'int' = 500, model_fingerprint: 'str | None' = None) -> 'list[dict]'",
         "get_unembedded_community_reports": "(self, graph_name: 'str', limit: 'int' = 500) -> 'list[dict]'",
         "get_unembedded_entities": "(self, graph_name: 'str', limit: 'int' = 500, model_fingerprint: 'str | None' = None) -> 'list[dict]'",
         "keyword_search": "(self, index_name: 'str', query_text: 'str', k: 'int', label: 'str | None' = None, filters: 'dict | None' = None) -> 'list[dict]'",
@@ -684,7 +686,7 @@
       "methods": {
         "search": "(self, query: 'str', top_k: 'int' = 10, query_vector: 'list[float] | None' = None, effective_search_ratio: 'int' = 1, query_params: 'dict | None' = None, ranker: 'HybridRanker | str' = 'naive', alpha: 'float | None' = None, synthesize_citation_metadata: 'bool' = False, synthesis_metadata_keys: 'list[str] | None' = None, synthesize_response: 'bool' = True, community_level: 'CommunityLevelSelector' = 'coarsest', token_budget: 'int' = 12000) -> 'SearchResult'"
       },
-      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', embedder: 'BaseEmbedder', retrieval_query: 'Optional[str]' = None, answer_prompt: 'Optional[str]' = None, vector_index_name: 'str' = 'entity-embeddings', fulltext_index_name: 'str' = 'entity-names', graph_name: 'str' = 'entity-graph', use_mixed_context: 'bool' = True, top_k_relationships: 'int' = 10, track_token_usage: 'bool' = True)"
+      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', embedder: 'BaseEmbedder', retrieval_query: 'Optional[str]' = None, answer_prompt: 'Optional[str]' = None, vector_index_name: 'str' = 'entity-embeddings', fulltext_index_name: 'str' = 'entity-names', graph_name: 'str' = 'entity-graph', use_mixed_context: 'bool' = True, top_k_relationships: 'int' = 10, top_k_sources: 'int' = 3, track_token_usage: 'bool' = True)"
     },
     "MemgraphGraphStore": {
       "import_path": "recon_graphrag.graphdb.memgraph.store.MemgraphGraphStore",
@@ -710,6 +712,7 @@
         "get_evidence_link_count": "(self) -> 'int'",
         "get_relationship_count": "(self) -> 'int'",
         "get_relationships_needing_summary": "(self, graph_name: 'str', limit: 'int' = 500) -> 'list[dict]'",
+        "get_unembedded_chunks": "(self, graph_name: 'str', limit: 'int' = 500, model_fingerprint: 'str | None' = None) -> 'list[dict]'",
         "get_unembedded_community_reports": "(self, graph_name: 'str', limit: 'int' = 500) -> 'list[dict]'",
         "get_unembedded_entities": "(self, graph_name: 'str', limit: 'int' = 500, model_fingerprint: 'str | None' = None) -> 'list[dict]'",
         "keyword_search": "(self, index_name: 'str', query_text: 'str', k: 'int', label: 'Optional[str]' = None, filters: 'Optional[dict]' = None) -> 'list[dict]'",
@@ -763,6 +766,7 @@
         "get_evidence_link_count": "(self) -> 'int'",
         "get_relationship_count": "(self) -> 'int'",
         "get_relationships_needing_summary": "(self, graph_name: 'str', limit: 'int' = 500) -> 'list[dict]'",
+        "get_unembedded_chunks": "(self, graph_name: 'str', limit: 'int' = 500, model_fingerprint: 'str | None' = None) -> 'list[dict]'",
         "get_unembedded_community_reports": "(self, graph_name: 'str', limit: 'int' = 500) -> 'list[dict]'",
         "get_unembedded_entities": "(self, graph_name: 'str', limit: 'int' = 500, model_fingerprint: 'str | None' = None) -> 'list[dict]'",
         "keyword_search": "(self, index_name: 'str', query_text: 'str', k: 'int', label: 'Optional[str]' = None, filters: 'Optional[dict]' = None) -> 'list[dict]'",
@@ -2438,6 +2442,13 @@
     "usage_snapshot": {
       "import_path": "recon_graphrag.observability.usage.usage_snapshot",
       "signature": "(llm: 'BaseLLM | None') -> 'dict | None'"
+    },
+    "ChunkEmbedder": {
+      "import_path": "recon_graphrag.embeddings.chunks.ChunkEmbedder",
+      "signature": "(graph_store: 'GraphStore', embedder: 'BaseEmbedder', graph_name: 'str' = 'entity-graph', concurrency: 'int' = 10)",
+      "methods": {
+        "embed_chunks": "(self, batch_size: 'int' = 500)"
+      }
     }
   }
 }

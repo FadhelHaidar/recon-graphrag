@@ -479,6 +479,8 @@ class TestDriftPromptCustomization:
         result = await retriever.search("query", top_k=2)
 
         assert result.answer
+        # The custom prompt must actually reach the LLM, not just the answer.
+        assert any("CUSTOM REDUCE:" in prompt for prompt in llm.prompts)
 
 
 class TestDriftLimitsAndRepair:

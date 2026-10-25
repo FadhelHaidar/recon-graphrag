@@ -18,7 +18,7 @@ import os
 from recon_graphrag import CommunityPipeline
 
 try:
-    from .common import BACKEND_CHOICES, get_backend_targets
+    from .common import BACKEND_CHOICES, ensure_indexes, get_backend_targets
     from .config import (
         EMBEDDING_DIM,
         get_embedder,

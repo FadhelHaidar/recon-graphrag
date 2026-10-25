@@ -60,6 +60,7 @@ class LocalSearchRetriever:
         graph_name: str = "entity-graph",
         use_mixed_context: bool = True,
         top_k_relationships: int = 10,
+        top_k_sources: int = 3,
         track_token_usage: bool = True,
     ):
         self.graph_store = graph_store
@@ -72,8 +73,26 @@ class LocalSearchRetriever:
         self.graph_name = graph_name
         self.use_mixed_context = use_mixed_context
         self.top_k_relationships = top_k_relationships
+        self.top_k_sources = top_k_sources
         self._retriever = self._build_retriever()
         self._mixed_context_builder: MixedContextBuilder | None = None
+
+    def _retrieval_params(
+        self, query_params: dict | None, query_vector: list[float] | None = None
+    ) -> dict:
+        """Per-seed caps pushed into the database so hub degree cannot bound work.
+
+        Passing a query vector also switches source-chunk selection from chunk-id
+        order to relevance ranking; without one the previous order is kept.
+        """
+        params: dict[str, Any] = {
+            "rel_limit": self.top_k_relationships,
+            "source_limit": self.top_k_sources,
+        }
+        if query_vector:
+            params["query_vector"] = query_vector
+        params.update(query_params or {})
+        return params
 
     def _build_retriever(self) -> HybridEntityRetriever:
         return HybridEntityRetriever(
@@ -121,12 +140,14 @@ class LocalSearchRetriever:
                 when use_mixed_context=True).
         """
         with run_scope():
+            if query_vector is None:
+                query_vector = await self.embedder.async_embed_query(query)
             retriever_result = await self._retriever.search(
                 query_text=query,
                 query_vector=query_vector,
                 top_k=top_k,
                 effective_search_ratio=effective_search_ratio,
-                query_params=query_params,
+                query_params=self._retrieval_params(query_params, query_vector),
                 ranker=ranker,
                 alpha=alpha,
             )

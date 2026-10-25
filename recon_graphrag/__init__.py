@@ -14,6 +14,7 @@ from recon_graphrag.communities import (
 from recon_graphrag.config.settings import PipelineConfig
 from recon_graphrag.embeddings import (
     BaseEmbedder,
+    ChunkEmbedder,
     CommunityReportEmbedder,
     EntityEmbedder,
     ModelParamsEmbedder,
@@ -118,6 +119,7 @@ __all__ = [
     "LLMUsage",
     "BaseEmbedder",
     "CommunityReportEmbedder",
+    "ChunkEmbedder",
     "EntityEmbedder",
     "ModelParamsEmbedder",
     # Observability

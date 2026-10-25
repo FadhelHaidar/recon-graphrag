@@ -92,6 +92,10 @@ GENERAL_KNOWLEDGE_INSTRUCTION = (
 
 
 # Data types
+# Cypher LIMIT value used when no report limit is configured.
+_UNBOUNDED_ROWS = 2**31 - 1
+
+
 @dataclass
 class MapBatch:
     """A prepared batch of reports for the map phase."""
@@ -176,6 +180,8 @@ class GlobalSearchRetriever:
         reduce_budget_tokens: int = 12000,
         map_concurrency: int = 5,
         max_map_calls: int | None = None,
+        max_reports: int | None = None,
+        max_map_tokens: int | None = None,
         allow_general_knowledge: bool = False,
         track_token_usage: bool = True,
     ):
@@ -189,6 +195,8 @@ class GlobalSearchRetriever:
         self.reduce_budget_tokens = reduce_budget_tokens
         self.map_concurrency = map_concurrency
         self.max_map_calls = max_map_calls
+        self.max_reports = max_reports
+        self.max_map_tokens = max_map_tokens
         self.allow_general_knowledge = allow_general_knowledge
 
     async def search(
@@ -233,7 +241,7 @@ class GlobalSearchRetriever:
 
             diag.selected_level = resolved_level
 
-            reports = self._read_reports(resolved_level)
+            reports = self._read_reports(resolved_level, self.max_reports)
             diag.reports_available = len(reports)
 
             if not reports:
@@ -265,13 +273,13 @@ class GlobalSearchRetriever:
 
             reports = self._shuffle(reports, random_seed)
 
-            batches = self._create_batches(query, reports)
+            batches = self._create_batches(
+                query,
+                reports,
+                max_batches=self.max_map_calls,
+                max_tokens=self.max_map_tokens,
+            )
             diag.map_batches = len(batches)
-
-            # Limit map calls if configured
-            if self.max_map_calls and len(batches) > self.max_map_calls:
-                batches = batches[: self.max_map_calls]
-                diag.map_batches = len(batches)
 
             partials = await self._map_phase(query, batches)
             diag.map_succeeded = sum(1 for p in partials if p.error is None)
@@ -347,8 +355,11 @@ class GlobalSearchRetriever:
             )
 
 
-    def _read_reports(self, level: int) -> list[dict]:
-        """Read all community reports at a given level."""
+    def _read_reports(
+        self, level: int, max_reports: int | None = None
+    ) -> list[dict]:
+        """Read community reports at a level, optionally bounded at the DB."""
+        report_limit = _UNBOUNDED_ROWS if max_reports is None else max_reports
         query = """
         MATCH (c:Community {graph_name: $graph_name, level: $level})
         WHERE coalesce(c.report_status, 'success') <> 'failed'
@@ -357,9 +368,15 @@ class GlobalSearchRetriever:
                c.level AS level,
                c.report_text AS report_text
         ORDER BY c.id
+        LIMIT $report_limit
         """
         return self.graph_store.execute_query(
-            query, {"graph_name": self.graph_name, "level": level}
+            query,
+            {
+                "graph_name": self.graph_name,
+                "level": level,
+                "report_limit": report_limit,
+            },
         )
 
     # Source citation resolution
@@ -549,8 +566,19 @@ class GlobalSearchRetriever:
         rng.shuffle(shuffled)
         return shuffled
 
-    def _create_batches(self, query: str, reports: list[dict]) -> list[MapBatch]:
-        """Pack reports into token-budgeted batches."""
+    def _create_batches(
+        self,
+        query: str,
+        reports: list[dict],
+        max_batches: int | None = None,
+        max_tokens: int | None = None,
+    ) -> list[MapBatch]:
+        """Pack reports into token-budgeted batches.
+
+        ``max_tokens`` caps the sum of complete formatted map prompts, using
+        the configured token counter. Stop before the first batch that cannot
+        fit; do not partially send it. Both caps are off by default.
+        """
         counter = self.token_counter
 
         # Reserve tokens for prompt template and query
@@ -565,9 +593,32 @@ class GlobalSearchRetriever:
         current_texts: list[str] = []
         current_ids: list[str] = []
         current_tokens = 0
-        batch_idx = 0
+        total_tokens = 0
+
+        def append_batch() -> bool:
+            nonlocal total_tokens
+            text = "\n\n".join(current_texts)
+            prompt_tokens = counter.count(
+                self.map_prompt.format(query=query, batch_text=text)
+            )
+            if max_tokens is not None and total_tokens + prompt_tokens > max_tokens:
+                return False
+            batches.append(
+                MapBatch(
+                    batch_id=str(len(batches)),
+                    report_ids=list(current_ids),
+                    text=text,
+                    token_count=current_tokens,
+                )
+            )
+            total_tokens += prompt_tokens
+            return True
 
         for report in reports:
+            if max_batches is not None and len(batches) >= max_batches:
+                break
+            if max_tokens is not None and total_tokens >= max_tokens:
+                break
             rid = str(report.get("id", ""))
             report_text = report.get("report_text", "")
             text = f"Report {rid}:\n{report_text}"
@@ -577,15 +628,10 @@ class GlobalSearchRetriever:
                 tokens = counter.count(text)
 
             if current_tokens + tokens > available and current_texts:
-                batches.append(
-                    MapBatch(
-                        batch_id=str(batch_idx),
-                        report_ids=list(current_ids),
-                        text="\n\n".join(current_texts),
-                        token_count=current_tokens,
-                    )
-                )
-                batch_idx += 1
+                if not append_batch():
+                    return batches
+                if max_batches is not None and len(batches) >= max_batches:
+                    return batches
                 current_texts = []
                 current_ids = []
                 current_tokens = 0
@@ -594,15 +640,8 @@ class GlobalSearchRetriever:
             current_ids.append(rid)
             current_tokens += tokens
 
-        if current_texts:
-            batches.append(
-                MapBatch(
-                    batch_id=str(batch_idx),
-                    report_ids=list(current_ids),
-                    text="\n\n".join(current_texts),
-                    token_count=current_tokens,
-                )
-            )
+        if current_texts and (max_batches is None or len(batches) < max_batches):
+            append_batch()
 
         return batches
 
@@ -610,38 +649,57 @@ class GlobalSearchRetriever:
     async def _map_phase(
         self, query: str, batches: list[MapBatch]
     ) -> list[PartialAnswer]:
-        """Run map phase with bounded concurrency."""
-        semaphore = asyncio.Semaphore(self.map_concurrency)
+        """Run map phase with bounded concurrency and bounded pending work."""
 
         async def _process_batch(batch: MapBatch) -> PartialAnswer:
-            async with semaphore:
-                prompt = self.map_prompt.format(
-                    query=query, batch_text=batch.text
+            prompt = self.map_prompt.format(query=query, batch_text=batch.text)
+            try:
+                with token_stage("retrieval.global_map"):
+                    response = await self.llm.ainvoke(prompt)
+                data = self._parse_map_response(response.content)
+                return PartialAnswer(
+                    batch_id=batch.batch_id,
+                    answer=data.get("answer", ""),
+                    helpfulness=int(data.get("helpfulness", 0)),
+                    report_ids=data.get("report_ids", batch.report_ids),
+                    references=data.get("references", []),
+                    batch_report_ids=batch.report_ids,
                 )
-                try:
-                    with token_stage("retrieval.global_map"):
-                        response = await self.llm.ainvoke(prompt)
-                    data = self._parse_map_response(response.content)
-                    return PartialAnswer(
-                        batch_id=batch.batch_id,
-                        answer=data.get("answer", ""),
-                        helpfulness=int(data.get("helpfulness", 0)),
-                        report_ids=data.get("report_ids", batch.report_ids),
-                        references=data.get("references", []),
-                        batch_report_ids=batch.report_ids,
-                    )
-                except Exception as e:
-                    return PartialAnswer(
-                        batch_id=batch.batch_id,
-                        answer="",
-                        helpfulness=0,
-                        report_ids=batch.report_ids,
-                        batch_report_ids=batch.report_ids,
-                        error=str(e),
-                    )
+            except Exception as e:
+                return PartialAnswer(
+                    batch_id=batch.batch_id,
+                    answer="",
+                    helpfulness=0,
+                    report_ids=batch.report_ids,
+                    batch_report_ids=batch.report_ids,
+                    error=str(e),
+                )
 
-        tasks = [_process_batch(b) for b in batches]
-        return await asyncio.gather(*tasks, return_exceptions=False)
+        # Fixed workers over an iterator: pending map work is bounded by
+        # map_concurrency instead of one task per batch. Partial answers are
+        # written back by batch position, so ordering is unchanged.
+        partials: list[PartialAnswer] = []
+        pending = iter(list(enumerate(batches)))
+
+        async def _worker() -> None:
+            for position, batch in pending:
+                partials_by_position[position] = await _process_batch(batch)
+
+        partials_by_position: list[PartialAnswer | None] = [None] * len(batches)
+        workers = [
+            asyncio.create_task(_worker())
+            for _ in range(max(int(self.map_concurrency), 1))
+        ]
+        try:
+            await asyncio.gather(*workers)
+        finally:
+            for task in workers:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
+
+        partials = [p for p in partials_by_position if p is not None]
+        return partials
 
     def _parse_map_response(self, content: str) -> dict:
         """Parse map response JSON, stripping fences."""
