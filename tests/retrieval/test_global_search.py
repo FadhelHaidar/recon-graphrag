@@ -218,8 +218,9 @@ class TestReducePhase:
             PartialAnswer(batch_id="0", answer="Part 1.", helpfulness=80, report_ids=["r1"]),
             PartialAnswer(batch_id="1", answer="Part 2.", helpfulness=60, report_ids=["r2"]),
         ]
-        result = await search._reduce_phase("query", partials)
+        result, retained = await search._reduce_phase("query", partials)
         assert result == "Combined final answer."
+        assert retained == {"0", "1"}
 
 
 class TestFullSearch:

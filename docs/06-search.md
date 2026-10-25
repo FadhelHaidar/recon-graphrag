@@ -427,6 +427,62 @@ chunks, claims, or entities from another graph.
 
 ---
 
+## Structured Graph Evidence
+
+Every retriever accepts `include_graph_evidence=True`, which fills
+`result.graph` with the entity nodes and directed relationships that were
+*included in synthesis* alongside the answer, context, and citations:
+
+```python
+result = await local_search.search("Who leads Acme?", include_graph_evidence=True)
+
+for node in result.graph["nodes"]:
+    print(node["id"], node["name"], node["labels"])
+for edge in result.graph["edges"]:
+    print(edge["source"], f"-[{edge['type']}]->", edge["target"], edge["weight"])
+```
+
+| Key | Meaning |
+| --- | --- |
+| `nodes` | Deduplicated vertices: `id`, `name`, `labels`, `description`, `origin`. Sorted by `id`. |
+| `edges` | Deduplicated directed edges: `source`, `target`, `type`, `description`, `weight`, `key`, `origin`. Both endpoints are always present in `nodes`. |
+| `provenance` | `graph_name`, `mode`, the contributing community reports (`id`, `level`, plus mode-specific fields), and any `warnings`. |
+| `truncation` | `applied`, `dropped_nodes`, `dropped_edges`, `limits`, and the `reasons` behind every cut. |
+
+The field defaults to `{}`; with the flag off, no extra reads happen. `origin`
+is `retrieved` (direct graph fact), `community_member` (expanded report
+member), or `edge_endpoint` (node only present because an edge points at it).
+
+What gets included, per mode:
+
+- **Local** — the entities and relationships that survived mixed-context token
+  packing, or for `use_mixed_context=False` the entity plus the
+  `top_k_relationships` slice the context renders. Community reports included in
+  the context are expanded into their member entities and edges.
+- **DRIFT** — each action keeps its own evidence on `DriftAction.graph`; the
+  result merges only actions packed into the final reduction
+  (`provenance.retained_actions`, with `explored_actions` listed but excluded).
+  The primer's selected reports are expanded only when the primer reached
+  reduction. The local-style fallback path uses the local selection.
+- **Global** — only partial answers that fit the actual reduce-stage token
+  packing are considered; the community reports behind them are expanded at the
+  searched level. Reports that were merely read or mapped are not expanded.
+
+`Community` nodes are never returned as vertices: a contributing report shows up
+as its member entities and relationships, with the report id and level kept in
+`provenance.communities`. Community expansion costs one bounded query per report
+(at most `max_reports`), so it only runs when you opt in.
+
+Reported totals are only those actually known. `member_limit` (25), `edge_limit`
+(50) per report, `max_reports` (5), `max_nodes` (200) and `max_edges` (500) per
+result are all deterministic; when a cap bites, `truncation.reasons` records
+what was kept and dropped. Selection is degree-ranked and stable across runs.
+
+This payload describes evidence included in synthesis. It does not verify
+sentence-level grounding, prove answer correctness, or establish capacity.
+
+---
+
 ## How Sources Work
 
 Each mode builds `result.citations` and `result.sources` through a different

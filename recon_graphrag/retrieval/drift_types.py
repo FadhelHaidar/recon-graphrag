@@ -23,6 +23,8 @@ class DriftAction:
     follow_ups: list[str] = field(default_factory=list)
     references: list[dict] = field(default_factory=list)
     report_ids: list[str] = field(default_factory=list)
+    # Structured evidence for this action; {} when graph inclusion is disabled.
+    graph: dict = field(default_factory=dict)
 
 
 @dataclass

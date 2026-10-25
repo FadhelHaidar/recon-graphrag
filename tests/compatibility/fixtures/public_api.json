@@ -89,6 +89,13 @@
       },
       "signature": "(*args, **kwargs)"
     },
+    "ChunkEmbedder": {
+      "import_path": "recon_graphrag.embeddings.chunks.ChunkEmbedder",
+      "methods": {
+        "embed_chunks": "(self, batch_size: 'int' = 500)"
+      },
+      "signature": "(graph_store: 'GraphStore', embedder: 'BaseEmbedder', graph_name: 'str' = 'entity-graph', concurrency: 'int' = 10)"
+    },
     "ColumnEntity": {
       "fields": [
         {
@@ -265,12 +272,20 @@
           "kw_only": false,
           "name": "report_ids",
           "type": "list[str]"
+        },
+        {
+          "default": "<required>",
+          "factory": "builtins.dict",
+          "init": true,
+          "kw_only": false,
+          "name": "graph",
+          "type": "dict"
         }
       ],
       "frozen": false,
       "import_path": "recon_graphrag.retrieval.drift_types.DriftAction",
       "methods": {},
-      "signature": "(id: 'str', parent_id: 'str | None' = None, depth: 'int' = 0, query: 'str' = '', answer: 'str' = '', score: 'float' = 0.0, status: 'str' = 'pending', context: 'str' = '', citations: 'list' = <factory>, follow_ups: 'list[str]' = <factory>, references: 'list[dict]' = <factory>, report_ids: 'list[str]' = <factory>) -> None"
+      "signature": "(id: 'str', parent_id: 'str | None' = None, depth: 'int' = 0, query: 'str' = '', answer: 'str' = '', score: 'float' = 0.0, status: 'str' = 'pending', context: 'str' = '', citations: 'list' = <factory>, follow_ups: 'list[str]' = <factory>, references: 'list[dict]' = <factory>, report_ids: 'list[str]' = <factory>, graph: 'dict' = <factory>) -> None"
     },
     "DriftQueryState": {
       "fields": [
@@ -443,7 +458,7 @@
     "DriftSearchRetriever": {
       "import_path": "recon_graphrag.retrieval.search_drift.DriftSearchRetriever",
       "methods": {
-        "search": "(self, query: 'str', top_k: 'int' = 10, community_level: 'CommunityLevelSelector' = None, query_vector: 'list[float] | None' = None, effective_search_ratio: 'int' = 1, query_params: 'dict | None' = None, ranker: 'HybridRanker | str' = 'naive', alpha: 'float | None' = None, synthesize_citation_metadata: 'bool' = False, synthesis_metadata_keys: 'list[str] | None' = None, synthesize_response: 'bool' = True, conversation_history: 'str' = '') -> 'SearchResult'"
+        "search": "(self, query: 'str', top_k: 'int' = 10, community_level: 'CommunityLevelSelector' = None, query_vector: 'list[float] | None' = None, effective_search_ratio: 'int' = 1, query_params: 'dict | None' = None, ranker: 'HybridRanker | str' = 'naive', alpha: 'float | None' = None, synthesize_citation_metadata: 'bool' = False, synthesis_metadata_keys: 'list[str] | None' = None, synthesize_response: 'bool' = True, conversation_history: 'str' = '', include_graph_evidence: 'bool' = False) -> 'SearchResult'"
       },
       "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', embedder: 'BaseEmbedder', retrieval_query: 'Optional[str]' = None, reduce_prompt: 'Optional[str]' = None, vector_index_name: 'str' = 'entity-embeddings', fulltext_index_name: 'str' = 'entity-names', graph_name: 'str' = 'entity-graph', config: 'DriftSearchConfig | None' = None, token_counter: 'TokenCounter | None' = None, track_token_usage: 'bool' = True, top_k_relationships: 'int' = 10, top_k_sources: 'int' = 2)"
     },
@@ -457,7 +472,7 @@
     "GlobalSearchRetriever": {
       "import_path": "recon_graphrag.retrieval.search_global.GlobalSearchRetriever",
       "methods": {
-        "search": "(self, query: 'str', community_level: 'CommunityLevelSelector', random_seed: 'int | None' = 42, synthesize_response: 'bool' = True) -> 'SearchResult'"
+        "search": "(self, query: 'str', community_level: 'CommunityLevelSelector', random_seed: 'int | None' = 42, synthesize_response: 'bool' = True, include_graph_evidence: 'bool' = False) -> 'SearchResult'"
       },
       "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', map_prompt: 'Optional[str]' = None, reduce_prompt: 'Optional[str]' = None, graph_name: 'str' = 'entity-graph', token_counter: 'TokenCounter | None' = None, map_budget_tokens: 'int' = 12000, reduce_budget_tokens: 'int' = 12000, map_concurrency: 'int' = 5, max_map_calls: 'int | None' = None, max_reports: 'int | None' = None, max_map_tokens: 'int | None' = None, allow_general_knowledge: 'bool' = False, track_token_usage: 'bool' = True)"
     },
@@ -525,6 +540,7 @@
         "detect_communities": "(self, graph_name: 'str', relationship_types: 'list[str] | None' = None, max_levels: 'int' = 3, gamma: 'float' = 1.0, theta: 'float' = 0.01, tolerance: 'float' = 0.0001, relationship_weight_property: 'str | None' = None, random_seed: 'int | None' = 42, entity_label: 'str' = '__Entity__', community_label: 'str' = 'Community') -> 'list[dict]'",
         "drop_indexes": "(self, config: 'IndexConfig | None' = None) -> 'None'",
         "execute_query": "(self, query: 'str', parameters: 'dict | None' = None) -> 'list[dict]'",
+        "fetch_community_member_graph": "(self, graph_name: 'str', community_id: 'str', level: 'int', member_limit: 'int' = 25) -> 'list[dict]'",
         "fetch_entity_context": "(self, matches: 'list[dict]', retrieval_query: 'str | None' = None, query_params: 'dict | None' = None, mode: 'str' = 'local', graph_name: 'str | None' = None) -> 'list[dict]'",
         "get_child_community_reports": "(self, graph_name: 'str', community_id: 'str', level: 'int', child_level: 'int') -> 'list[dict]'",
         "get_chunk_count": "(self) -> 'int'",
@@ -684,7 +700,7 @@
     "LocalSearchRetriever": {
       "import_path": "recon_graphrag.retrieval.search_local.LocalSearchRetriever",
       "methods": {
-        "search": "(self, query: 'str', top_k: 'int' = 10, query_vector: 'list[float] | None' = None, effective_search_ratio: 'int' = 1, query_params: 'dict | None' = None, ranker: 'HybridRanker | str' = 'naive', alpha: 'float | None' = None, synthesize_citation_metadata: 'bool' = False, synthesis_metadata_keys: 'list[str] | None' = None, synthesize_response: 'bool' = True, community_level: 'CommunityLevelSelector' = 'coarsest', token_budget: 'int' = 12000) -> 'SearchResult'"
+        "search": "(self, query: 'str', top_k: 'int' = 10, query_vector: 'list[float] | None' = None, effective_search_ratio: 'int' = 1, query_params: 'dict | None' = None, ranker: 'HybridRanker | str' = 'naive', alpha: 'float | None' = None, synthesize_citation_metadata: 'bool' = False, synthesis_metadata_keys: 'list[str] | None' = None, synthesize_response: 'bool' = True, community_level: 'CommunityLevelSelector' = 'coarsest', token_budget: 'int' = 12000, include_graph_evidence: 'bool' = False) -> 'SearchResult'"
       },
       "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', embedder: 'BaseEmbedder', retrieval_query: 'Optional[str]' = None, answer_prompt: 'Optional[str]' = None, vector_index_name: 'str' = 'entity-embeddings', fulltext_index_name: 'str' = 'entity-names', graph_name: 'str' = 'entity-graph', use_mixed_context: 'bool' = True, top_k_relationships: 'int' = 10, top_k_sources: 'int' = 3, track_token_usage: 'bool' = True)"
     },
@@ -699,6 +715,7 @@
         "detect_communities": "(self, graph_name: 'str' = 'entity-graph', relationship_types: 'Optional[list[str]]' = None, max_levels: 'int' = 3, gamma: 'float' = 1.0, theta: 'float' = 0.01, tolerance: 'float' = 0.0001, relationship_weight_property: 'Optional[str]' = None, random_seed: 'Optional[int]' = 42, entity_label: 'str' = '__Entity__', community_label: 'str' = 'Community') -> 'list[dict]'",
         "drop_indexes": "(self, config: 'Optional[IndexConfig]' = None) -> 'None'",
         "execute_query": "(self, query: 'str', parameters: 'Optional[dict]' = None) -> 'list[dict]'",
+        "fetch_community_member_graph": "(self, graph_name: 'str', community_id: 'str', level: 'int', member_limit: 'int' = 25) -> 'list[dict]'",
         "fetch_entity_context": "(self, matches: 'list[dict]', retrieval_query: 'Optional[str]' = None, query_params: 'Optional[dict]' = None, mode: 'str' = 'local', graph_name: 'str | None' = None) -> 'list[dict]'",
         "get_child_community_reports": "(self, graph_name: 'str', community_id: 'str', level: 'int', child_level: 'int') -> 'list[dict]'",
         "get_chunk_count": "(self) -> 'int'",
@@ -753,6 +770,7 @@
         "detect_communities": "(self, graph_name: 'str', relationship_types: 'Optional[list[str]]' = None, max_levels: 'int' = 3, gamma: 'float' = 1.0, theta: 'float' = 0.01, tolerance: 'float' = 0.0001, relationship_weight_property: 'Optional[str]' = None, random_seed: 'Optional[int]' = 42, entity_label: 'str' = '__Entity__', community_label: 'str' = 'Community') -> 'list[dict]'",
         "drop_indexes": "(self, config: 'Optional[IndexConfig]' = None) -> 'None'",
         "execute_query": "(self, query: 'str', parameters: 'Optional[dict]' = None) -> 'list[dict]'",
+        "fetch_community_member_graph": "(self, graph_name: 'str', community_id: 'str', level: 'int', member_limit: 'int' = 25) -> 'list[dict]'",
         "fetch_entity_context": "(self, matches: 'list[dict]', retrieval_query: 'Optional[str]' = None, query_params: 'Optional[dict]' = None, mode: 'str' = 'local', graph_name: 'str | None' = None) -> 'list[dict]'",
         "get_child_community_reports": "(self, graph_name: 'str', community_id: 'str', level: 'int', child_level: 'int') -> 'list[dict]'",
         "get_chunk_count": "(self) -> 'int'",
@@ -1133,12 +1151,20 @@
           "kw_only": false,
           "name": "metadata",
           "type": "dict"
+        },
+        {
+          "default": "<required>",
+          "factory": "builtins.dict",
+          "init": true,
+          "kw_only": false,
+          "name": "graph",
+          "type": "dict"
         }
       ],
       "frozen": false,
       "import_path": "recon_graphrag.models.types.SearchResult",
       "methods": {},
-      "signature": "(query: 'str', mode: 'str', answer: 'str', context: 'str' = '', citations: 'list[Citation]' = <factory>, metadata: 'dict' = <factory>) -> None"
+      "signature": "(query: 'str', mode: 'str', answer: 'str', context: 'str' = '', citations: 'list[Citation]' = <factory>, metadata: 'dict' = <factory>, graph: 'dict' = <factory>) -> None"
     },
     "TextColumn": {
       "fields": [
@@ -2442,13 +2468,6 @@
     "usage_snapshot": {
       "import_path": "recon_graphrag.observability.usage.usage_snapshot",
       "signature": "(llm: 'BaseLLM | None') -> 'dict | None'"
-    },
-    "ChunkEmbedder": {
-      "import_path": "recon_graphrag.embeddings.chunks.ChunkEmbedder",
-      "signature": "(graph_store: 'GraphStore', embedder: 'BaseEmbedder', graph_name: 'str' = 'entity-graph', concurrency: 'int' = 10)",
-      "methods": {
-        "embed_chunks": "(self, batch_size: 'int' = 500)"
-      }
     }
   }
 }

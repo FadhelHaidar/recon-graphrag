@@ -644,6 +644,27 @@ class Neo4jGraphStore(BaseGraphStore):
             {"graph_name": graph_name, "cid": community_id, "level": level},
         )
 
+    def fetch_community_member_graph(
+        self,
+        graph_name: str,
+        community_id: str,
+        level: int,
+        member_limit: int = 25,
+    ) -> list[dict]:
+        from recon_graphrag.retrieval.neo4j.queries import (
+            COMMUNITY_MEMBER_GRAPH_QUERY,
+        )
+
+        return self.execute_query(
+            COMMUNITY_MEMBER_GRAPH_QUERY,
+            {
+                "graph_name": graph_name,
+                "community_id": community_id,
+                "level": level,
+                "member_limit": member_limit,
+            },
+        )
+
     def get_child_community_reports(
         self,
         graph_name: str,

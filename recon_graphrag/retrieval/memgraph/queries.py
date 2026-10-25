@@ -7,6 +7,7 @@ local/DRIFT queries where vector-search order is not stable).
 
 from recon_graphrag.retrieval._queries import (
     COMMUNITY_CHILD_REPORT_QUERY,
+    COMMUNITY_MEMBER_GRAPH_QUERY,
     COMMUNITY_REPORTS_BY_KEY_QUERY,
     drift_retrieval_query,
     local_retrieval_query,
@@ -31,4 +32,5 @@ __all__ = [
     "COMMUNITY_CHILD_REPORT_QUERY",
     "COMMUNITY_REPORTS_BY_KEY_QUERY",
     "COMMUNITY_RANKED_CONTEXT_QUERY",
+    "COMMUNITY_MEMBER_GRAPH_QUERY",
 ]

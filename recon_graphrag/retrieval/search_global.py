@@ -26,6 +26,7 @@ from recon_graphrag.retrieval.community_levels import (
     CommunityLevelSelector,
     resolve_community_level,
 )
+from recon_graphrag.retrieval.graph_evidence import GraphEvidenceBuilder
 from recon_graphrag.utils.tokens import (
     ApproximateTokenCounter,
     TokenCounter,
@@ -205,6 +206,7 @@ class GlobalSearchRetriever:
         community_level: CommunityLevelSelector,
         random_seed: int | None = 42,
         synthesize_response: bool = True,
+        include_graph_evidence: bool = False,
     ) -> SearchResult:
         """Run global search over community reports.
 
@@ -216,6 +218,10 @@ class GlobalSearchRetriever:
                 return scored partial answers in context with ``answer=""``.
                 Map LLM calls still run for relevance scoring and reference
                 extraction.
+            include_graph_evidence: When True, attach the member entities and
+                relationships of the community reports behind the partial
+                answers that reached the final reduce prompt (extra database
+                reads). Reports only mapped or read are not expanded.
         """
         with run_scope():
             start = time.monotonic()
@@ -327,6 +333,13 @@ class GlobalSearchRetriever:
                 token_usage = usage_snapshot(self.llm)
                 if token_usage is not None:
                     metadata["token_usage"] = token_usage
+                graph = (
+                    await self._graph_evidence(
+                        scored, resolved_level, synthesis_included=False
+                    )
+                    if include_graph_evidence
+                    else {}
+                )
                 return SearchResult(
                     query=query,
                     mode="global",
@@ -334,10 +347,22 @@ class GlobalSearchRetriever:
                     context=context,
                     metadata=metadata,
                     citations=citations,
+                    graph=graph,
                 )
 
-            answer = await self._reduce_phase(query, scored, use_general_knowledge=use_general_knowledge)
+            answer, retained_ids = await self._reduce_phase(
+                query, scored, use_general_knowledge=use_general_knowledge
+            )
             diag.reduce_partials_used = len(scored)
+            graph = (
+                await self._graph_evidence(
+                    [p for p in scored if p.batch_id in retained_ids],
+                    resolved_level,
+                    synthesis_included=True,
+                )
+                if include_graph_evidence
+                else {}
+            )
 
             diag.elapsed_ms = int((time.monotonic() - start) * 1000)
 
@@ -352,7 +377,36 @@ class GlobalSearchRetriever:
                 context=context,
                 metadata=metadata,
                 citations=citations,
+                graph=graph,
             )
+
+    async def _graph_evidence(
+        self,
+        partials: list[PartialAnswer],
+        level: int,
+        *,
+        synthesis_included: bool,
+    ) -> dict:
+        """Expand the reports behind ``partials`` into entities and edges."""
+        try:
+            report_ids = self._resolve_used_report_ids(partials)
+        except Exception:  # noqa: BLE001 - report selection is best effort
+            report_ids = []
+        builder = GraphEvidenceBuilder(
+            graph_name=self.graph_name, mode="global", graph_store=self.graph_store
+        )
+        await builder.expand_communities(
+            [{"community_id": rid, "level": level} for rid in report_ids],
+            origin="report",
+        )
+        builder.set_provenance(
+            retained_batches=sorted(p.batch_id for p in partials),
+            contributing_reports=report_ids,
+            community_level=level,
+            report_selection="map_reported_else_batch",
+            synthesis_included=synthesis_included,
+        )
+        return builder.build()
 
 
     def _read_reports(
@@ -757,12 +811,17 @@ class GlobalSearchRetriever:
     # Reduce phase
     async def _reduce_phase(
         self, query: str, partials: list[PartialAnswer], *, use_general_knowledge: bool = False,
-    ) -> str:
-        """Synthesize partial answers into final answer."""
+    ) -> tuple[str, set[str]]:
+        """Synthesize partial answers into final answer.
+
+        Returns the answer and the batch ids actually packed into the reduce
+        prompt; partials past the token budget never reach synthesis.
+        """
         counter = self.token_counter
 
         # Build partial answer text, respecting token budget
         parts: list[str] = []
+        retained_ids: set[str] = set()
         used_tokens = 0
         prompt_overhead = counter.count(
             self.reduce_prompt.format(query=query, partial_text="")
@@ -780,6 +839,7 @@ class GlobalSearchRetriever:
             if used_tokens + tokens > available and parts:
                 break
             parts.append(text)
+            retained_ids.add(p.batch_id)
             used_tokens += tokens
 
         partial_text = "\n\n".join(parts)
@@ -791,4 +851,4 @@ class GlobalSearchRetriever:
         )
         with token_stage("retrieval.global_reduce"):
             response = await self.llm.ainvoke(prompt)
-        return response.content
+        return response.content, retained_ids

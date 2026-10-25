@@ -17,6 +17,9 @@ class SearchResult:
     context: str = ""
     citations: list[Citation] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
+    # Structured evidence included in synthesis: {"nodes", "edges", "provenance",
+    # "truncation"}. Empty unless the search opted in via include_graph_evidence.
+    graph: dict = field(default_factory=dict)
 
     def __str__(self) -> str:
         return f"[{self.mode.upper()}] {self.answer}"

@@ -28,6 +28,7 @@ from recon_graphrag.retrieval.citations import (
     resolve_chunk_citations,
 )
 from recon_graphrag.retrieval.community_levels import CommunityLevelSelector
+from recon_graphrag.retrieval.graph_evidence import build_evidence
 from recon_graphrag.retrieval.hybrid import HybridEntityRetriever, HybridRanker
 from recon_graphrag.retrieval.mixed_context import MixedContextBuilder
 
@@ -119,6 +120,7 @@ class LocalSearchRetriever:
         synthesize_response: bool = True,
         community_level: CommunityLevelSelector = "coarsest",
         token_budget: int = 12000,
+        include_graph_evidence: bool = False,
     ) -> SearchResult:
         """Run local search: vector search on entities → subgraph traversal → LLM answer.
 
@@ -138,6 +140,10 @@ class LocalSearchRetriever:
             community_level: Community level for mixed context reports.
             token_budget: Total token budget for mixed context (only used
                 when use_mixed_context=True).
+            include_graph_evidence: When True, attach the structured entity and
+                relationship evidence included in synthesis to
+                ``SearchResult.graph``. Community reports are expanded into
+                their member entities and edges (extra database reads).
         """
         with run_scope():
             if query_vector is None:
@@ -161,6 +167,7 @@ class LocalSearchRetriever:
                     token_budget=token_budget,
                     synthesize_citation_metadata=synthesize_citation_metadata,
                     synthesis_metadata_keys=synthesis_metadata_keys,
+                    include_graph_evidence=include_graph_evidence,
                 )
 
             citations, citation_warnings = self._resolve_citations(retriever_result)
@@ -168,6 +175,11 @@ class LocalSearchRetriever:
                 retriever_result,
                 citations=citations if synthesize_citation_metadata else None,
                 citation_metadata_keys=synthesis_metadata_keys,
+            )
+            graph = (
+                await self._graph_evidence(retriever_result=retriever_result)
+                if include_graph_evidence
+                else {}
             )
             if not synthesize_response:
                 token_usage = usage_snapshot(self.llm)
@@ -184,6 +196,7 @@ class LocalSearchRetriever:
                     context=context,
                     citations=citations,
                     metadata={**metadata, **({"citation_warnings": citation_warnings} if citation_warnings else {})},
+                    graph=graph,
                 )
             answer = await self._generate_answer(query, context)
             token_usage = usage_snapshot(self.llm)
@@ -197,7 +210,36 @@ class LocalSearchRetriever:
                 context=context,
                 citations=citations,
                 metadata={**metadata, **({"citation_warnings": citation_warnings} if citation_warnings else {})},
+                graph=graph,
             )
+
+    async def _graph_evidence(self, *, mixed=None, retriever_result=None) -> dict:
+        """Build structured graph evidence for the facts included in synthesis."""
+        if mixed is not None:
+            return await build_evidence(
+                graph_name=self.graph_name,
+                mode="local",
+                graph_store=self.graph_store,
+                entities=mixed.included_entities,
+                relationships=mixed.included_relationships,
+                reports=[
+                    {"community_id": c.community_id, "level": c.level}
+                    for c in mixed.included_community_reports
+                ],
+            )
+        rows = [
+            item.content
+            for item in (retriever_result.items if retriever_result else [])
+            if isinstance(item.content, dict)
+        ]
+        return await build_evidence(
+            graph_name=self.graph_name,
+            mode="local",
+            graph_store=self.graph_store,
+            rows=rows,
+            # Same weight-ranked cut the rendered context applies.
+            top_k_relationships=self.top_k_relationships,
+        )
 
     async def _search_mixed(
         self,
@@ -208,6 +250,7 @@ class LocalSearchRetriever:
         token_budget: int,
         synthesize_citation_metadata: bool,
         synthesis_metadata_keys: list[str] | None,
+        include_graph_evidence: bool = False,
     ) -> SearchResult:
         """Run local search with mixed-context builder."""
         if self._mixed_context_builder is None:
@@ -237,6 +280,12 @@ class LocalSearchRetriever:
             synthesis_metadata_keys=synthesis_metadata_keys,
         )
 
+        graph = (
+            await self._graph_evidence(mixed=mixed)
+            if include_graph_evidence
+            else {}
+        )
+
         if not synthesize_response:
             token_usage = usage_snapshot(self.llm)
             metadata = {
@@ -255,6 +304,7 @@ class LocalSearchRetriever:
                 context=mixed.context,
                 citations=mixed.citations,
                 metadata={**metadata, **({"citation_warnings": mixed.citation_warnings} if mixed.citation_warnings else {})},
+                graph=graph,
             )
 
         answer = await self._generate_answer(query, mixed.context)
@@ -273,6 +323,7 @@ class LocalSearchRetriever:
             context=mixed.context,
             citations=mixed.citations,
             metadata={**metadata, **({"citation_warnings": mixed.citation_warnings} if mixed.citation_warnings else {})},
+            graph=graph,
         )
 
     def _format_context(

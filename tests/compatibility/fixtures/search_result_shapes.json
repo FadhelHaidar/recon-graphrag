@@ -26,7 +26,8 @@
       "metadata": {
         "synthesize_response": "bool",
         "response_synthesis_skipped": "bool"
-      }
+      },
+      "graph": {}
     },
     "sources": [
       {
@@ -83,7 +84,8 @@
         "mixed_context": "bool",
         "used_tokens": "int",
         "max_tokens": "int"
-      }
+      },
+      "graph": {}
     },
     "sources": [
       {
@@ -151,7 +153,8 @@
         "elapsed_ms": "int",
         "synthesize_response": "bool",
         "response_synthesis_skipped": "bool"
-      }
+      },
+      "graph": {}
     },
     "sources": [
       {
@@ -229,7 +232,8 @@
           },
           "failures": []
         }
-      }
+      },
+      "graph": {}
     },
     "sources": [
       {
@@ -280,7 +284,8 @@
           }
         }
       ],
-      "metadata": {}
+      "metadata": {},
+      "graph": {}
     },
     "sources": [
       {
@@ -335,7 +340,8 @@
         "mixed_context": "bool",
         "used_tokens": "int",
         "max_tokens": "int"
-      }
+      },
+      "graph": {}
     },
     "sources": [
       {
@@ -401,7 +407,8 @@
         "source_citations_resolved": "int",
         "source_resolution_errors": [],
         "elapsed_ms": "int"
-      }
+      },
+      "graph": {}
     },
     "sources": [
       {
@@ -478,7 +485,8 @@
           },
           "failures": []
         }
-      }
+      },
+      "graph": {}
     },
     "sources": [
       {
@@ -532,7 +540,8 @@
       "metadata": {
         "synthesize_response": "bool",
         "response_synthesis_skipped": "bool"
-      }
+      },
+      "graph": {}
     },
     "sources": [
       {
@@ -589,7 +598,8 @@
         "mixed_context": "bool",
         "used_tokens": "int",
         "max_tokens": "int"
-      }
+      },
+      "graph": {}
     },
     "sources": [
       {
@@ -676,7 +686,8 @@
             }
           }
         }
-      }
+      },
+      "graph": {}
     },
     "sources": [
       {
@@ -773,7 +784,8 @@
             }
           }
         }
-      }
+      },
+      "graph": {}
     },
     "sources": [
       {
@@ -844,7 +856,8 @@
             }
           }
         }
-      }
+      },
+      "graph": {}
     },
     "sources": [
       {
@@ -918,7 +931,8 @@
             }
           }
         }
-      }
+      },
+      "graph": {}
     },
     "sources": [
       {
@@ -1010,7 +1024,8 @@
             }
           }
         }
-      }
+      },
+      "graph": {}
     },
     "sources": [
       {
@@ -1113,7 +1128,8 @@
             }
           }
         }
-      }
+      },
+      "graph": {}
     },
     "sources": [
       {

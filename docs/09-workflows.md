@@ -696,7 +696,10 @@ Backend notes:
 You can instantiate retrievers directly for fine-grained control over index names, prompts, or result formatting.
 
 All retrievers return a [`SearchResult`](../recon_graphrag/models/types.py)
-with `query`, `mode`, `answer`, `context`, and optional `citations`.
+with `query`, `mode`, `answer`, `context`, and optional `citations`. Pass
+`include_graph_evidence=True` to also fill `graph` with the entity nodes and
+directed relationships included in synthesis (see
+[Structured Graph Evidence](./06-search.md#structured-graph-evidence)).
 
 ```python
 SearchResult(
@@ -711,6 +714,12 @@ SearchResult(
             metadata={"record_id": "row-42", "collection": "movies"},
         )
     ],
+    graph={
+        "nodes": [{"id": "Christopher_Nolan", "name": "Christopher Nolan", "labels": ["Person"]}],
+        "edges": [],
+        "provenance": {"graph_name": "entity-graph", "mode": "local"},
+        "truncation": {"applied": False, "dropped_nodes": 0, "dropped_edges": 0},
+    },
 )
 ```
 

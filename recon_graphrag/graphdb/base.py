@@ -266,6 +266,23 @@ class GraphStore(Protocol):
         """
         ...
 
+    def fetch_community_member_graph(
+        self,
+        graph_name: str,
+        community_id: str,
+        level: int,
+        member_limit: int = 25,
+    ) -> list[dict]:
+        """Fetch degree-ranked member entities and member-to-member edges.
+
+        Returns at most one row with keys ``members`` (id, name, labels,
+        description, degree), ``member_count``, ``edges`` (source, target, type,
+        description, weight) and ``edge_count``. Members are bounded by
+        ``member_limit``; edges keep their stored direction and only ever
+        connect selected members. Community nodes are never returned.
+        """
+        ...
+
     def get_child_community_reports(
         self,
         graph_name: str,

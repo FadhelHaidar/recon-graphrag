@@ -39,6 +39,8 @@ class EntityCandidate:
     label: str
     description: str
     score: float
+    # All labels minus the internal marker; `label` is the display fallback.
+    labels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,9 @@ class RelationshipCandidate:
     relationship_type: str
     description: str
     weight: float
+    # 'out' when the centre entity is the source; direction is always
+    # source_id -> target_id regardless.
+    direction: str = ""
 
 
 @dataclass(frozen=True)
@@ -94,6 +99,13 @@ class MixedContextResult:
     max_tokens: int
     # Sanitized notes about citations that could not be resolved.
     citation_warnings: list[dict[str, str]] = field(default_factory=list)
+    # Candidates that survived packing, in packed order. Structured graph
+    # evidence is built from these rather than from the rendered context.
+    included_entities: list[EntityCandidate] = field(default_factory=list)
+    included_relationships: list[RelationshipCandidate] = field(default_factory=list)
+    included_community_reports: list[CommunityReportCandidate] = field(
+        default_factory=list
+    )
 
 
 # Default allocation ratios
@@ -276,6 +288,12 @@ class MixedContextBuilder:
         included_claim_ids = [
             i.id for i in packed_gf.included if i.id in claim_id_set
         ]
+        entities_by_id = {e.id: e for e in entities}
+        relationships_by_key = {
+            f"{r.source_id}:{r.relationship_type}:{r.target_id}": r
+            for r in relationships
+        }
+        reports_by_id = {c.community_id: c for c in community_reports}
 
         # Citations may only reference evidence that survived packing.
         citations: list[Citation] = []
@@ -341,6 +359,21 @@ class MixedContextBuilder:
             used_tokens=total_tokens,
             max_tokens=token_budget,
             citation_warnings=citation_warnings,
+            included_entities=[
+                entities_by_id[i.id]
+                for i in packed_gf.included
+                if i.id in entity_id_set
+            ],
+            included_relationships=[
+                relationships_by_key[i.id]
+                for i in packed_gf.included
+                if i.id in rel_key_set
+            ],
+            included_community_reports=[
+                reports_by_id[i.id]
+                for i in packed_cr.included
+                if i.id in reports_by_id
+            ],
         )
 
     # Candidate collection
@@ -372,6 +405,9 @@ class MixedContextBuilder:
                     ),
                     description=row.get("entity_description", "") or "",
                     score=float(match.get("score", 0.0)),
+                    labels=tuple(
+                        str(label) for label in labels if label != "__Entity__"
+                    ),
                 )
             )
         return entities
@@ -401,6 +437,7 @@ class MixedContextBuilder:
                         relationship_type=rel_type,
                         description=str(record.get("description", "")),
                         weight=float(record.get("weight", 1.0) or 1.0),
+                        direction=str(record.get("dir", "")),
                     )
                 )
         return rels

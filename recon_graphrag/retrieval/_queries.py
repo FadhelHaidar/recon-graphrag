@@ -259,6 +259,58 @@ ORDER BY combined_degree DESC, observation_count DESC, type(r) ASC
 """
 
 
+# Community member graph — bounded, direction-preserving expansion of one
+# community report into its members and their directed edges. Identical per
+# backend: members are ranked by the same degree expression as
+# ``_RANKED_CONTEXT_CORE`` but only edges between selected members are returned,
+# so every returned edge has both endpoints in the member list.
+COMMUNITY_MEMBER_GRAPH_QUERY = """
+MATCH (c:Community {
+    graph_name: $graph_name,
+    id: $community_id,
+    level: $level
+})<-[:IN_COMMUNITY]-(e:__Entity__)
+WHERE e.graph_name = $graph_name
+WITH e, SIZE([(e)-[r1]-()
+       WHERE NOT type(r1) IN ['IN_COMMUNITY', 'FROM_CHUNK', 'SOURCED_FROM']
+     | r1]) AS degree
+ORDER BY degree DESC,
+         coalesce(e.human_readable_id, e.canonical_key, e.id) ASC
+LIMIT $member_limit
+WITH collect({node: e, degree: degree}) AS member_rows
+WITH member_rows,
+     [row IN member_rows |
+        coalesce(row.node.human_readable_id, row.node.canonical_key, row.node.id)
+     ] AS member_ids
+WITH member_rows, member_ids,
+     [row IN member_rows | {
+        id: coalesce(row.node.human_readable_id, row.node.canonical_key, row.node.id),
+        name: coalesce(row.node.name, row.node.description, row.node.id),
+        labels: labels(row.node),
+        description: coalesce(row.node.description, ''),
+        degree: row.degree
+     }] AS members
+UNWIND member_rows AS member_row
+WITH members, member_ids, member_row.node AS member
+OPTIONAL MATCH (member)-[r]->(neighbor:__Entity__)
+WHERE neighbor.graph_name = $graph_name
+  AND coalesce(neighbor.human_readable_id, neighbor.canonical_key, neighbor.id) IN member_ids
+  AND NOT neighbor:Community
+  AND NOT neighbor:Chunk
+  AND NOT neighbor:Document
+RETURN members,
+       size(members) AS member_count,
+       collect(DISTINCT CASE WHEN r IS NULL THEN null ELSE {
+           source: coalesce(member.human_readable_id, member.canonical_key, member.id),
+           target: coalesce(neighbor.human_readable_id, neighbor.canonical_key, neighbor.id),
+           type: type(r),
+           description: coalesce(r.description, ''),
+           weight: coalesce(r.weight, r.observation_count, r.strength, 1.0)
+       } END) AS edges,
+       count(r) AS edge_count
+"""
+
+
 def set_retrieval_limit_defaults(parameters: dict) -> None:
     """Fill the per-seed relationship/source caps when the caller did not."""
     parameters.setdefault("rel_limit", DEFAULT_RETRIEVAL_LIMIT)
