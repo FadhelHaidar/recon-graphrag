@@ -14,6 +14,7 @@ to skip communities whose context has not changed.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -24,18 +25,12 @@ from tqdm.asyncio import tqdm_asyncio
 
 from recon_graphrag.communities.context import (
     CommunityContext,
-    enrich_context_with_claims,
-    build_reference_ids,
     build_packed_reference_ids,
+    build_reference_ids,
+    enrich_context_with_claims,
     pack_community_context,
     parse_community_context,
     render_community_context,
-)
-from recon_graphrag.utils.tokens import (
-    ApproximateTokenCounter,
-    PackItem,
-    TokenCounter,
-    pack_items,
 )
 from recon_graphrag.communities.reports import (
     ReportParser,
@@ -49,6 +44,12 @@ from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM, LLMResponse
 from recon_graphrag.models.artifacts import CommunityReport, report_to_text
 from recon_graphrag.observability import run_scope, token_stage, usage_delta, usage_snapshot
+from recon_graphrag.utils.tokens import (
+    ApproximateTokenCounter,
+    PackItem,
+    TokenCounter,
+    pack_items,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -118,73 +119,93 @@ class CommunitySummarizer:
 
             start = time.monotonic()
             stats = BuildStats(level=level)
-            semaphore = asyncio.Semaphore(self.concurrency)
-            results: list[dict] = []
+            outcomes: list[dict | None] = [None] * len(communities)
 
             async def _process_one(comm: dict) -> dict | None:
                 cid = comm["id"]
-                async with semaphore:
-                    stats.attempted += 1
+                stats.attempted += 1
 
-                    # Fingerprint-based resume
-                    report_context: CommunityContext | None = None
-                    input_fingerprint: str | None = None
-                    if skip_existing:
-                        report_context = self._fetch_community_context_obj(cid, level)
-                        input_fingerprint = self._report_input_fingerprint(
-                            report_context, cid, level
-                        )
-                        if self._has_existing_report(cid, level, input_fingerprint):
-                            stats.skipped += 1
-                            logger.debug("skipping community %s (report unchanged)", cid)
-                            return None
-
-                    logger.debug(
-                        "reporting community %s (%s entities)",
-                        cid, comm.get("entity_count", 0),
+                # Fingerprint-based resume
+                report_context: CommunityContext | None = None
+                input_fingerprint: str | None = None
+                if skip_existing:
+                    report_context = self._fetch_community_context_obj(cid, level)
+                    input_fingerprint = self._report_input_fingerprint(
+                        report_context, cid, level
                     )
-                    try:
-                        report = await self.generate_report(
-                            cid,
-                            level,
-                            context=report_context,
-                            input_fingerprint=input_fingerprint,
-                        )
-                        report_text = report_to_text(report)
-                        self.graph_store.store_community_report(report, self.graph_name)
-                        stats.succeeded += 1
-                        return {
-                            "id": cid,
-                            "level": level,
-                            "report_text": report_text,
-                            "report": report,
-                        }
-                    except Exception as e:
-                        stats.failed += 1
-                        try:
-                            self.graph_store.mark_community_report_failed(
-                                self.graph_name,
-                                cid,
-                                level,
-                                str(e),
-                            )
-                        except Exception:
-                            pass
-                        logger.warning("error reporting community %s: %s", cid, e)
+                    if self._has_existing_report(cid, level, input_fingerprint):
+                        stats.skipped += 1
+                        logger.debug("skipping community %s (report unchanged)", cid)
                         return None
 
-            tasks = [_process_one(comm) for comm in communities]
-            outcomes = await tqdm_asyncio.gather(
-                *tasks,
+                logger.debug(
+                    "reporting community %s (%s entities)",
+                    cid, comm.get("entity_count", 0),
+                )
+                try:
+                    report = await self.generate_report(
+                        cid,
+                        level,
+                        context=report_context,
+                        input_fingerprint=input_fingerprint,
+                    )
+                    report_text = report_to_text(report)
+                    self.graph_store.store_community_report(report, self.graph_name)
+                    stats.succeeded += 1
+                    return {
+                        "id": cid,
+                        "level": level,
+                        "report_text": report_text,
+                        "report": report,
+                    }
+                except Exception as e:
+                    stats.failed += 1
+                    with contextlib.suppress(Exception):
+                        self.graph_store.mark_community_report_failed(
+                            self.graph_name,
+                            cid,
+                            level,
+                            str(e),
+                        )
+                    logger.warning("error reporting community %s: %s", cid, e)
+                    return None
+
+            # Fixed workers over an iterator: pending tasks are bounded by
+            # self.concurrency instead of one task per community. Outcomes are
+            # written back by input position, so report order stays deterministic.
+            pending_communities = iter(list(enumerate(communities)))
+
+            async def _community_worker(bar) -> None:
+                for position, comm in pending_communities:
+                    try:
+                        outcomes[position] = await _process_one(comm)
+                    except Exception as error:  # noqa: BLE001 - reported, not raised
+                        stats.failed += 1
+                        logger.error(
+                            "unexpected error reporting community: %s", error
+                        )
+                    bar.update(1)
+
+            with tqdm_asyncio(
+                total=len(communities),
                 desc=f"Reporting communities (level {level})",
                 disable=None,
-            )
+            ) as bar:
+                workers = [
+                    asyncio.create_task(_community_worker(bar))
+                    for _ in range(max(int(self.concurrency), 1))
+                ]
+                try:
+                    await asyncio.gather(*workers)
+                finally:
+                    for task in workers:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*workers, return_exceptions=True)
 
+            results: list[dict] = []
             for outcome in outcomes:
-                if isinstance(outcome, Exception):
-                    stats.failed += 1
-                    logger.error("unexpected error reporting community: %s", outcome)
-                elif outcome is not None:
+                if outcome is not None:
                     results.append(outcome)
 
             stats.elapsed_seconds = time.monotonic() - start
@@ -214,8 +235,7 @@ class CommunitySummarizer:
                 return True
             return rows[0].get("input_fingerprint") == input_fingerprint
         except Exception:
-            pass
-        return False
+            return False
 
     async def generate_report(
         self,
@@ -498,14 +518,12 @@ class CommunitySummarizer:
                 entity_ids.append(edge.target.id)
 
         if entity_ids:
-            try:
+            with contextlib.suppress(Exception):
                 claim_rows = self.graph_store.get_claims_for_entities(
                     graph_name=self.graph_name,
                     entity_ids=entity_ids,
                 )
                 if claim_rows:
                     context = enrich_context_with_claims(context, claim_rows)
-            except Exception:
-                pass  # Claims are optional; don't fail report generation
 
         return context

@@ -28,6 +28,7 @@ local_search = LocalSearchRetriever(
     graph_name="entity-graph",        # graph scope (default: "entity-graph")
     use_mixed_context=True,           # enable mixed-context (default: True)
     top_k_relationships=10,           # max relationships per entity (default: 10)
+    top_k_sources=3,                  # max source chunks per entity (default: 3)
 )
 result = await local_search.search("Your question", top_k=10)
 
@@ -104,9 +105,10 @@ all-report map/reduce flow over one resolved community level:
 
 ```text
 resolve level
-  -> read all successful reports at that level
+  -> read all successful reports at that level (or up to max_reports)
   -> shuffle reports with random_seed
-  -> pack reports into map batches using map_budget_tokens
+  -> pack reports into map batches using map_budget_tokens,
+     stopping at max_map_calls batches or max_map_tokens input tokens
   -> run one LLM map call per batch, concurrently
   -> filter map answers with helpfulness == 0
   -> sort remaining partial answers by helpfulness DESC
@@ -156,7 +158,9 @@ stored community reports and synthesizes a corpus-level answer.
 | `map_budget_tokens` | Constructor option on `GlobalSearchRetriever`; maximum report text packed into one map prompt. |
 | `reduce_budget_tokens` | Constructor option on `GlobalSearchRetriever`; maximum partial-answer text packed into the final reduce prompt. |
 | `map_concurrency` | Constructor option on `GlobalSearchRetriever`; max concurrent map calls. Defaults to `5`. |
-| `max_map_calls` | Constructor option on `GlobalSearchRetriever`; max total map calls. Defaults to `None` (unlimited). |
+| `max_map_calls` | Constructor option on `GlobalSearchRetriever`; max total map batches, and therefore max map calls. Defaults to `None` (unlimited). Batches beyond the cap are never built. |
+| `max_map_tokens` | Constructor option on `GlobalSearchRetriever`; sum of complete formatted map-prompt token counts, including query/template overhead and separators, using `token_counter`. Stop before the first batch that does not fit (possibly sending no map calls). Defaults to `None` (unlimited). This is not a billed-token or output-token cap. |
+| `max_reports` | Constructor option on `GlobalSearchRetriever`; max reports read from the graph for the query. Defaults to `None` (every report at the level). |
 
 Global search reads stored `Community.report_text` / `Community.summary`
 values directly from the graph. It does not embed the user query, use vector
@@ -420,6 +424,62 @@ Current citation behavior:
 
 Citation resolution is graph-scoped. A query on one `graph_name` will not resolve
 chunks, claims, or entities from another graph.
+
+---
+
+## Structured Graph Evidence
+
+Every retriever accepts `include_graph_evidence=True`, which fills
+`result.graph` with the entity nodes and directed relationships that were
+*included in synthesis* alongside the answer, context, and citations:
+
+```python
+result = await local_search.search("Who leads Acme?", include_graph_evidence=True)
+
+for node in result.graph["nodes"]:
+    print(node["id"], node["name"], node["labels"])
+for edge in result.graph["edges"]:
+    print(edge["source"], f"-[{edge['type']}]->", edge["target"], edge["weight"])
+```
+
+| Key | Meaning |
+| --- | --- |
+| `nodes` | Deduplicated vertices: `id`, `name`, `labels`, `description`, `origin`. Sorted by `id`. |
+| `edges` | Deduplicated directed edges: `source`, `target`, `type`, `description`, `weight`, `key`, `origin`. Both endpoints are always present in `nodes`. |
+| `provenance` | `graph_name`, `mode`, the contributing community reports (`id`, `level`, plus mode-specific fields), and any `warnings`. |
+| `truncation` | `applied`, `dropped_nodes`, `dropped_edges`, `limits`, and the `reasons` behind every cut. |
+
+The field defaults to `{}`; with the flag off, no extra reads happen. `origin`
+is `retrieved` (direct graph fact), `community_member` (expanded report
+member), or `edge_endpoint` (node only present because an edge points at it).
+
+What gets included, per mode:
+
+- **Local** — the entities and relationships that survived mixed-context token
+  packing, or for `use_mixed_context=False` the entity plus the
+  `top_k_relationships` slice the context renders. Community reports included in
+  the context are expanded into their member entities and edges.
+- **DRIFT** — each action keeps its own evidence on `DriftAction.graph`; the
+  result merges only actions packed into the final reduction
+  (`provenance.retained_actions`, with `explored_actions` listed but excluded).
+  The primer's selected reports are expanded only when the primer reached
+  reduction. The local-style fallback path uses the local selection.
+- **Global** — only partial answers that fit the actual reduce-stage token
+  packing are considered; the community reports behind them are expanded at the
+  searched level. Reports that were merely read or mapped are not expanded.
+
+`Community` nodes are never returned as vertices: a contributing report shows up
+as its member entities and relationships, with the report id and level kept in
+`provenance.communities`. Community expansion costs one bounded query per report
+(at most `max_reports`), so it only runs when you opt in.
+
+Reported totals are only those actually known. `member_limit` (25), `edge_limit`
+(50) per report, `max_reports` (5), `max_nodes` (200) and `max_edges` (500) per
+result are all deterministic; when a cap bites, `truncation.reasons` records
+what was kept and dropped. Selection is degree-ranked and stable across runs.
+
+This payload describes evidence included in synthesis. It does not verify
+sentence-level grounding, prove answer correctness, or establish capacity.
 
 ---
 
@@ -1020,7 +1080,9 @@ search, or subclass `DriftSearchRetriever`.
 ### Custom Retrieval Query
 
 Advanced users can override the Cypher query used to fetch local or DRIFT
-entity context:
+entity context. A custom query is responsible for its own limits: the default
+`rel_limit` / `source_limit` parameters are still passed in the query
+parameters, but a custom query that ignores them returns whatever it matches.
 
 ```python
 local_search.retrieval_query = (
@@ -1092,32 +1154,84 @@ The table below summarizes the hard and soft limits.
 | `top_k` | `10` | Number of seed entities retrieved by hybrid vector + keyword search. |
 | `effective_search_ratio` | `1` | Over-fetch multiplier before post-filtering (`candidate_k = top_k * effective_search_ratio`). |
 | Cypher traversal depth | **1 hop** | The retrieval query traverses one hop out from each seed entity: outgoing and incoming relationships to non-Chunk, non-Document, non-Community neighbors. |
-| Source chunks per entity | **unbounded** (by Cypher) | All `FROM_CHUNK` edges of each seed entity are collected. No Cypher `LIMIT` is applied; the count is bounded by actual graph edges. |
+| `top_k_relationships` | `10` | Relationships kept **per direction per seed entity**: up to 10 outgoing and 10 incoming. Applied in Cypher (`LIMIT $rel_limit` after ranking), bounding relationship data returned to Python, not relationships inspected by the database. |
+| `top_k_sources` | `3` | `FROM_CHUNK` source chunks kept per seed entity. Applied in Cypher (`LIMIT $source_limit`). Ordered by similarity to the query when chunk vectors exist, otherwise by chunk id. Fewer sources means fewer candidate citations. |
 | `token_budget` (mixed context) | `12000` | When `use_mixed_context=True`, total tokens packed into the LLM context. Split: 50% text units, 10% community reports, 40% graph facts. |
 
 **Example:** With `top_k=10`, local search retrieves 10 entities, then for each
-entity fetches all direct neighbors and all source chunks. If entity `Christopher_Nolan`
-has 5 relationships and 4 source chunks, all 9 items are returned. There is no
-hard neighbor limit in the Cypher query.
+entity fetches up to `top_k_relationships=10` relationships in each direction and up to
+`top_k_sources=3` source chunks. If entity `Christopher_Nolan` has 5
+relationships and 4 source chunks, all 5 relationships are returned but only 3
+of the 4 chunks — the 3 closest to the question when chunk vectors exist,
+otherwise the 3 lowest chunk ids. The rest never leave the database.
+
+These limits bound returned neighborhood/source data, not database traversal or
+sorting work, nor LLM cost. `top_k`, `top_k_relationships`, and `top_k_sources`
+scale together. The query returns separate incoming/outgoing rows, each carrying
+the same bounded source list. Sources are limited in a correlated per-seed
+subquery; seeds without sources are retained. Truncation reduces citation
+candidates. Raising `top_k_sources` admits more evidence but does not guarantee
+that every supporting passage is cited.
+
+These are retrieval-candidate limits. The legacy non-mixed formatter still shows
+at most three source excerpts for local search or two for DRIFT; mixed context
+uses its token-packing limits. Raising a retrieval cap does not guarantee that
+all fetched candidates enter the prompt or are cited.
+
+Callers can override either limit per query via `query_params`, for example
+`await local_search.search(question, query_params={"source_limit": 8})`.
+
+### Ranking source chunks
+
+`top_k_sources` has to choose which chunks to keep. Keeping the lowest chunk ids
+is deterministic but arbitrary: the kept passages have nothing to do with the
+question.
+
+Ingestion can store one vector per chunk with `GraphBuilderPipeline(embed_chunks=True)`.
+It is off by default because it costs one embedding call per chunk. When chunk
+vectors exist and the query supplies a vector, sources are ordered by cosine
+similarity to the query instead of by chunk id, and ties still fall back to chunk
+id so ordering stays deterministic. The retriever already has a query vector for
+hybrid entity search, so ranking adds no provider call at query time.
+
+Scoring happens in the database as a dot product over unit-length vectors, so
+Neo4j and Memgraph return the same order and no vector index is needed. Chunks
+without a vector, and chunks whose vector has a different dimension than the
+query, score `0.0` rather than failing — a graph ingested without
+`embed_chunks=True` therefore keeps exactly the previous chunk-id ordering.
+Callers that pass their own `retrieval_query=` keep full control of source
+selection and get no automatic ranking.
 
 ### Global Search
 
 | Control | Default | What it limits |
 | --- | --- | --- |
 | `community_level` | required | Which community level to read. All reports at that level are loaded. |
-| Reports per search | **unbounded** | Every non-failed, non-empty report at the selected level is read. No hard cap. |
+| `max_reports` | `None` (unbounded) | Reports read from the graph for this query. `None` reads every non-failed, non-empty report at the selected level. |
 | `map_budget_tokens` | `12000` | Tokens per map batch. Reports are greedily packed until this budget is filled. Controls how many reports fit in one map LLM call. |
 | `map_concurrency` | `5` | Max concurrent map LLM calls. |
-| `max_map_calls` | `None` (unlimited) | Hard cap on total map batches. If set and there are more batches, later batches are dropped. |
+| `max_map_calls` | `None` (unlimited) | Hard cap on total map batches, applied while batching: reports beyond the cap are never read into a batch and no map call is made for them. |
+| `max_map_tokens` | `None` (unlimited) | Sum of complete formatted map-prompt counts under `token_counter`, including repeated query/template overhead and separators. Stops before the first batch that would exceed the remaining allowance; sends no partial final batch. A cap below the first prompt sends no map calls. Approximate counters provide estimated, not provider-billed, token bounds. |
 | `reduce_budget_tokens` | `12000` | Tokens for packing scored partial answers into the final reduce prompt. |
-| Map calls (total) | `ceil(total_report_tokens / map_budget_tokens)` | One map LLM call per batch. |
-| Reduce calls | `1` | Always exactly one reduce LLM call (unless `synthesize_response=False`). |
+| Map calls (total) | One per retained batch | Depends on report sizes, prompt overhead, packing and configured caps; not an exact `ceil(total_report_tokens / map_budget_tokens)` calculation. |
+| Reduce calls | At most `1` | Skipped when synthesis is disabled or no usable map answers remain. |
 
 **Example:** With 20 reports totaling ~40k tokens and `map_budget_tokens=12000`:
 - Batches: `ceil(40000 / 12000) = 4` batches
 - Map LLM calls: 4 (concurrent, up to `map_concurrency=5`)
 - Reduce LLM calls: 1
 - Total LLM calls: 5
+
+`map_concurrency` bounds only how many map calls run at once. Total map work is
+bounded by `max_reports`, `max_map_calls`, and `max_map_tokens`; all default to
+unlimited, so the same 20 reports with no caps cost 5 LLM calls, while
+`max_map_calls=2` costs 3 (2 map + 1 reduce) and drops the remaining reports.
+`max_reports` chooses the ID-ordered report prefix in the database **before**
+shuffling. The existing `random_seed` shuffles that subset; `max_map_calls` and
+`max_map_tokens` retain a prefix of its uncapped batches. All reports in the
+selected subset are still loaded unless `max_reports` is set. No cap here bounds
+provider output tokens, billed cost, or database scan/sort work. Token accounting
+uses the configured counter, which is approximate by default.
 
 ### DRIFT Search
 
@@ -1130,6 +1244,8 @@ hard neighbor limit in the Cypher query.
 | `min_expand_score` | `20.0` | Minimum action score (0-100) to expand into follow-ups. Actions below this are pruned. |
 | `max_llm_calls` | `20` | Hard cap on total LLM calls across all phases (primer + actions + reduce). |
 | `action_concurrency` | `3` | Max concurrent action evaluations during traversal. |
+| `top_k_relationships` | `10` | Relationships kept per direction per seed entity, applied in Cypher (same query as local search). |
+| `top_k_sources` | `2` | Source chunks kept per seed entity, applied in Cypher. Fewer sources means fewer candidate citations. |
 | `reduce_budget_tokens` | `12000` | Token budget for packing scored action answers into the final reduction prompt. |
 | Cypher traversal depth | **1 hop** | Each action's local entity retrieval uses the same 1-hop query as local search. |
 

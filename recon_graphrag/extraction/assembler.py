@@ -15,8 +15,11 @@ from recon_graphrag.extraction.types import (
     GraphExtraction,
     RelationshipRecord,
 )
-from recon_graphrag.models.artifacts import ClaimRecord, DescriptionObservation, SourceReference
-
+from recon_graphrag.models.artifacts import (
+    ClaimRecord,
+    DescriptionObservation,
+    SourceReference,
+)
 
 # Maximum characters for consolidated entity descriptions.
 DESCRIPTION_CONSOLIDATION_CAP = 2000
@@ -32,6 +35,7 @@ class GraphDocumentAssembler:
         metadata: dict,
         graph_name: str,
         chunk_claims: dict[str, list[ExtractedClaim]] | None = None,
+        identity_properties: dict[str, str] | None = None,
     ) -> GraphDocument:
         entities_by_id: dict[str, EntityRecord] = {}
         relationships_by_key: dict[tuple, RelationshipRecord] = {}
@@ -55,8 +59,28 @@ class GraphDocumentAssembler:
             if not extraction:
                 continue
 
+            # F7: extracted local IDs ("p1") are chunk-local references, not
+            # identity. Map each to its entity's persistent canonical key so
+            # endpoints and claims resolve through the same mapping.
+            chunk_keys: dict[str, str] = {}
+
             for node in extraction.nodes:
-                canonical_key = str(node.properties.get("canonical_key") or node.id)
+                explicit = node.properties.get("canonical_key")
+                if explicit:
+                    canonical_key = str(explicit)
+                else:
+                    identity_prop = (identity_properties or {}).get(node.label)
+                    identity_value = (
+                        node.properties.get(identity_prop) if identity_prop else None
+                    )
+                    if identity_value:
+                        canonical_key = f"{node.label}:{identity_value}"
+                    else:
+                        # Local IDs are chunk-scoped; only trusted identity
+                        # can merge observations across chunks.
+                        canonical_key = f"{document_id}:{chunk.id}:{node.label}:{node.id}"
+                chunk_keys[node.id] = canonical_key
+
                 entity_id = _build_entity_uuid(graph_name, canonical_key)
                 if canonical_key not in entities_by_id:
                     properties = dict(node.properties)
@@ -67,15 +91,21 @@ class GraphDocumentAssembler:
                     )
                     properties.setdefault("name", title)
                     properties.setdefault("title", title)
+                    explicit = bool(properties.get("canonical_key"))
+                    readable = (
+                        str(properties.get("human_readable_id") or canonical_key)
+                        if explicit
+                        else str(node.id)
+                    )
                     properties["canonical_key"] = canonical_key
-                    properties["human_readable_id"] = canonical_key
+                    properties["human_readable_id"] = readable
                     entities_by_id[canonical_key] = EntityRecord(
                         id=entity_id,
                         type=node.label,
                         properties=properties,
                         graph_name=graph_name,
                         canonical_key=canonical_key,
-                        human_readable_id=canonical_key,
+                        human_readable_id=readable,
                     )
 
                 # Accumulate description observation
@@ -85,7 +115,9 @@ class GraphDocumentAssembler:
                     description=description,
                     source=_build_source_ref(document_id, chunk, metadata),
                 )
-                entities_by_id[canonical_key].description_observations.append(observation)
+                entities_by_id[canonical_key].description_observations.append(
+                    observation
+                )
 
                 evidence_links.append(
                     EvidenceLink(
@@ -96,22 +128,26 @@ class GraphDocumentAssembler:
                 )
 
             for rel in extraction.relationships:
-                key = (rel.source_id, rel.type, rel.target_id)
-                source_id = _build_entity_uuid(graph_name, rel.source_id)
-                target_id = _build_entity_uuid(graph_name, rel.target_id)
-                relationship_key = f"{rel.source_id}:{rel.type}:{rel.target_id}"
+                source_key = chunk_keys.get(str(rel.source_id), str(rel.source_id))
+                target_key = chunk_keys.get(str(rel.target_id), str(rel.target_id))
+                key = (source_key, rel.type, target_key)
+                source_id = _build_entity_uuid(graph_name, source_key)
+                target_id = _build_entity_uuid(graph_name, target_key)
+                relationship_key = f"{source_key}:{rel.type}:{target_key}"
 
                 if key not in relationships_by_key:
                     extracted_weight = rel.properties.get("weight")
                     strength = (
-                        float(extracted_weight) if extracted_weight is not None else None
+                        float(extracted_weight)
+                        if extracted_weight is not None
+                        else None
                     )
                     properties = {
                         **rel.properties,
                         "canonical_key": relationship_key,
                         "human_readable_id": relationship_key,
-                        "source_canonical_key": rel.source_id,
-                        "target_canonical_key": rel.target_id,
+                        "source_canonical_key": source_key,
+                        "target_canonical_key": target_key,
                         "source_chunk_ids": [chunk.id],
                         "weight": 1.0,
                     }
@@ -140,15 +176,23 @@ class GraphDocumentAssembler:
             # Convert extracted claims to ClaimRecord
             if chunk_claims:
                 for extracted_claim in chunk_claims.get(chunk.id, []):
-                    claim_id = _build_claim_id(
-                        document_id, chunk.id, extracted_claim
+                    subject_key = chunk_keys.get(
+                        str(extracted_claim.subject_entity_id),
+                        str(extracted_claim.subject_entity_id),
                     )
+                    object_key = (
+                        chunk_keys.get(
+                            str(extracted_claim.object_entity_id),
+                            str(extracted_claim.object_entity_id),
+                        )
+                        if extracted_claim.object_entity_id
+                        else None
+                    )
+                    claim_id = _build_claim_id(document_id, chunk.id, extracted_claim)
                     claim_records.append(
                         ClaimRecord(
                             id=claim_id,
-                            entity_id=_build_entity_uuid(
-                                graph_name, extracted_claim.subject_entity_id
-                            ),
+                            entity_id=_build_entity_uuid(graph_name, subject_key),
                             claim_type=extracted_claim.claim_type,
                             description=extracted_claim.description,
                             source=_build_source_ref(document_id, chunk, metadata),
@@ -157,10 +201,8 @@ class GraphDocumentAssembler:
                             start_date=extracted_claim.start_date,
                             end_date=extracted_claim.end_date,
                             object_entity_id=(
-                                _build_entity_uuid(
-                                    graph_name, extracted_claim.object_entity_id
-                                )
-                                if extracted_claim.object_entity_id
+                                _build_entity_uuid(graph_name, object_key)
+                                if object_key
                                 else None
                             ),
                             source_text=extracted_claim.source_text or chunk.text[:300],
@@ -188,9 +230,7 @@ class GraphDocumentAssembler:
         )
 
 
-def _build_claim_id(
-    document_id: str, chunk_id: str, claim: ExtractedClaim
-) -> str:
+def _build_claim_id(document_id: str, chunk_id: str, claim: ExtractedClaim) -> str:
     """Build a deterministic claim ID from document, chunk, and claim content."""
     import hashlib
 

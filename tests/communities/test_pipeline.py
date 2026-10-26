@@ -1,6 +1,7 @@
 """Tests for the community pipeline wrapper."""
 
 import json
+from typing import Any, cast
 
 import pytest
 
@@ -9,7 +10,10 @@ from recon_graphrag.communities.pipeline import CommunityPipeline
 
 class FakeGraphStore:
     def __init__(self):
-        self.detect_kwargs = None
+        self.detect_kwargs: dict = {}
+
+    def count_communities_with_reports(self, graph_name):
+        return 0
 
     def detect_communities(self, **kwargs):
         self.detect_kwargs = kwargs
@@ -19,8 +23,11 @@ class FakeGraphStore:
 class FakeGraphStoreWithCommunities:
     def __init__(self, communities):
         self._communities = communities
-        self.detect_kwargs = None
+        self.detect_kwargs: dict = {}
         self.reports: list[tuple] = []
+
+    def count_communities_with_reports(self, graph_name):
+        return 0
 
     def detect_communities(self, **kwargs):
         self.detect_kwargs = kwargs
@@ -69,8 +76,8 @@ class FakeGraphStoreWithCommunities:
 async def test_build_forwards_relationship_weight_property():
     store = FakeGraphStore()
     pipeline = CommunityPipeline(
-        graph_store=store,
-        llm=object(),
+        graph_store=cast(Any, store),
+        llm=cast(Any, object()),
         relationship_types=["ACTED_IN"],
         relationship_weight_property="weight",
     )
@@ -87,8 +94,8 @@ async def test_build_forwards_relationship_weight_property():
 async def test_build_forwards_graph_name():
     store = FakeGraphStore()
     pipeline = CommunityPipeline(
-        graph_store=store,
-        llm=object(),
+        graph_store=cast(Any, store),
+        llm=cast(Any, object()),
         relationship_types=["ACTED_IN"],
         graph_name="my-graph",
     )
@@ -124,8 +131,8 @@ async def test_build_filters_levels():
             }))
 
     pipeline = CommunityPipeline(
-        graph_store=store,
-        llm=FakeLLM(),
+        graph_store=cast(Any, store),
+        llm=cast(Any, FakeLLM()),
         relationship_types=["ACTED_IN"],
         graph_name="test-graph",
     )
@@ -168,8 +175,8 @@ async def test_build_forwards_report_prompt_to_summarizer():
 
     llm = CapturingLLM()
     pipeline = CommunityPipeline(
-        graph_store=store,
-        llm=llm,
+        graph_store=cast(Any, store),
+        llm=cast(Any, llm),
         relationship_types=["ACTED_IN"],
         graph_name="test-graph",
         report_prompt="You are a security analyst. Identify risks.",
@@ -180,3 +187,73 @@ async def test_build_forwards_report_prompt_to_summarizer():
     assert llm.prompts
     assert "You are a security analyst. Identify risks." in llm.prompts[0]
 
+
+
+class FailingReportLLM:
+    """Fails the report for one community, succeeds for the other."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def ainvoke(self, prompt):
+        from recon_graphrag.llm.base import LLMResponse
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("provider said: key=sk-secret-value")
+        return LLMResponse(content=json.dumps({
+            "title": "Alice and Acme",
+            "summary": "Alice works at Acme.",
+            "rating": 7,
+            "rating_explanation": "Important.",
+            "findings": [{
+                "description": "Alice is connected to Acme.",
+                "references": [{"target_id": "person:alice", "target_type": "entity"}],
+            }],
+        }))
+
+
+@pytest.mark.asyncio
+async def test_build_reports_completed_when_every_report_succeeds():
+    store = FakeGraphStoreWithCommunities([{"id": "c0", "level": 0, "entity_count": 2}])
+
+    class OkLLM:
+        async def ainvoke(self, prompt):
+            from recon_graphrag.llm.base import LLMResponse
+            return LLMResponse(content=json.dumps({
+                "title": "T", "summary": "S", "rating": 7,
+                "rating_explanation": "E",
+                "findings": [{"description": "D", "references": [
+                    {"target_id": "person:alice", "target_type": "entity"},
+                ]}],
+            }))
+
+    pipeline = CommunityPipeline(
+        graph_store=cast(Any, store), llm=cast(Any, OkLLM()),
+        relationship_types=["ACTED_IN"], graph_name="test-graph",
+    )
+
+    result = await pipeline.build()
+
+    assert result["status"] == "completed"
+    assert result["maintenance_warnings"] == []
+
+
+@pytest.mark.asyncio
+async def test_build_reports_degraded_when_a_report_fails():
+    store = FakeGraphStoreWithCommunities([
+        {"id": "c0", "level": 0, "entity_count": 2},
+        {"id": "c1", "level": 0, "entity_count": 2},
+    ])
+    pipeline = CommunityPipeline(
+        graph_store=cast(Any, store), llm=cast(Any, FailingReportLLM()),
+        relationship_types=["ACTED_IN"], graph_name="test-graph",
+    )
+
+    result = await pipeline.build()
+
+    assert result["status"] == "degraded"
+    warnings = result["maintenance_warnings"]
+    assert warnings == [{"code": "community_report_generation_failed", "level": 0, "failed": 1}]
+    assert result["level_stats"][0]["failed"] == 1
+    # Still inspectable partial progress, and no sensitive payload leaks.
+    assert "sk-secret-value" not in json.dumps(warnings)

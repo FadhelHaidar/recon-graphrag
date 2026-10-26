@@ -427,6 +427,71 @@ pipeline = GraphBuilderPipeline(
 )
 ```
 
+### Reserved persistence fields
+
+User-controlled maps (`document.metadata`, `chunk.metadata`,
+`entity.properties`, `relationship.properties`) must not carry the reserved keys
+listed below. Unrestricted assignments can overwrite SDK-owned graph state after
+`MERGE`, such as an entity `id` or chunk `text`.
+
+`CypherGraphWriter` checks every record map in the artifact *before* running a
+single query. If any key is reserved it raises `ValueError` naming the record
+type and the offending keys, and nothing is written, so a rejected artifact
+leaves the database untouched.
+
+SDK-owned keys rejected in every map: `id`, `graph_name`, `created`, `updated`,
+`embedding`, `description_summary_status`, `description_input_fingerprint`,
+`description_summary_updated`, `description_summary_error`,
+`description_summary_fallback`.
+
+Rejected on top of those:
+
+| Map | Additional reserved keys |
+| --- | --- |
+| `document.metadata` | `text_hash` |
+| `chunk.metadata` | `text`, `index` |
+| `entity.properties` | `type`, `descriptions`, `observation_count` |
+| `relationship.properties` | `descriptions` |
+
+Existing supported inputs remain unchanged:
+
+- Use `metadata["document_id"]` for document identity. It stays authoritative
+  for the document record and for chunk `document_id` references; no key
+  rename happens.
+- Page metadata `id` is converted to `source_ids` by the page-window path, so
+  page IDs are preserved without a reserved key.
+- Schema-declared properties are validated normally; an application field that
+  really is named `id` is still rejected at write time. Rename it (for example
+  `external_id`) and resubmit. Undeclared properties continue to be filtered by
+  schema validation as before.
+
+- Canonical IDs, entity names/titles/descriptions, and relationship evidence IDs
+  remain supported. Relationship `weight` and `observation_count` retain their
+  existing derived-value handling; strength handling is unchanged.
+
+Recovering from a rejection:
+
+1. Read the error: it names the record map and the offending keys.
+2. For document identity, use metadata `document_id`. For descriptive identifiers,
+   rename the key to a nonreserved name such as `external_document_id` or
+   `employee_id`. If the conflicting field is schema-declared, update the schema
+   and rerun extraction; repeating the unchanged schema will not fix it.
+3. Resubmit the corrected input. If you already have a `GraphDocument`, correct
+   its property map and retry the write without extraction, leaving its typed
+   identity fields intact. The SDK does not rename, drop, or retry automatically.
+
+For pipeline document identity, a nonempty metadata `document_id` takes precedence
+over `source`, then `title`, then the text-derived ID. Changing a lower-priority
+value does not replace an explicit identity.
+
+The guarantee is per artifact and applies to reserved-key rejection only:
+previously written artifacts are not rolled back when a later document in the
+same build is rejected, and a custom store without the `_transaction` hook can
+still leave partial writes. Built-in Neo4j and Memgraph stores write one
+document inside one transaction, so a failure inside a single document write
+rolls that document back. Extraction may already have incurred provider costs
+before validation; a high-level retry may repeat that work.
+
 ### Implement a custom GraphStore
 
 Implement every method in `GraphStore` to add a new backend. The protocol defines around 30 methods spanning index management, entity resolution, vector/keyword search, community detection/persistence, and validation. The Neo4j and Memgraph store tests show the shared contract alongside backend-specific query behavior.
@@ -631,7 +696,10 @@ Backend notes:
 You can instantiate retrievers directly for fine-grained control over index names, prompts, or result formatting.
 
 All retrievers return a [`SearchResult`](../recon_graphrag/models/types.py)
-with `query`, `mode`, `answer`, `context`, and optional `citations`.
+with `query`, `mode`, `answer`, `context`, and optional `citations`. Pass
+`include_graph_evidence=True` to also fill `graph` with the entity nodes and
+directed relationships included in synthesis (see
+[Structured Graph Evidence](./06-search.md#structured-graph-evidence)).
 
 ```python
 SearchResult(
@@ -646,6 +714,12 @@ SearchResult(
             metadata={"record_id": "row-42", "collection": "movies"},
         )
     ],
+    graph={
+        "nodes": [{"id": "Christopher_Nolan", "name": "Christopher Nolan", "labels": ["Person"]}],
+        "edges": [],
+        "provenance": {"graph_name": "entity-graph", "mode": "local"},
+        "truncation": {"applied": False, "dropped_nodes": 0, "dropped_edges": 0},
+    },
 )
 ```
 
@@ -726,6 +800,11 @@ retriever = HybridEntityRetriever(
 )
 result = await retriever.search("Who directed Inception?", top_k=10)
 ```
+
+A custom `retrieval_query` is responsible for its own limits. The default query
+honours `rel_limit` and `source_limit` (passed through `query_params`); a custom
+query that ignores them returns every matched row, so a hub entity can still
+stream its whole neighborhood into Python.
 
 ### `MixedContextBuilder`
 
@@ -826,6 +905,44 @@ summarizer = CommunitySummarizer(store, llm, graph_name="entity-graph")
 reports, stats = await summarizer.generate_all(level=0)
 ```
 
+### Destruction safety
+
+`detect_communities()` replaces the graph's communities all-or-nothing. It
+computes the new hierarchy first, then deletes and writes `Community` nodes,
+`IN_COMMUNITY` memberships, and parent links inside a single transaction. If
+projection, the Leiden procedure, or any write fails, the previous communities
+and their reports stay in the graph and the error propagates.
+
+`create_indexes()` is strictly additive. It inspects the existing indexes and
+reuses any index whose definition matches the configuration. A name that is
+taken by an incompatible definition (wrong label, properties, dimensions, or
+similarity function) raises `ValueError` instead of dropping and recreating it.
+Replacing an index therefore stays an explicit administrative action:
+
+```python
+store.drop_indexes()   # explicit, drops the configured indexes
+store.create_indexes()
+```
+
+### Backend differences (verified against live containers)
+
+- **Hierarchy.** `max_levels` and `PARENT_COMMUNITY` edges are exercised on
+  Neo4j, where GDS Leiden reports intermediate communities. MAGE's
+  `leiden_community_detection.get_subgraph()` returns a single level per node,
+  so Memgraph communities are flat in practice.
+- **Determinism.** GDS honours `random_seed`; MAGE exposes no seed, so community
+  ids and counts can differ between identical reruns on Memgraph. A rerun still
+  replaces the previous hierarchy; it never accumulates stale communities.
+- **Index verification.** Neo4j exposes index names and vector configuration in
+  `SHOW INDEXES`, so compatible indexes are reused and a dimension or similarity
+  mismatch raises `ValueError`. Memgraph's `SHOW INDEX INFO` omits vector index
+  names and dimensions; `SHOW VECTOR INDEX INFO` reports them, so vector indexes
+  are verified there too and compatible ones are reused. On a Memgraph release
+  without `SHOW VECTOR INDEX INFO`, an existing vector index cannot be verified
+  and setup fails closed with an actionable message; drop it explicitly before
+  recreating it. Text indexes are fully described by type, label, and
+  properties, so a matching one is reused.
+
 ---
 
 ## LLM / embedder base classes
@@ -914,6 +1031,34 @@ async def extract_to_json(text: str, schema: GraphSchema, llm, out_path: Path):
 ```
 
 ---
+
+## Concurrency is not a work limit
+
+Every `*_concurrency` option in this SDK bounds how much runs **at the same
+time**. None of them bound how much a call does in total, how much memory it
+holds, or how much a provider bills for.
+
+| Knob | Bounds | Does **not** bound |
+| --- | --- | --- |
+| `extraction_concurrency`, `document_concurrency` | Chunks/documents in flight during a build | Documents passed in, results returned, total LLM calls |
+| `summarize_concurrency` | Community reports generated in parallel | Communities processed, reports returned |
+| `map_concurrency` (global search) | Concurrent map LLM calls | Reports read, batches built, total map calls or tokens |
+| `action_concurrency` (DRIFT) | Actions evaluated in parallel | Total actions, total LLM calls (`max_llm_calls` does that) |
+| `batch_size` (entity embeddings) | Entities per database round trip | Provider calls (one per entity) |
+
+Total-work limits are separate options and are often **unlimited by default**:
+`max_map_calls`, `max_map_tokens`, and `max_reports` on
+`GlobalSearchRetriever`, `max_llm_calls` on `DriftSearchConfig`,
+`top_k_relationships` and `top_k_sources` on local and DRIFT search. The database
+side of local and DRIFT limits returned relationships per direction and source
+chunks per seed in Cypher; database traversal and sorting can still grow with
+hub degree. `max_map_tokens` counts complete formatted map prompts with the
+configured token counter (approximate by default), stopping before a batch that
+does not fit. `max_reports` selects an ID-ordered subset before shuffling.
+
+Budget work separately from concurrency: raising `map_concurrency` may shorten
+a capped query, but does not reduce its total work. These input-work caps do not
+guarantee provider output-token or billed-cost ceilings.
 
 ## Token usage observability
 

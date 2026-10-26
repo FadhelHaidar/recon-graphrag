@@ -6,18 +6,14 @@ Tests for iterative DRIFT behavior and limits.
 from __future__ import annotations
 
 import json
+from typing import Any, cast
 
 import pytest
 
 from recon_graphrag.llm import LLMResponse
 from recon_graphrag.models.artifacts import Citation
-from recon_graphrag.retrieval.search_drift import DriftSearchRetriever
 from recon_graphrag.retrieval.drift_types import DriftSearchConfig
-
-
-# ---------------------------------------------------------------------------
-# Fakes
-# ---------------------------------------------------------------------------
+from recon_graphrag.retrieval.search_drift import DriftSearchRetriever
 
 
 class FakeGraphStore:
@@ -140,16 +136,11 @@ class NoReportSearchStore(FakeGraphStore):
         raise RuntimeError("No such index")
 
 
-# ---------------------------------------------------------------------------
-# Core iterative DRIFT behavior
-# ---------------------------------------------------------------------------
-
-
 class TestDriftSearch:
     @pytest.mark.asyncio
     async def test_drift_returns_valid_search_result(self):
         store = FakeGraphStore()
-        retriever = DriftSearchRetriever(store, FakeLLM(), FakeEmbedder())
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()))
 
         result = await retriever.search("Who directed Inception?", top_k=2)
 
@@ -161,7 +152,7 @@ class TestDriftSearch:
     async def test_drift_embedder_called_for_primer(self):
         store = FakeGraphStore()
         embedder = FakeEmbedder()
-        retriever = DriftSearchRetriever(store, FakeLLM(), embedder)
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, FakeLLM()), cast(Any, embedder))
 
         await retriever.search("Who directed Inception?", top_k=2)
 
@@ -170,12 +161,7 @@ class TestDriftSearch:
     @pytest.mark.asyncio
     async def test_drift_uses_configured_primer_report_count(self):
         store = FakeGraphStore()
-        retriever = DriftSearchRetriever(
-            store,
-            FakeLLM(),
-            FakeEmbedder(),
-            config=DriftSearchConfig(primer_top_k=4, use_hyde=False),
-        )
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()), config=DriftSearchConfig(primer_top_k=4, use_hyde=False),)
 
         await retriever.search("query", top_k=2)
 
@@ -189,7 +175,7 @@ class TestDriftSearch:
     async def test_drift_citations_from_report_refs(self):
         """Citations come from report references when available."""
         store = FakeGraphStore()
-        retriever = DriftSearchRetriever(store, FakeLLM(), FakeEmbedder())
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()))
 
         result = await retriever.search("query", top_k=2)
 
@@ -199,7 +185,7 @@ class TestDriftSearch:
     @pytest.mark.asyncio
     async def test_drift_trace_in_metadata(self):
         store = FakeGraphStore()
-        retriever = DriftSearchRetriever(store, FakeLLM(), FakeEmbedder())
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()))
 
         result = await retriever.search("query", top_k=2)
 
@@ -213,7 +199,7 @@ class TestDriftSearch:
     @pytest.mark.asyncio
     async def test_drift_uses_context_mode_drift(self):
         store = FakeGraphStore()
-        retriever = DriftSearchRetriever(store, FakeLLM(), FakeEmbedder())
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()))
 
         await retriever.search("query", top_k=2)
 
@@ -227,7 +213,7 @@ class TestDriftSynthesisFalse:
     async def test_synthesize_false_returns_empty_answer(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        retriever = DriftSearchRetriever(store, llm, FakeEmbedder())
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()))
 
         result = await retriever.search("query", top_k=2, synthesize_response=False)
 
@@ -236,7 +222,7 @@ class TestDriftSynthesisFalse:
     @pytest.mark.asyncio
     async def test_synthesize_false_returns_context(self):
         store = FakeGraphStore()
-        retriever = DriftSearchRetriever(store, FakeLLM(), FakeEmbedder())
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()))
 
         result = await retriever.search("query", top_k=2, synthesize_response=False)
 
@@ -246,7 +232,7 @@ class TestDriftSynthesisFalse:
     @pytest.mark.asyncio
     async def test_synthesize_false_has_trace(self):
         store = FakeGraphStore()
-        retriever = DriftSearchRetriever(store, FakeLLM(), FakeEmbedder())
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()))
 
         result = await retriever.search("query", top_k=2, synthesize_response=False)
 
@@ -257,7 +243,7 @@ class TestDriftCommunityLevelAliases:
     @pytest.mark.asyncio
     async def test_coarsest_alias_resolves(self):
         store = FakeGraphStore()
-        retriever = DriftSearchRetriever(store, FakeLLM(), FakeEmbedder())
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()))
 
         await retriever.search("query", top_k=2, community_level="coarsest")
 
@@ -270,7 +256,7 @@ class TestDriftCommunityLevelAliases:
     @pytest.mark.asyncio
     async def test_finest_alias_resolves(self):
         store = FakeGraphStore()
-        retriever = DriftSearchRetriever(store, FakeLLM(), FakeEmbedder())
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()))
 
         await retriever.search("query", top_k=2, community_level="finest")
 
@@ -283,7 +269,7 @@ class TestDriftCommunityLevelAliases:
     @pytest.mark.asyncio
     async def test_explicit_level_override(self):
         store = FakeGraphStore()
-        retriever = DriftSearchRetriever(store, FakeLLM(), FakeEmbedder())
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()))
 
         await retriever.search("query", top_k=2, community_level=1)
 
@@ -297,7 +283,7 @@ class TestDriftFallback:
     @pytest.mark.asyncio
     async def test_fallback_when_no_report_embeddings(self):
         store = NoReportSearchStore()
-        retriever = DriftSearchRetriever(store, FakeLLM(), FakeEmbedder())
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()))
 
         result = await retriever.search("query", top_k=2)
 
@@ -308,7 +294,7 @@ class TestDriftFallback:
     @pytest.mark.asyncio
     async def test_fallback_when_no_reports(self):
         store = EmptyReportsGraphStore()
-        retriever = DriftSearchRetriever(store, FakeLLM(), FakeEmbedder())
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()))
 
         result = await retriever.search("query", top_k=2)
 
@@ -317,7 +303,7 @@ class TestDriftFallback:
     @pytest.mark.asyncio
     async def test_fallback_synthesize_false(self):
         store = NoReportSearchStore()
-        retriever = DriftSearchRetriever(store, FakeLLM(), FakeEmbedder())
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()))
 
         result = await retriever.search("query", top_k=2, synthesize_response=False)
 
@@ -328,7 +314,7 @@ class TestDriftFallback:
     @pytest.mark.asyncio
     async def test_fallback_citations_resolved(self):
         store = NoReportSearchStore()
-        retriever = DriftSearchRetriever(store, FakeLLM(), FakeEmbedder())
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()))
 
         result = await retriever.search("query", top_k=2)
 
@@ -364,10 +350,7 @@ class TestDriftPrimerJsonParsing:
                 })
             ]
         )
-        retriever = DriftSearchRetriever(
-            store, llm, FakeEmbedder(),
-            config=DriftSearchConfig(use_hyde=False),
-        )
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()), config=DriftSearchConfig(use_hyde=False),)
 
         result = await retriever.search("query", top_k=2)
 
@@ -387,10 +370,7 @@ class TestDriftPrimerJsonParsing:
                 + "\n```"
             ]
         )
-        retriever = DriftSearchRetriever(
-            store, llm, FakeEmbedder(),
-            config=DriftSearchConfig(use_hyde=False),
-        )
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()), config=DriftSearchConfig(use_hyde=False),)
 
         result = await retriever.search("query", top_k=2)
 
@@ -406,10 +386,7 @@ class TestDriftPrimerJsonParsing:
                 + "\nHope that helps!"
             ]
         )
-        retriever = DriftSearchRetriever(
-            store, llm, FakeEmbedder(),
-            config=DriftSearchConfig(use_hyde=False),
-        )
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()), config=DriftSearchConfig(use_hyde=False),)
 
         result = await retriever.search("query", top_k=2)
 
@@ -434,10 +411,7 @@ class TestDriftTraversal:
                 }),
             ]
         )
-        retriever = DriftSearchRetriever(
-            store, llm, FakeEmbedder(),
-            config=DriftSearchConfig(use_hyde=False),
-        )
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()), config=DriftSearchConfig(use_hyde=False),)
 
         result = await retriever.search("query", top_k=2)
 
@@ -464,7 +438,7 @@ class TestDriftTraversal:
             ]
         )
         config = DriftSearchConfig(min_expand_score=20.0, use_hyde=False)
-        retriever = DriftSearchRetriever(store, llm, FakeEmbedder(), config=config)
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()), config=config)
 
         result = await retriever.search("query", top_k=2)
 
@@ -478,10 +452,7 @@ class TestDriftConversationHistory:
     async def test_conversation_history_in_prompt(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        retriever = DriftSearchRetriever(
-            store, llm, FakeEmbedder(),
-            config=DriftSearchConfig(use_hyde=False),
-        )
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()), config=DriftSearchConfig(use_hyde=False),)
 
         await retriever.search("query", top_k=2, conversation_history="User: Hi\nAssistant: Hello")
 
@@ -502,14 +473,14 @@ class TestDriftPromptCustomization:
             ]
         )
         custom_prompt = "CUSTOM REDUCE: {query}\n{action_context}\n{conversation_history}"
-        retriever = DriftSearchRetriever(
-            store, llm, FakeEmbedder(), reduce_prompt=custom_prompt,
-            config=DriftSearchConfig(use_hyde=False),
-        )
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()), reduce_prompt=custom_prompt,
+        config=DriftSearchConfig(use_hyde=False),)
 
         result = await retriever.search("query", top_k=2)
 
         assert result.answer
+        # The custom prompt must actually reach the LLM, not just the answer.
+        assert any("CUSTOM REDUCE:" in prompt for prompt in llm.prompts)
 
 
 class TestDriftLimitsAndRepair:
@@ -526,10 +497,7 @@ class TestDriftLimitsAndRepair:
                 }),
             ]
         )
-        result = await DriftSearchRetriever(
-            FakeGraphStore(), llm, FakeEmbedder(),
-            config=DriftSearchConfig(use_hyde=False),
-        ).search("query")
+        result = await DriftSearchRetriever(cast(Any, FakeGraphStore()), cast(Any, llm), cast(Any, FakeEmbedder()), config=DriftSearchConfig(use_hyde=False),).search("query")
 
         assert "invalid JSON" in llm.prompts[1]
         assert result.metadata["drift_trace"]["total_llm_calls"] == 3
@@ -551,9 +519,7 @@ class TestDriftLimitsAndRepair:
             ]
         )
         config = DriftSearchConfig(max_llm_calls=2, action_concurrency=3, use_hyde=False)
-        result = await DriftSearchRetriever(
-            FakeGraphStore(), llm, FakeEmbedder(), config=config
-        ).search("query")
+        result = await DriftSearchRetriever(cast(Any, FakeGraphStore()), cast(Any, llm), cast(Any, FakeEmbedder()), config=config).search("query")
 
         trace = result.metadata["drift_trace"]
         assert trace["total_llm_calls"] == 2
@@ -564,12 +530,185 @@ class TestDriftLimitsAndRepair:
     async def test_config_community_level_is_used_when_constructor_omits_it(self):
         store = FakeGraphStore()
         config = DriftSearchConfig(community_level="finest", use_hyde=False)
-        await DriftSearchRetriever(
-            store, FakeLLM(), FakeEmbedder(), config=config
-        ).search("query")
+        await DriftSearchRetriever(cast(Any, store), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()), config=config).search("query")
 
         report_call = next(
             call for call in store.calls
             if call[0] == "vector_search_community_reports"
         )
         assert report_call[1]["level"] == 2
+
+
+class MixedFakeGraphStore(FakeGraphStore):
+    """Fake store with the lookups MixedContextBuilder needs to pack evidence."""
+
+    def get_claims_for_entities(self, graph_name, entity_ids):
+        return []
+
+    def execute_query(self, query, parameters=None):
+        params = parameters or {}
+        self.calls.append(
+            ("execute_query", {"query": query.strip()[:60], "params": params})
+        )
+        if "RETURN max(c.level) AS level" in query:
+            return [{"level": 2}]
+        if "Chunk" in query and "FROM_CHUNK" in query:
+            return [
+                {
+                    "chunk_id": "chunk:1",
+                    "text": "Alice directed Inception in 2010.",
+                    "linked_entities": ["a"],
+                }
+            ]
+        return []
+
+
+class BrokenCitationStore(MixedFakeGraphStore):
+    """Fails citation resolution; the driver text must never surface raw."""
+
+    def resolve_chunk_citations(self, graph_name, chunk_ids):
+        raise RuntimeError("driver said: password=hunter2")
+
+
+def _follow_up_llm():
+    return FakeLLM(
+        responses=[
+            json.dumps(
+                {
+                    "answer": "Alice directed Inception.",
+                    "score": 90,
+                    "follow_ups": ["What else did Alice direct?"],
+                    "report_ids": [],
+                }
+            ),
+            json.dumps({"answer": "Only Inception.", "score": 40, "follow_ups": []}),
+        ]
+    )
+
+
+def _citation_failures(result):
+    return [
+        failure
+        for failure in result.metadata["drift_trace"]["failures"]
+        if isinstance(failure, dict) and failure.get("code") == "citation_resolution_failed"
+    ]
+
+
+class TestDriftCitationDegradation:
+    @pytest.mark.asyncio
+    async def test_action_records_citation_warning_non_mixed(self):
+        retriever = DriftSearchRetriever(cast(Any, BrokenCitationStore()), cast(Any, _follow_up_llm()), cast(Any, FakeEmbedder()), config=DriftSearchConfig(
+            use_hyde=False, action_use_mixed_context=False, max_depth=1
+        ),)
+
+        result = await retriever.search("Who directed Inception?", top_k=2)
+
+        failures = _citation_failures(result)
+        assert failures
+        assert all(failure["stage"] in {"chunk", "reference"} for failure in failures)
+        assert result.metadata["citation_warnings"] == failures
+        assert "hunter2" not in str(failures)
+        # Degraded citations must not abort the action.
+        assert result.metadata["drift_trace"]["actions"][-1]["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_action_records_citation_warning_mixed(self):
+        retriever = DriftSearchRetriever(cast(Any, BrokenCitationStore()), cast(Any, _follow_up_llm()), cast(Any, FakeEmbedder()), config=DriftSearchConfig(
+            use_hyde=False, action_use_mixed_context=True, max_depth=1
+        ),)
+
+        result = await retriever.search("Who directed Inception?", top_k=2)
+
+        failures = _citation_failures(result)
+        assert failures
+        assert "hunter2" not in str(failures)
+        assert result.metadata["drift_trace"]["actions"][-1]["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_mixed_action_applies_citation_metadata_option(self):
+        store = MixedFakeGraphStore()
+        llm = _follow_up_llm()
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()), config=DriftSearchConfig(
+            use_hyde=False, action_use_mixed_context=True, max_depth=1
+        ),)
+
+        await retriever.search(
+            "Who directed Inception?",
+            top_k=2,
+            synthesize_citation_metadata=True,
+            synthesis_metadata_keys=["record_id"],
+        )
+
+        action_prompts = [p for p in llm.prompts if "## Local Context" in p]
+        assert action_prompts
+        assert any("=== Citation metadata ===" in prompt for prompt in action_prompts)
+
+
+class PackedContextStore(FakeGraphStore):
+    """Entity lookup yields chunk:1 while the builder packs chunk:packed."""
+
+    def get_claims_for_entities(self, graph_name, entity_ids):
+        return []
+
+    def execute_query(self, query, parameters=None):
+        if "RETURN max(c.level) AS level" in query:
+            return [{"level": 2}]
+        if "Chunk" in query and "FROM_CHUNK" in query:
+            return [{
+                "chunk_id": "chunk:packed",
+                "text": "Alice directed Inception in 2010.",
+                "linked_entities": ["a"],
+            }]
+        return []
+
+    def resolve_chunk_citations(self, graph_name, chunk_ids):
+        self.resolutions.append(list(chunk_ids))
+        return [
+            {
+                "document_id": "doc:1",
+                "chunk_id": chunk_id,
+                "document_name": "Doc 1",
+                "excerpt": "Alice directed Inception in 2010.",
+                "document_metadata": {"collection": "movies"},
+                "chunk_metadata": {"record_id": "row-42", "source": "row-source"},
+            }
+            for chunk_id in chunk_ids
+        ]
+
+    def __init__(self):
+        super().__init__()
+        self.resolutions: list[list[str]] = []
+
+
+class TestDriftMixedCitations:
+    @pytest.mark.asyncio
+    async def test_mixed_action_keeps_builder_citations(self):
+        """Final citations must reflect the evidence the builder actually packed."""
+        store = PackedContextStore()
+        retriever = DriftSearchRetriever(
+            cast(Any, store), cast(Any, _follow_up_llm()), cast(Any, FakeEmbedder()),
+            config=DriftSearchConfig(
+                use_hyde=False, action_use_mixed_context=True, max_depth=1
+            ),
+        )
+
+        result = await retriever.search("Who directed Inception?", top_k=2)
+
+        assert [citation.chunk_id for citation in result.citations] == ["chunk:packed"]
+        # The first resolution is the builder's: no preliminary chunk lookup.
+        assert store.resolutions[0] == ["chunk:packed"]
+
+    @pytest.mark.asyncio
+    async def test_non_mixed_action_resolves_entity_chunks(self):
+        store = PackedContextStore()
+        retriever = DriftSearchRetriever(
+            cast(Any, store), cast(Any, _follow_up_llm()), cast(Any, FakeEmbedder()),
+            config=DriftSearchConfig(
+                use_hyde=False, action_use_mixed_context=False, max_depth=1
+            ),
+        )
+
+        result = await retriever.search("Who directed Inception?", top_k=2)
+
+        assert store.resolutions[0] == ["chunk:1"]
+        assert "chunk:1" in [citation.chunk_id for citation in result.citations]

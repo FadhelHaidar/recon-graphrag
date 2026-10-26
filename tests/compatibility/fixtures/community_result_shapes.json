@@ -30,7 +30,9 @@
         "output_tokens": "int"
       }
     ],
-    "embedded_reports": "int"
+    "embedded_reports": "int",
+    "status": "str",
+    "maintenance_warnings": []
   },
   "True": {
     "communities": "int",
@@ -82,6 +84,8 @@
           "estimated_calls": "int"
         }
       }
-    }
+    },
+    "status": "str",
+    "maintenance_warnings": []
   }
 }

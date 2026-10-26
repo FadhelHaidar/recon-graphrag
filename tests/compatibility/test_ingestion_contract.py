@@ -1,5 +1,6 @@
 """Successful ingestion contracts through the public, duck-typed extension seam."""
 
+import hashlib
 import json
 from typing import Any, cast
 
@@ -42,7 +43,7 @@ class ExtractionLLM:
     async def ainvoke(self, prompt):
         return LLMResponse(content=json.dumps({
             "nodes": [
-                {"id": "p1", "label": "Person", "properties": {"name": "Alice"}},
+                {"id": "p1", "label": "Person", "properties": {"name": "Alice", "canonical_key": "Person:Alice"}},
                 {"id": "m1", "label": "Movie", "properties": {"title": "Inception"}},
             ],
             "relationships": [{"source_id": "p1", "target_id": "m1", "type": "DIRECTED"}],
@@ -89,16 +90,20 @@ class SynchronousStore(FakeGraphStore):
 @pytest.fixture
 def schema():
     return GraphSchema(
-        [NodeType("Person", properties=[PropertyType("name")]),
+        [NodeType("Person", properties=[PropertyType("name"), PropertyType("canonical_key")]),
          NodeType("Movie", properties=[PropertyType("title")], identity_property="title")],
         [RelationshipType("DIRECTED"), RelationshipType("MENTIONS")],
         [("Person", "DIRECTED", "Movie"), ("Person", "MENTIONS", "Movie")],
     )
 
 
+def _hashed_doc_id(source):
+    return "doc:" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+
+
 def assert_result(result, store, writer, index, source, chunks, *, llm_rows=None, finalize=True):
     extraction = {
-        "document_id": f"doc:{source}",
+        "document_id": _hashed_doc_id(source),
         "chunks": chunks,
         "write_stats": writer.results[index],
     }
@@ -112,7 +117,7 @@ def assert_result(result, store, writer, index, source, chunks, *, llm_rows=None
     if finalize:
         assert result["validation"] is store.validation
     document = writer.documents[index]
-    assert document.document.id == f"doc:{source}"
+    assert document.document.id == _hashed_doc_id(source)
     assert document.document.graph_name == "compat-graph"
     assert len(document.document.text_hash) == 64
     assert all(chunk.document_id == document.document.id for chunk in document.chunks)
@@ -163,11 +168,13 @@ async def test_text_documents_rows_preserve_results_and_writer_dispatch(schema, 
             {"text": "Alice made a movie.", "metadata": {"source": "Document"}},
             {"pages": ["Page one", "Page two", "Page three"], "metadata": {"source": "Pages"}},
         ], **chunking)
-    assert_result(text_result, store, writer, 0, "text", 1)
+    assert_result(text_result, store, writer, 0, "Text", 1)
     assert len(documents) == 2
-    assert_result(documents[0], store, writer, 1, "document", 1)
-    assert_result(documents[1], store, writer, 2, "pages", 2)
-    assert [chunk.id for chunk in writer.documents[0].chunks] == ["doc:text:chunk:0"]
+    assert_result(documents[0], store, writer, 1, "Document", 1)
+    assert_result(documents[1], store, writer, 2, "Pages", 2)
+    assert [chunk.id for chunk in writer.documents[0].chunks] == [
+        f"{_hashed_doc_id('Text')}:chunk:0",
+    ]
     assert counter.count_calls and counter.truncate_calls
 
     mapping = RowMapping(
@@ -179,7 +186,7 @@ async def test_text_documents_rows_preserve_results_and_writer_dispatch(schema, 
         row_result = await pipeline.build_from_rows(rows=rows, mapping=mapping, metadata={"source": "Rows"})
     else:
         row_result = await pipeline.build_from_rows(rows, mapping, {"source": "Rows"})
-    assert_result(row_result, store, writer, 3, "rows", 1, llm_rows=0)
+    assert_result(row_result, store, writer, 3, "Rows", 1, llm_rows=0)
     assert store.validation_calls == 3  # once per text, document batch, and rows
     assert len(writer.documents) == 4
     if injected_writer:
@@ -204,7 +211,7 @@ async def test_row_text_extension_without_finalize_preserves_result_shape(schema
     # Direct anchor and extracted Person have distinct IDs until resolution.
     assert set(result) == {"extraction"}
     assert result["extraction"] == {
-        "document_id": "doc:row-text", "chunks": 1, "llm_rows": 1,
+        "document_id": _hashed_doc_id("Row-text"), "chunks": 1, "llm_rows": 1,
         "write_stats": store.writer.results[0],
     }
     assert result["extraction"]["write_stats"] is store.writer.results[0]
@@ -247,13 +254,13 @@ async def test_ingestion_default_tracking_preserves_complete_usage_shape(schema,
         results = [await pipeline.build_from_text(
             "Alice made a movie.", {"source": "Text"}, **chunking,
         )]
-        sources = ["text"]
+        sources = ["Text"]
     elif entry_point == "documents":
         results = await pipeline.build_from_documents([
             {"text": "Alice made a movie.", "metadata": {"source": "Document"}},
             {"pages": ["Alice made a movie."], "metadata": {"source": "Pages"}},
         ], **chunking)
-        sources = ["document", "pages"]
+        sources = ["Document", "Pages"]
     else:
         mapping = RowMapping(
             [ColumnEntity("Person", "person"), ColumnEntity("Movie", "movie")],
@@ -264,7 +271,7 @@ async def test_ingestion_default_tracking_preserves_complete_usage_shape(schema,
             [{"person": "Alice", "movie": "Inception", "notes": "Alice made a movie."}],
             mapping, {"source": "Rows"}, extraction_schema=schema, max_gleanings=0,
         )]
-        sources = ["rows"]
+        sources = ["Rows"]
 
     totals_shape = {
         "calls": "int", "input_tokens": "int", "output_tokens": "int",
@@ -284,7 +291,7 @@ async def test_ingestion_default_tracking_preserves_complete_usage_shape(schema,
         else:
             assert _usage_leaf_types(result["token_usage"]) == expected_usage
         extraction = {
-            "document_id": f"doc:{source}", "chunks": 1,
+            "document_id": _hashed_doc_id(source), "chunks": 1,
             "write_stats": store.writer.results[index],
         }
         if entry_point in {"rows", "row-text"}:

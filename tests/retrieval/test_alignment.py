@@ -4,26 +4,30 @@ Covers: top_k_relationships, allow_general_knowledge, use_hyde,
 primer_folds, action_use_mixed_context.
 """
 
+# The fakes below implement only the members each test exercises, so they are
+# deliberately narrower than the GraphStore/BaseLLM/BaseEmbedder protocols.
+# pyright: reportArgumentType=false
+
 from __future__ import annotations
 
 import json
+from typing import Any, cast
 
 import pytest
 
 from recon_graphrag.llm import LLMResponse
-from recon_graphrag.retrieval.search_drift import DriftSearchRetriever
 from recon_graphrag.retrieval.drift_types import DriftSearchConfig
-from recon_graphrag.retrieval.search_global import GlobalSearchRetriever
 from recon_graphrag.retrieval.hybrid import RetrievalItem, RetrievalResult
+from recon_graphrag.retrieval.mixed_context import (
+    MixedContextBuilder,
+    MixedContextResult,
+)
+from recon_graphrag.retrieval.search_drift import DriftSearchRetriever
+from recon_graphrag.retrieval.search_global import GlobalSearchRetriever
 from recon_graphrag.retrieval.search_local import (
     LocalSearchRetriever,
     _format_entity_context,
 )
-
-
-# ---------------------------------------------------------------------------
-# Fakes
-# ---------------------------------------------------------------------------
 
 
 class FakeGraphStore:
@@ -127,11 +131,7 @@ class NoReportSearchStore(FakeGraphStore):
         raise RuntimeError("No such index")
 
 
-# ---------------------------------------------------------------------------
 # P1: top_k_relationships
-# ---------------------------------------------------------------------------
-
-
 class TestTopKRelationships:
     def test_format_entity_context_caps_relationships(self):
         """_format_entity_context respects top_k_relationships."""
@@ -228,7 +228,6 @@ class TestTopKRelationships:
         assert result.context.count("REL_") == 10
 
 
-
 def _make_gk_reports(n: int = 2) -> list[dict]:
     return [
         {"id": f"report:{i}:0", "level": 0, "report_text": f"Summary {i}."}
@@ -284,9 +283,10 @@ class TestAllowGeneralKnowledge:
             def __init__(self):
                 self.prompts = []
             async def ainvoke(self, prompt):
+                from unittest.mock import MagicMock
+
                 self.prompts.append(prompt)
                 if "Synthesize" in prompt or "Partial Answers" in prompt:
-                    from unittest.mock import MagicMock
                     return MagicMock(content="General knowledge answer.")
                 return MagicMock(content=_make_gk_map_response(0))
 
@@ -319,11 +319,7 @@ class TestAllowGeneralKnowledge:
         assert llm.call_count == 1
 
 
-# ---------------------------------------------------------------------------
 # P3: DRIFT HyDE, primer folds, action mixed context
-# ---------------------------------------------------------------------------
-
-
 class TestDriftHyDE:
     @pytest.mark.asyncio
     async def test_hyde_enabled_does_two_vector_searches(self):
@@ -455,6 +451,12 @@ class TestDriftPrimerFolds:
         assert len(folds) == 1
 
 
+class _EmptyRetrieverResult:
+    """Minimal stand-in for a retrieval result with no items."""
+
+    items: list = []
+
+
 class TestDriftActionMixedContext:
     @pytest.mark.asyncio
     async def test_action_use_mixed_context_default_is_true(self):
@@ -467,13 +469,18 @@ class TestDriftActionMixedContext:
         """action_use_mixed_context=True creates MixedContextBuilder."""
         store = FakeGraphStore()
         retriever = DriftSearchRetriever(
-            store, FakeLLM(), FakeEmbedder(),
+            cast(Any, store), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()),
             config=DriftSearchConfig(use_hyde=False),
         )
+        assert retriever._mixed_context_builder is None
 
-        # Trigger a search that creates the builder
-        await retriever.search("query", top_k=2)
+        result = retriever._build_action_mixed_context(_EmptyRetrieverResult())
 
-        # If any actions ran with mixed context, builder should exist
-        # (it's created lazily in _build_action_mixed_context)
+        assert isinstance(retriever._mixed_context_builder, MixedContextBuilder)
+        assert isinstance(result, MixedContextResult)
+        assert result.max_tokens == retriever.config.action_mixed_context_tokens
 
+        # Lazily created once, then reused across actions.
+        builder = retriever._mixed_context_builder
+        retriever._build_action_mixed_context(_EmptyRetrieverResult())
+        assert retriever._mixed_context_builder is builder

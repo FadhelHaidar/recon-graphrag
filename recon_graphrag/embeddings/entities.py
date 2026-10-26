@@ -12,6 +12,12 @@ import logging
 from tqdm.asyncio import tqdm_asyncio
 
 from recon_graphrag.embeddings.base import BaseEmbedder
+from recon_graphrag.entity_text import (
+    embedder_fingerprint,
+    entity_embedding_fingerprint,
+    entity_embedding_text,
+    value_to_text,
+)
 from recon_graphrag.graphdb.base import GraphStore
 
 logger = logging.getLogger(__name__)
@@ -33,20 +39,28 @@ class EntityEmbedder:
         self.embedder = embedder
         self.graph_name = graph_name
         self.concurrency = concurrency
+        self.model_fingerprint = embedder_fingerprint(embedder)
 
     async def embed_entities(self, batch_size: int = 500):
         """Generate embeddings for entities without embeddings.
 
-        Loops until all unembedded entities are processed.
+        Loops until every entity has an embedding whose fingerprints match the
+        text and model in use, so changed entities are re-embedded.
         Embeds entities concurrently up to ``self.concurrency`` at a time,
         then batch-upserts all embeddings at once.
         """
         total = 0
         semaphore = asyncio.Semaphore(self.concurrency)
         last_batch_ids: frozenset | None = None
+        model_fingerprint = self.model_fingerprint
 
         while True:
-            entities = self.graph_store.get_unembedded_entities(limit=batch_size)
+            entities = await asyncio.to_thread(
+                self.graph_store.get_unembedded_entities,
+                graph_name=self.graph_name,
+                limit=batch_size,
+                model_fingerprint=model_fingerprint,
+            )
             if not entities:
                 break
 
@@ -69,11 +83,15 @@ class EntityEmbedder:
             async def _embed(entity: dict):
                 async with semaphore:
                     try:
-                        text = self._entity_to_text(entity)
+                        text = entity_embedding_text(
+                            labels=entity.get("labels"),
+                            name=entity.get("name", ""),
+                            description=entity.get("description", ""),
+                        )
                         embedding = await self.embedder.async_embed_query(text)
-                        return entity["id"], embedding
-                    except Exception as e:
-                        return e
+                        return entity["id"], embedding, text
+                    except Exception as embed_error:
+                        return embed_error
 
             results = await tqdm_asyncio.gather(
                 *[_embed(e) for e in entities],
@@ -81,54 +99,45 @@ class EntityEmbedder:
                 disable=None,
             )
 
-            ids, embeddings = [], []
-            for entity, result in zip(entities, results):
+            ids, embeddings, fingerprints = [], [], []
+            for entity, result in zip(entities, results, strict=True):
                 if isinstance(result, Exception):
-                    name = self._value_to_text(
-                        entity.get("name", entity.get("description", ""))
+                    # Entity ids are uuid5 URNs, so the warning stays traceable
+                    # without putting names or provider payloads in logs.
+                    logger.warning(
+                        "error embedding entity id=%s type=%s",
+                        entity["id"],
+                        type(result).__name__,
                     )
-                    logger.warning("error embedding entity '%s': %s", name, result)
+                    logger.debug(
+                        "error embedding entity id=%s name=%s: %s",
+                        entity["id"],
+                        value_to_text(entity.get("name", entity.get("description", ""))),
+                        result,
+                    )
                 elif result is not None:
                     ids.append(result[0])
                     embeddings.append(result[1])
+                    fingerprints.append(
+                        entity_embedding_fingerprint(
+                            labels=entity.get("labels"),
+                            name=entity.get("name", ""),
+                            description=entity.get("description", ""),
+                        )
+                    )
 
             if ids:
-                self.graph_store.upsert_vectors(ids, "embedding", embeddings)
+                await asyncio.to_thread(
+                    self.graph_store.upsert_vectors,
+                    ids,
+                    "embedding",
+                    embeddings,
+                    content_fingerprints=fingerprints,
+                    model_fingerprint=model_fingerprint,
+                )
                 total += len(ids)
 
         if total == 0:
             logger.info("all entities already have embeddings")
         else:
             logger.info("embedded %s entities", total)
-
-    @staticmethod
-    def _entity_to_text(entity: dict) -> str:
-        labels = entity.get("labels", [])
-        label = [lbl for lbl in labels if lbl != "__Entity__"]
-        label = label[0] if label else "Entity"
-        name = EntityEmbedder._value_to_text(entity.get("name", ""))
-        desc = EntityEmbedder._value_to_text(entity.get("description", ""))
-        parts = [f"{label}: {name}"]
-        if desc:
-            parts.append(desc)
-        return " - ".join(parts)
-
-    @staticmethod
-    def _value_to_text(value) -> str:
-        if value is None:
-            return ""
-        if isinstance(value, str):
-            return value
-        if isinstance(value, dict):
-            return ", ".join(
-                f"{key}: {EntityEmbedder._value_to_text(item)}"
-                for key, item in value.items()
-                if item is not None
-            )
-        if isinstance(value, (list, tuple, set)):
-            return ", ".join(
-                text
-                for item in value
-                if (text := EntityEmbedder._value_to_text(item))
-            )
-        return str(value)

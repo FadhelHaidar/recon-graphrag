@@ -1,5 +1,6 @@
 """Tests for GraphBuilderPipeline structured-data ingestion."""
 
+import hashlib
 import sqlite3
 from unittest.mock import AsyncMock, MagicMock
 
@@ -17,8 +18,11 @@ from recon_graphrag.extraction.structured import (
     TextColumn,
 )
 from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
+from tests.pipelines.test_graph_builder import FakeGraphStore, RealWriterFakeGraphStore
 
-from tests.pipelines.test_graph_builder import FakeGraphStore
+
+def _hashed_doc_id(source):
+    return "doc:" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
 
 
 ROWS = [
@@ -95,7 +99,7 @@ async def test_direct_only_makes_zero_llm_calls(mapping, fake_writer):
     assert "validation" in result
 
     doc = fake_writer.write_graph_document.call_args.args[0]
-    assert doc.document.id == "doc:orders"
+    assert doc.document.id == _hashed_doc_id("orders")
     assert [chunk.metadata["record_id"] for chunk in doc.chunks] == ["O-1", "O-2"]
 
     entities = {e.canonical_key: e for e in doc.entities}
@@ -168,15 +172,19 @@ async def test_text_columns_merge_llm_extraction_and_anchor(mapping, fake_writer
 
     doc = fake_writer.write_graph_document.call_args.args[0]
     entities = {e.canonical_key for e in doc.entities}
-    # Direct scoped keys plus LLM name-keyed entities (merged later by resolution).
-    assert entities == {"Company:Acme Corp", "Product:Widget", "Widget", "ChipCo"}
+    # Direct scoped keys plus LLM name-keyed entities. F7: the LLM's local IDs
+    # are document-scoped, so they stay separate from the structured rows here
+    # and merge later via resolution on real evidence.
+    llm_keys = entities - {"Company:Acme Corp", "Product:Widget"}
+    assert len(llm_keys) == 2
+    assert all(k.startswith(doc.document.id + ":") for k in llm_keys)
 
     mentions = [r for r in doc.relationships if r.type == "MENTIONS"]
     # Anchor edge to ChipCo; the self-link to "Widget" is skipped.
     assert len(mentions) == 1
     (mention,) = mentions
     assert mention.properties["source_canonical_key"] == "Product:Widget"
-    assert mention.properties["target_canonical_key"] == "ChipCo"
+    assert mention.properties["target_canonical_key"] in llm_keys
 
 
 @pytest.mark.asyncio
@@ -213,8 +221,8 @@ async def test_custom_extraction_schema_constrains_llm_pass(mapping, fake_writer
     doc = fake_writer.write_graph_document.call_args.args[0]
     keys = {e.canonical_key for e in doc.entities}
     # Component "AX-9" was dropped by the validator against the custom schema.
-    assert "AX-9" not in keys
-    assert "ChipCo" in keys
+    assert not any(k.endswith(":Component:AX-9") for k in keys)
+    assert any(k.endswith(":Company:ChipCo") for k in keys)
 
 
 @pytest.mark.asyncio
@@ -227,7 +235,7 @@ async def test_build_from_csv_and_sql(tmp_path, mapping, fake_writer):
         encoding="utf-8",
     )
     result = await pipeline.build_from_csv(path, mapping, finalize=False)
-    assert result["extraction"]["document_id"] == "doc:orders-csv"
+    assert result["extraction"]["document_id"] == _hashed_doc_id("orders.csv")
     assert result["extraction"]["chunks"] == 1
 
     connection = sqlite3.connect(":memory:")
@@ -391,3 +399,25 @@ async def test_row_text_provider_value_error_cannot_supply_parser_field_context(
     assert provider_message not in "".join(traceback.format_exception(caught.value))
     assert "field=" not in str(caught.value)
     fake_writer.write_graph_document.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_build_from_rows_rejects_reserved_metadata_without_writing(mapping):
+    store = RealWriterFakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=MagicMock(),
+        embedder=MagicMock(),
+        perform_entity_resolution=False,
+        embed_entities=False,
+        summarize_descriptions=False,
+    )
+
+    with pytest.raises(ValueError, match="DocumentRecord.metadata"):
+        await pipeline.build_from_rows(
+            [dict(row, notes="") for row in ROWS],
+            mapping,
+            metadata={"source": "orders", "id": "O-1"},
+        )
+
+    assert store.queries == []

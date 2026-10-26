@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import LiteralString, Optional, cast
 
 import neo4j
 
+from recon_graphrag.entity_text import entity_embedding_fingerprint
 from recon_graphrag.extraction.types import GraphDocument
 from recon_graphrag.graphdb.cypher import (
     cypher_string_literal,
     escape_cypher_identifier,
 )
 from recon_graphrag.graphdb.neo4j.index_manager import IndexManager
+from recon_graphrag.graphdb.store_base import BaseGraphStore, TransactionExecutor
 from recon_graphrag.models.types import IndexConfig
 from recon_graphrag.pipelines.writer import CypherGraphWriter
-from recon_graphrag.graphdb.store_base import BaseGraphStore
 
 
 class Neo4jGraphStore(BaseGraphStore):
@@ -23,7 +26,7 @@ class Neo4jGraphStore(BaseGraphStore):
     def __init__(
         self,
         driver: neo4j.Driver,
-        database: Optional[str] = None,
+        database: Optional[str] = None,  # noqa: UP045 - public signature compatibility
     ):
         self._driver = driver
         self._database = database
@@ -37,38 +40,47 @@ class Neo4jGraphStore(BaseGraphStore):
         return self._driver
 
     def execute_query(
-        self, query: str, parameters: Optional[dict] = None
+        self, query: str, parameters: Optional[dict] = None  # noqa: UP045 - public signature compatibility
     ) -> list[dict]:
         with self._driver.session(
             database=self._database,
             notifications_disabled_categories=["DEPRECATION", "UNRECOGNIZED", "HINT"],
         ) as session:
-            result = session.run(query, parameters or {})
+            # Driver typing narrows to LiteralString; built queries are
+            # parameterized with escaped identifiers only (trusted code).
+            result = session.run(cast(LiteralString, query), parameters or {})
             return [dict(record) for record in result]
 
-    # ------------------------------------------------------------------
-    # Write
-    # ------------------------------------------------------------------
+    @contextmanager
+    def _transaction(self) -> Iterator[TransactionExecutor]:
+        """Yield an executor on one transaction: commit, or roll back on error."""
+        with self._driver.session(
+            database=self._database,
+            notifications_disabled_categories=["DEPRECATION", "UNRECOGNIZED", "HINT"],
+        ) as session:
+            transaction = session.begin_transaction()
+            try:
+                yield TransactionExecutor(transaction)
+            except BaseException:
+                transaction.rollback()
+                raise
+            else:
+                transaction.commit()
+
     def write_graph_document(self, graph_document: GraphDocument) -> dict:
         writer = CypherGraphWriter(self)
         return writer.write_graph_document(graph_document)
 
-    # ------------------------------------------------------------------
-    # Indexes
-    # ------------------------------------------------------------------
     def create_indexes(
-        self, config: Optional[IndexConfig] = None, embedding_dim: int = 1536
+        self, config: Optional[IndexConfig] = None, embedding_dim: int = 1536  # noqa: UP045 - public signature compatibility
     ) -> None:
         mgr = IndexManager(self, embedding_dim=embedding_dim, index_config=config)
         mgr.create_indexes()
 
-    def drop_indexes(self, config: Optional[IndexConfig] = None) -> None:
+    def drop_indexes(self, config: Optional[IndexConfig] = None) -> None:  # noqa: UP045 - public signature compatibility
         mgr = IndexManager(self, index_config=config)
         mgr._drop_indexes()
 
-    # ------------------------------------------------------------------
-    # Entity resolution
-    # ------------------------------------------------------------------
     async def resolve_entities_exact(
         self,
         graph_name: str = "entity-graph",
@@ -91,6 +103,8 @@ class Neo4jGraphStore(BaseGraphStore):
         graph_name: str = "entity-graph",
         resolve_property: str = "name",
         dry_run: bool = False,
+        *,
+        conflict_properties: dict[str, list[str]] | list[str] | None = None,
     ) -> dict:
         from recon_graphrag.graphdb.neo4j.entity_resolution import (
             _Neo4jEntityResolver,
@@ -101,6 +115,7 @@ class Neo4jGraphStore(BaseGraphStore):
             graph_name=graph_name,
             resolve_property=resolve_property,
             dry_run=dry_run,
+            conflict_properties=conflict_properties,
         )
 
     async def resolve_entities_fuzzy(
@@ -134,13 +149,13 @@ class Neo4jGraphStore(BaseGraphStore):
         merge_threshold: float = 95.0,
         review_threshold: float = 85.0,
         max_candidates_per_entity: int = 20,
-        aliases: Optional[dict] = None,
+        aliases: Optional[dict] = None,  # noqa: UP045 - public signature compatibility
         embedder=None,
         llm=None,
-        llm_guidance: Optional[str] = None,
+        llm_guidance: Optional[str] = None,  # noqa: UP045 - public signature compatibility
         allow_ai_auto_merge: bool = False,
-        context_properties: Optional[dict[str, list[str]] | list[str]] = None,
-        conflict_properties: Optional[dict[str, list[str]] | list[str]] = None,
+        context_properties: Optional[dict[str, list[str]] | list[str]] = None,  # noqa: UP045 - public signature compatibility
+        conflict_properties: Optional[dict[str, list[str]] | list[str]] = None,  # noqa: UP045 - public signature compatibility
         context_mode: str = "safe_defaults",
     ) -> dict:
         from recon_graphrag.graphdb.neo4j.entity_resolution import (
@@ -165,9 +180,6 @@ class Neo4jGraphStore(BaseGraphStore):
             context_mode=context_mode,
         )
 
-    # ------------------------------------------------------------------
-    # Embeddings
-    # ------------------------------------------------------------------
     def create_vector_index(
         self,
         name: str,
@@ -210,6 +222,9 @@ class Neo4jGraphStore(BaseGraphStore):
         node_ids: list[str],
         embedding_property: str,
         vectors: list[list[float]],
+        *,
+        content_fingerprints: list[str] | None = None,
+        model_fingerprint: str | None = None,
     ) -> None:
         """Batch upsert vector embeddings onto nodes matched by elementId().
 
@@ -218,36 +233,90 @@ class Neo4jGraphStore(BaseGraphStore):
         """
         if len(node_ids) != len(vectors):
             raise ValueError("node_ids and vectors must have the same length")
+        if content_fingerprints is not None and len(content_fingerprints) != len(node_ids):
+            raise ValueError("node_ids and content_fingerprints must have the same length")
         if not node_ids:
             return
 
         rows = [
-            {"id": node_id, "vector": vector}
-            for node_id, vector in zip(node_ids, vectors)
+            {
+                "id": node_id,
+                "vector": vector,
+                "content_fingerprint": fingerprint,
+            }
+            for node_id, vector, fingerprint in zip(
+                node_ids,
+                vectors,
+                content_fingerprints or [None] * len(node_ids),
+                strict=True,
+            )
         ]
+        # NULL expected input also occurs after summarization; validate its text
+        # and compare the snapshot again in the write, not just in this read.
+        if content_fingerprints is not None:
+            legacy_inputs = self.execute_query(
+                """
+                MATCH (n)
+                WHERE elementId(n) IN $node_ids
+                  AND n.embedding_input_fingerprint IS NULL
+                RETURN elementId(n) AS id, labels(n) AS labels,
+                       n.name AS name, n.description AS description
+                """,
+                {"node_ids": node_ids},
+            )
+            snapshots = {node["id"]: node for node in legacy_inputs}
+            for row in rows:
+                snapshot = snapshots.get(row["id"])
+                if snapshot is not None and entity_embedding_fingerprint(
+                    labels=snapshot["labels"],
+                    name=snapshot["name"],
+                    description=snapshot["description"],
+                ) == row["content_fingerprint"]:
+                    row["legacy_input"] = snapshot
+
         self.execute_query(
             """
             UNWIND $rows AS row
             MATCH (n)
             WHERE elementId(n) = row.id
+            // Acquire the write lock before checking freshness; plain self-assignment does not lock.
+            SET n.embedding_input_fingerprint = n.embedding_input_fingerprint + ''
+            WITH n, row
+            WHERE (row.content_fingerprint IS NULL
+                   OR n.embedding_input_fingerprint = row.content_fingerprint
+                   OR (n.embedding_input_fingerprint IS NULL
+                       AND row.legacy_input IS NOT NULL
+                       AND labels(n) = row.legacy_input.labels
+                       AND (n.name = row.legacy_input.name
+                            OR (n.name IS NULL AND row.legacy_input.name IS NULL))
+                       AND (n.description = row.legacy_input.description
+                            OR (n.description IS NULL AND row.legacy_input.description IS NULL))))
+            SET n.embedding_content_fingerprint = row.content_fingerprint,
+                n.embedding_input_fingerprint = coalesce(n.embedding_input_fingerprint, row.content_fingerprint),
+                n.embedding_model_fingerprint = $model_fingerprint
+            WITH n, row
             CALL db.create.setNodeVectorProperty(n, $embedding_property, row.vector)
             RETURN count(n) AS updated_count
             """,
-            {"rows": rows, "embedding_property": embedding_property},
+            {
+                "rows": rows,
+                "embedding_property": embedding_property,
+                "model_fingerprint": model_fingerprint,
+            },
         )
 
-    # ------------------------------------------------------------------
-    # Search
-    # ------------------------------------------------------------------
     def vector_search(
         self,
         index_name: str,
         query_vector: list[float],
         k: int,
-        label: Optional[str] = None,
-        filters: Optional[dict] = None,
+        label: Optional[str] = None,  # noqa: UP045 - public signature compatibility
+        filters: Optional[dict] = None,  # noqa: UP045 - public signature compatibility
     ) -> list[dict]:
         filters = filters or {}
+        # Post-filtering by label/graph narrows global candidates; over-fetch so
+        # foreign-graph rows cannot consume the whole candidate window.
+        overfetch_k = max(k * 5, k) if label or filters.get("graph_name") else k
         conditions: list[str] = []
         if label:
             conditions.append(f"node:{escape_cypher_identifier(label)}")
@@ -266,7 +335,7 @@ class Neo4jGraphStore(BaseGraphStore):
             query,
             {
                 "index_name": index_name,
-                "k": k,
+                "k": overfetch_k,
                 "top_k": k,
                 "query_vector": query_vector,
                 "graph_name": filters.get("graph_name"),
@@ -278,10 +347,13 @@ class Neo4jGraphStore(BaseGraphStore):
         index_name: str,
         query_text: str,
         k: int,
-        label: Optional[str] = None,
-        filters: Optional[dict] = None,
+        label: Optional[str] = None,  # noqa: UP045 - public signature compatibility
+        filters: Optional[dict] = None,  # noqa: UP045 - public signature compatibility
     ) -> list[dict]:
         filters = filters or {}
+        # Post-filtering by label/graph narrows global candidates; over-fetch so
+        # foreign-graph rows cannot consume the whole candidate window.
+        overfetch_k = max(k * 5, k) if label or filters.get("graph_name") else k
         conditions: list[str] = []
         if label:
             conditions.append(f"node:{escape_cypher_identifier(label)}")
@@ -305,7 +377,7 @@ class Neo4jGraphStore(BaseGraphStore):
             {
                 "index_name": index_name,
                 "query_text": query_text,
-                "k": k,
+                "k": overfetch_k,
                 "top_k": k,
                 "graph_name": filters.get("graph_name"),
             },
@@ -314,21 +386,36 @@ class Neo4jGraphStore(BaseGraphStore):
     def fetch_entity_context(
         self,
         matches: list[dict],
-        retrieval_query: Optional[str] = None,
-        query_params: Optional[dict] = None,
+        retrieval_query: Optional[str] = None,  # noqa: UP045 - public signature compatibility
+        query_params: Optional[dict] = None,  # noqa: UP045 - public signature compatibility
         mode: str = "local",
         graph_name: str | None = None,
     ) -> list[dict]:
+        from recon_graphrag.retrieval._queries import set_retrieval_limit_defaults
         from recon_graphrag.retrieval.neo4j.queries import (
             DEFAULT_DRIFT_RETRIEVAL_QUERY,
             DEFAULT_LOCAL_RETRIEVAL_QUERY,
+            DRIFT_RETRIEVAL_QUERY_RANKED_SOURCES,
+            LOCAL_RETRIEVAL_QUERY_RANKED_SOURCES,
         )
+
+        # A query vector switches source-chunk selection from id order to
+        # relevance ranking; without one the previous behavior is unchanged.
+        rank_sources = bool((query_params or {}).get("query_vector"))
 
         if retrieval_query is None:
             if mode == "drift":
-                retrieval_query = DEFAULT_DRIFT_RETRIEVAL_QUERY
+                retrieval_query = (
+                    DRIFT_RETRIEVAL_QUERY_RANKED_SOURCES
+                    if rank_sources
+                    else DEFAULT_DRIFT_RETRIEVAL_QUERY
+                )
             elif mode == "local":
-                retrieval_query = DEFAULT_LOCAL_RETRIEVAL_QUERY
+                retrieval_query = (
+                    LOCAL_RETRIEVAL_QUERY_RANKED_SOURCES
+                    if rank_sources
+                    else DEFAULT_LOCAL_RETRIEVAL_QUERY
+                )
             else:
                 raise ValueError(f"mode must be 'local' or 'drift', got {mode!r}")
 
@@ -344,6 +431,7 @@ class Neo4jGraphStore(BaseGraphStore):
         if query_params:
             for key, value in query_params.items():
                 parameters.setdefault(key, value)
+        set_retrieval_limit_defaults(parameters)
         return self.execute_query(query, parameters)
 
     def vector_search_community_reports(
@@ -381,19 +469,16 @@ class Neo4jGraphStore(BaseGraphStore):
             },
         )
 
-    # ------------------------------------------------------------------
-    # Communities
-    # ------------------------------------------------------------------
     def detect_communities(
         self,
         graph_name: str,
-        relationship_types: Optional[list[str]] = None,
+        relationship_types: Optional[list[str]] = None,  # noqa: UP045 - public signature compatibility
         max_levels: int = 3,
         gamma: float = 1.0,
         theta: float = 0.01,
         tolerance: float = 1e-4,
-        relationship_weight_property: Optional[str] = None,
-        random_seed: Optional[int] = 42,
+        relationship_weight_property: Optional[str] = None,  # noqa: UP045 - public signature compatibility
+        random_seed: Optional[int] = 42,  # noqa: UP045 - public signature compatibility
         entity_label: str = "__Entity__",
         community_label: str = "Community",
     ) -> list[dict]:
@@ -414,16 +499,54 @@ class Neo4jGraphStore(BaseGraphStore):
         )
         return detector.detect()
 
-    def get_unembedded_entities(self, limit: int = 500) -> list[dict]:
+    def get_unembedded_entities(
+        self, graph_name: str, limit: int = 500, model_fingerprint: str | None = None
+    ) -> list[dict]:
         query = """
-        MATCH (e:__Entity__)
+        MATCH (e:__Entity__ {graph_name: $graph_name})
         WHERE e.embedding IS NULL
+           OR coalesce(e.embedding_content_fingerprint, '')
+              <> coalesce(e.embedding_input_fingerprint, '')
+           OR ($model_fingerprint IS NOT NULL
+               AND coalesce(e.embedding_model_fingerprint, '') <> $model_fingerprint)
         RETURN elementId(e) AS id, labels(e) AS labels,
                e.name AS name,
-               CASE WHEN e.description IS NOT NULL THEN e.description ELSE '' END AS description
+               CASE WHEN e.description IS NOT NULL THEN e.description ELSE '' END AS description,
+               e.embedding_content_fingerprint AS embedding_content_fingerprint,
+               e.embedding_model_fingerprint AS embedding_model_fingerprint
         LIMIT $limit
         """
-        return self.execute_query(query, {"limit": limit})
+        return self.execute_query(
+            query,
+            {
+                "graph_name": graph_name,
+                "limit": limit,
+                "model_fingerprint": model_fingerprint,
+            },
+        )
+
+    def get_unembedded_chunks(
+        self, graph_name: str, limit: int = 500, model_fingerprint: str | None = None
+    ) -> list[dict]:
+        query = """
+        MATCH (c:Chunk {graph_name: $graph_name})
+        WHERE c.text IS NOT NULL
+          AND (c.embedding IS NULL
+               OR ($model_fingerprint IS NOT NULL
+                   AND coalesce(c.embedding_model_fingerprint, '') <> $model_fingerprint))
+        RETURN elementId(c) AS id,
+               c.id AS chunk_id,
+               c.text AS text
+        LIMIT $limit
+        """
+        return self.execute_query(
+            query,
+            {
+                "graph_name": graph_name,
+                "limit": limit,
+                "model_fingerprint": model_fingerprint,
+            },
+        )
 
     def get_entities_needing_summary(
         self, graph_name: str, limit: int = 500
@@ -477,6 +600,10 @@ class Neo4jGraphStore(BaseGraphStore):
             e.description = CASE
                 WHEN row.description IS NULL THEN e.description
                 ELSE row.description
+            END,
+            e.embedding_input_fingerprint = CASE
+                WHEN row.description IS NULL THEN e.embedding_input_fingerprint
+                ELSE NULL
             END
         """
         self.execute_query(query, {"graph_name": graph_name, "summaries": summaries})
@@ -517,6 +644,27 @@ class Neo4jGraphStore(BaseGraphStore):
             {"graph_name": graph_name, "cid": community_id, "level": level},
         )
 
+    def fetch_community_member_graph(
+        self,
+        graph_name: str,
+        community_id: str,
+        level: int,
+        member_limit: int = 25,
+    ) -> list[dict]:
+        from recon_graphrag.retrieval.neo4j.queries import (
+            COMMUNITY_MEMBER_GRAPH_QUERY,
+        )
+
+        return self.execute_query(
+            COMMUNITY_MEMBER_GRAPH_QUERY,
+            {
+                "graph_name": graph_name,
+                "community_id": community_id,
+                "level": level,
+                "member_limit": member_limit,
+            },
+        )
+
     def get_child_community_reports(
         self,
         graph_name: str,
@@ -553,9 +701,6 @@ class Neo4jGraphStore(BaseGraphStore):
             {"keys": keys, "graph_name": graph_name, "top_k": top_k},
         )
 
-    # ------------------------------------------------------------------
-    # Stats / validation
-    # ------------------------------------------------------------------
     def backfill_descriptions(self) -> None:
         self.execute_query(
             "MATCH (e:__Entity__) WHERE e.description IS NULL SET e.description = ''"

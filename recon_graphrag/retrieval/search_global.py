@@ -26,16 +26,14 @@ from recon_graphrag.retrieval.community_levels import (
     CommunityLevelSelector,
     resolve_community_level,
 )
+from recon_graphrag.retrieval.graph_evidence import GraphEvidenceBuilder
 from recon_graphrag.utils.tokens import (
     ApproximateTokenCounter,
     TokenCounter,
 )
 
 
-# ---------------------------------------------------------------------------
 # Prompts
-# ---------------------------------------------------------------------------
-
 DEFAULT_MAP_PROMPT = """\
 You are answering a question using community reports from a knowledge graph.
 
@@ -94,9 +92,9 @@ GENERAL_KNOWLEDGE_INSTRUCTION = (
 )
 
 
-# ---------------------------------------------------------------------------
 # Data types
-# ---------------------------------------------------------------------------
+# Cypher LIMIT value used when no report limit is configured.
+_UNBOUNDED_ROWS = 2**31 - 1
 
 
 @dataclass
@@ -142,11 +140,6 @@ class GlobalSearchDiagnostics:
     elapsed_ms: int = 0
 
 
-# ---------------------------------------------------------------------------
-# Global search retriever
-# ---------------------------------------------------------------------------
-
-
 def _diag_to_dict(diag: GlobalSearchDiagnostics) -> dict:
     """Convert diagnostics to a plain dict for SearchResult.metadata."""
     return {
@@ -188,6 +181,8 @@ class GlobalSearchRetriever:
         reduce_budget_tokens: int = 12000,
         map_concurrency: int = 5,
         max_map_calls: int | None = None,
+        max_reports: int | None = None,
+        max_map_tokens: int | None = None,
         allow_general_knowledge: bool = False,
         track_token_usage: bool = True,
     ):
@@ -201,6 +196,8 @@ class GlobalSearchRetriever:
         self.reduce_budget_tokens = reduce_budget_tokens
         self.map_concurrency = map_concurrency
         self.max_map_calls = max_map_calls
+        self.max_reports = max_reports
+        self.max_map_tokens = max_map_tokens
         self.allow_general_knowledge = allow_general_knowledge
 
     async def search(
@@ -209,6 +206,7 @@ class GlobalSearchRetriever:
         community_level: CommunityLevelSelector,
         random_seed: int | None = 42,
         synthesize_response: bool = True,
+        include_graph_evidence: bool = False,
     ) -> SearchResult:
         """Run global search over community reports.
 
@@ -220,6 +218,10 @@ class GlobalSearchRetriever:
                 return scored partial answers in context with ``answer=""``.
                 Map LLM calls still run for relevance scoring and reference
                 extraction.
+            include_graph_evidence: When True, attach the member entities and
+                relationships of the community reports behind the partial
+                answers that reached the final reduce prompt (extra database
+                reads). Reports only mapped or read are not expanded.
         """
         with run_scope():
             start = time.monotonic()
@@ -245,8 +247,7 @@ class GlobalSearchRetriever:
 
             diag.selected_level = resolved_level
 
-            # 1. Read all reports at this level
-            reports = self._read_reports(resolved_level)
+            reports = self._read_reports(resolved_level, self.max_reports)
             diag.reports_available = len(reports)
 
             if not reports:
@@ -261,7 +262,6 @@ class GlobalSearchRetriever:
                     metadata=metadata,
                 )
 
-            # 2. Filter failed/empty reports
             reports = [r for r in reports if r.get("report_text", "").strip()]
             diag.reports_used = len(reports)
 
@@ -277,24 +277,20 @@ class GlobalSearchRetriever:
                     metadata=metadata,
                 )
 
-            # 3. Shuffle
             reports = self._shuffle(reports, random_seed)
 
-            # 4. Batch
-            batches = self._create_batches(query, reports)
+            batches = self._create_batches(
+                query,
+                reports,
+                max_batches=self.max_map_calls,
+                max_tokens=self.max_map_tokens,
+            )
             diag.map_batches = len(batches)
 
-            # Limit map calls if configured
-            if self.max_map_calls and len(batches) > self.max_map_calls:
-                batches = batches[: self.max_map_calls]
-                diag.map_batches = len(batches)
-
-            # 5. Map phase
             partials = await self._map_phase(query, batches)
             diag.map_succeeded = sum(1 for p in partials if p.error is None)
             diag.map_failed = sum(1 for p in partials if p.error is not None)
 
-            # 6. Filter score=0
             scored = [p for p in partials if p.error is None and p.helpfulness > 0]
             diag.map_filtered_zero = diag.map_succeeded - len(scored)
 
@@ -315,7 +311,6 @@ class GlobalSearchRetriever:
                 use_general_knowledge = True
                 scored = [p for p in partials if p.error is None]
 
-            # 7. Sort by helpfulness DESC
             scored.sort(key=lambda p: (-p.helpfulness, p.batch_id))
 
             # Build context from scored reports
@@ -329,7 +324,6 @@ class GlobalSearchRetriever:
             # Resolve citations from explicit map references and report-derived refs.
             citations = self._resolve_source_citations(diag, scored, resolved_level)
 
-            # 8. Reduce phase (skip when synthesize_response=False)
             if not synthesize_response:
                 diag.reduce_partials_used = 0
                 diag.elapsed_ms = int((time.monotonic() - start) * 1000)
@@ -339,6 +333,13 @@ class GlobalSearchRetriever:
                 token_usage = usage_snapshot(self.llm)
                 if token_usage is not None:
                     metadata["token_usage"] = token_usage
+                graph = (
+                    await self._graph_evidence(
+                        scored, resolved_level, synthesis_included=False
+                    )
+                    if include_graph_evidence
+                    else {}
+                )
                 return SearchResult(
                     query=query,
                     mode="global",
@@ -346,10 +347,22 @@ class GlobalSearchRetriever:
                     context=context,
                     metadata=metadata,
                     citations=citations,
+                    graph=graph,
                 )
 
-            answer = await self._reduce_phase(query, scored, use_general_knowledge=use_general_knowledge)
+            answer, retained_ids = await self._reduce_phase(
+                query, scored, use_general_knowledge=use_general_knowledge
+            )
             diag.reduce_partials_used = len(scored)
+            graph = (
+                await self._graph_evidence(
+                    [p for p in scored if p.batch_id in retained_ids],
+                    resolved_level,
+                    synthesis_included=True,
+                )
+                if include_graph_evidence
+                else {}
+            )
 
             diag.elapsed_ms = int((time.monotonic() - start) * 1000)
 
@@ -364,14 +377,43 @@ class GlobalSearchRetriever:
                 context=context,
                 metadata=metadata,
                 citations=citations,
+                graph=graph,
             )
 
-    # ------------------------------------------------------------------
-    # Report reading
-    # ------------------------------------------------------------------
+    async def _graph_evidence(
+        self,
+        partials: list[PartialAnswer],
+        level: int,
+        *,
+        synthesis_included: bool,
+    ) -> dict:
+        """Expand the reports behind ``partials`` into entities and edges."""
+        try:
+            report_ids = self._resolve_used_report_ids(partials)
+        except Exception:  # noqa: BLE001 - report selection is best effort
+            report_ids = []
+        builder = GraphEvidenceBuilder(
+            graph_name=self.graph_name, mode="global", graph_store=self.graph_store
+        )
+        await builder.expand_communities(
+            [{"community_id": rid, "level": level} for rid in report_ids],
+            origin="report",
+        )
+        builder.set_provenance(
+            retained_batches=sorted(p.batch_id for p in partials),
+            contributing_reports=report_ids,
+            community_level=level,
+            report_selection="map_reported_else_batch",
+            synthesis_included=synthesis_included,
+        )
+        return builder.build()
 
-    def _read_reports(self, level: int) -> list[dict]:
-        """Read all community reports at a given level."""
+
+    def _read_reports(
+        self, level: int, max_reports: int | None = None
+    ) -> list[dict]:
+        """Read community reports at a level, optionally bounded at the DB."""
+        report_limit = _UNBOUNDED_ROWS if max_reports is None else max_reports
         query = """
         MATCH (c:Community {graph_name: $graph_name, level: $level})
         WHERE coalesce(c.report_status, 'success') <> 'failed'
@@ -380,15 +422,18 @@ class GlobalSearchRetriever:
                c.level AS level,
                c.report_text AS report_text
         ORDER BY c.id
+        LIMIT $report_limit
         """
         return self.graph_store.execute_query(
-            query, {"graph_name": self.graph_name, "level": level}
+            query,
+            {
+                "graph_name": self.graph_name,
+                "level": level,
+                "report_limit": report_limit,
+            },
         )
 
-    # ------------------------------------------------------------------
     # Source citation resolution
-    # ------------------------------------------------------------------
-
     def _resolve_source_citations(
         self,
         diag: GlobalSearchDiagnostics,
@@ -401,7 +446,6 @@ class GlobalSearchRetriever:
         seen_refs: set[tuple[str, str]] = set()
         errors: list[str] = []
 
-        # 1. Collect explicit map references.
         for partial in scored:
             for ref in partial.references:
                 if not isinstance(ref, dict):
@@ -416,7 +460,6 @@ class GlobalSearchRetriever:
                 seen_refs.add(key)
                 references.append({"target_type": target_type, "target_id": target_id})
 
-        # 2. Resolve validated used report IDs.
         used_report_ids: list[str] = []
         try:
             used_report_ids = self._resolve_used_report_ids(scored)
@@ -425,7 +468,6 @@ class GlobalSearchRetriever:
 
         diag.source_report_ids_used = len(used_report_ids)
 
-        # 3. Read used reports and extract references.
         extracted_refs: list[dict] = []
         try:
             reports = self._read_report_references(resolved_level, used_report_ids)
@@ -448,7 +490,6 @@ class GlobalSearchRetriever:
                     f"reference extraction failed for {report.get('id')}: {e}"
                 )
 
-        # 4. Merge report-derived references with explicit references.
         for ref in extracted_refs:
             target_type = str(ref.get("target_type", "")).strip()
             target_id = str(ref.get("target_id", "")).strip()
@@ -462,7 +503,6 @@ class GlobalSearchRetriever:
 
         diag.source_references_extracted = len(references)
 
-        # 5. Resolve citations.
         citations: list[Citation] = []
         try:
             citations = resolve_reference_citations(
@@ -571,10 +611,7 @@ class GlobalSearchRetriever:
         return refs
 
 
-    # ------------------------------------------------------------------
     # Shuffling and batching
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _shuffle(reports: list[dict], seed: int | None) -> list[dict]:
         """Shuffle reports with a reproducible seed."""
@@ -583,8 +620,19 @@ class GlobalSearchRetriever:
         rng.shuffle(shuffled)
         return shuffled
 
-    def _create_batches(self, query: str, reports: list[dict]) -> list[MapBatch]:
-        """Pack reports into token-budgeted batches."""
+    def _create_batches(
+        self,
+        query: str,
+        reports: list[dict],
+        max_batches: int | None = None,
+        max_tokens: int | None = None,
+    ) -> list[MapBatch]:
+        """Pack reports into token-budgeted batches.
+
+        ``max_tokens`` caps the sum of complete formatted map prompts, using
+        the configured token counter. Stop before the first batch that cannot
+        fit; do not partially send it. Both caps are off by default.
+        """
         counter = self.token_counter
 
         # Reserve tokens for prompt template and query
@@ -599,9 +647,32 @@ class GlobalSearchRetriever:
         current_texts: list[str] = []
         current_ids: list[str] = []
         current_tokens = 0
-        batch_idx = 0
+        total_tokens = 0
+
+        def append_batch() -> bool:
+            nonlocal total_tokens
+            text = "\n\n".join(current_texts)
+            prompt_tokens = counter.count(
+                self.map_prompt.format(query=query, batch_text=text)
+            )
+            if max_tokens is not None and total_tokens + prompt_tokens > max_tokens:
+                return False
+            batches.append(
+                MapBatch(
+                    batch_id=str(len(batches)),
+                    report_ids=list(current_ids),
+                    text=text,
+                    token_count=current_tokens,
+                )
+            )
+            total_tokens += prompt_tokens
+            return True
 
         for report in reports:
+            if max_batches is not None and len(batches) >= max_batches:
+                break
+            if max_tokens is not None and total_tokens >= max_tokens:
+                break
             rid = str(report.get("id", ""))
             report_text = report.get("report_text", "")
             text = f"Report {rid}:\n{report_text}"
@@ -611,15 +682,10 @@ class GlobalSearchRetriever:
                 tokens = counter.count(text)
 
             if current_tokens + tokens > available and current_texts:
-                batches.append(
-                    MapBatch(
-                        batch_id=str(batch_idx),
-                        report_ids=list(current_ids),
-                        text="\n\n".join(current_texts),
-                        token_count=current_tokens,
-                    )
-                )
-                batch_idx += 1
+                if not append_batch():
+                    return batches
+                if max_batches is not None and len(batches) >= max_batches:
+                    return batches
                 current_texts = []
                 current_ids = []
                 current_tokens = 0
@@ -628,57 +694,66 @@ class GlobalSearchRetriever:
             current_ids.append(rid)
             current_tokens += tokens
 
-        if current_texts:
-            batches.append(
-                MapBatch(
-                    batch_id=str(batch_idx),
-                    report_ids=list(current_ids),
-                    text="\n\n".join(current_texts),
-                    token_count=current_tokens,
-                )
-            )
+        if current_texts and (max_batches is None or len(batches) < max_batches):
+            append_batch()
 
         return batches
 
-    # ------------------------------------------------------------------
     # Map phase
-    # ------------------------------------------------------------------
-
     async def _map_phase(
         self, query: str, batches: list[MapBatch]
     ) -> list[PartialAnswer]:
-        """Run map phase with bounded concurrency."""
-        semaphore = asyncio.Semaphore(self.map_concurrency)
+        """Run map phase with bounded concurrency and bounded pending work."""
 
         async def _process_batch(batch: MapBatch) -> PartialAnswer:
-            async with semaphore:
-                prompt = self.map_prompt.format(
-                    query=query, batch_text=batch.text
+            prompt = self.map_prompt.format(query=query, batch_text=batch.text)
+            try:
+                with token_stage("retrieval.global_map"):
+                    response = await self.llm.ainvoke(prompt)
+                data = self._parse_map_response(response.content)
+                return PartialAnswer(
+                    batch_id=batch.batch_id,
+                    answer=data.get("answer", ""),
+                    helpfulness=int(data.get("helpfulness", 0)),
+                    report_ids=data.get("report_ids", batch.report_ids),
+                    references=data.get("references", []),
+                    batch_report_ids=batch.report_ids,
                 )
-                try:
-                    with token_stage("retrieval.global_map"):
-                        response = await self.llm.ainvoke(prompt)
-                    data = self._parse_map_response(response.content)
-                    return PartialAnswer(
-                        batch_id=batch.batch_id,
-                        answer=data.get("answer", ""),
-                        helpfulness=int(data.get("helpfulness", 0)),
-                        report_ids=data.get("report_ids", batch.report_ids),
-                        references=data.get("references", []),
-                        batch_report_ids=batch.report_ids,
-                    )
-                except Exception as e:
-                    return PartialAnswer(
-                        batch_id=batch.batch_id,
-                        answer="",
-                        helpfulness=0,
-                        report_ids=batch.report_ids,
-                        batch_report_ids=batch.report_ids,
-                        error=str(e),
-                    )
+            except Exception as e:
+                return PartialAnswer(
+                    batch_id=batch.batch_id,
+                    answer="",
+                    helpfulness=0,
+                    report_ids=batch.report_ids,
+                    batch_report_ids=batch.report_ids,
+                    error=str(e),
+                )
 
-        tasks = [_process_batch(b) for b in batches]
-        return await asyncio.gather(*tasks, return_exceptions=False)
+        # Fixed workers over an iterator: pending map work is bounded by
+        # map_concurrency instead of one task per batch. Partial answers are
+        # written back by batch position, so ordering is unchanged.
+        partials: list[PartialAnswer] = []
+        pending = iter(list(enumerate(batches)))
+
+        async def _worker() -> None:
+            for position, batch in pending:
+                partials_by_position[position] = await _process_batch(batch)
+
+        partials_by_position: list[PartialAnswer | None] = [None] * len(batches)
+        workers = [
+            asyncio.create_task(_worker())
+            for _ in range(max(int(self.map_concurrency), 1))
+        ]
+        try:
+            await asyncio.gather(*workers)
+        finally:
+            for task in workers:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
+
+        partials = [p for p in partials_by_position if p is not None]
+        return partials
 
     def _parse_map_response(self, content: str) -> dict:
         """Parse map response JSON, stripping fences."""
@@ -733,18 +808,20 @@ class GlobalSearchRetriever:
                 return data
         raise ValueError("Map response did not contain a JSON object")
 
-    # ------------------------------------------------------------------
     # Reduce phase
-    # ------------------------------------------------------------------
-
     async def _reduce_phase(
         self, query: str, partials: list[PartialAnswer], *, use_general_knowledge: bool = False,
-    ) -> str:
-        """Synthesize partial answers into final answer."""
+    ) -> tuple[str, set[str]]:
+        """Synthesize partial answers into final answer.
+
+        Returns the answer and the batch ids actually packed into the reduce
+        prompt; partials past the token budget never reach synthesis.
+        """
         counter = self.token_counter
 
         # Build partial answer text, respecting token budget
         parts: list[str] = []
+        retained_ids: set[str] = set()
         used_tokens = 0
         prompt_overhead = counter.count(
             self.reduce_prompt.format(query=query, partial_text="")
@@ -762,6 +839,7 @@ class GlobalSearchRetriever:
             if used_tokens + tokens > available and parts:
                 break
             parts.append(text)
+            retained_ids.add(p.batch_id)
             used_tokens += tokens
 
         partial_text = "\n\n".join(parts)
@@ -773,4 +851,4 @@ class GlobalSearchRetriever:
         )
         with token_stage("retrieval.global_reduce"):
             response = await self.llm.ainvoke(prompt)
-        return response.content
+        return response.content, retained_ids

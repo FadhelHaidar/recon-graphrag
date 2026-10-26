@@ -8,6 +8,7 @@ Packing ensures context fits within LLM token budgets.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from recon_graphrag.utils.tokens import (
     ApproximateTokenCounter,
@@ -271,7 +272,7 @@ def _all_entities(context: CommunityContext) -> list[EntityContext]:
 def parse_community_context(
     community_id: str,
     level: int,
-    rows: list[dict],
+    rows: list[dict[str, Any]],
 ) -> CommunityContext:
     """Parse raw query rows into a typed CommunityContext.
 
@@ -301,7 +302,7 @@ def parse_community_context(
                 degree=row.get("e_degree", 0),
             )
 
-        if rel_type and other_id:
+        if rel_type and e_id and other_id:
             # Target entity
             if other_id not in entities:
                 entities[other_id] = EntityContext(

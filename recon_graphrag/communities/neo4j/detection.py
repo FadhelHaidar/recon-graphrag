@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from recon_graphrag.graphdb.base import GraphStore
+from recon_graphrag.graphdb.store_base import QueryExecutor, replacement_transaction
 
 
 DEFAULT_GRAPH_NAME = "entity-graph"
@@ -57,18 +58,20 @@ class CommunityDetector:
         """Run Leiden and create hierarchical Community nodes.
 
         Steps:
-        1. Clean up existing communities for this graph_name
-        2. Drop existing projection if it exists
-        3. Project the entity graph (undirected)
-        4. Run gds.leiden.stream with hierarchical levels
-        5. Create Community nodes for every Leiden level
-        6. Link entities to their community at every level
-        7. Build PARENT_COMMUNITY hierarchy between adjacent levels
-        8. Clean up the GDS projection
+        1. Drop existing projection if it exists
+        2. Project the entity graph (undirected)
+        3. Run gds.leiden.stream with hierarchical levels
+        4. Build every community, membership, and parent row
+        5. In one transaction: replace existing communities for this graph_name,
+           create Community nodes for every Leiden level, link entities at every
+           level, and build the PARENT_COMMUNITY hierarchy
+        6. Clean up the GDS projection
+
+        Existing communities survive any failure before the replacement
+        transaction commits.
 
         Returns list of {community_id, level, entity_count, child_community_count}.
         """
-        self._cleanup_communities()
         self._drop_projection()
         self._project_graph()
         try:
@@ -84,13 +87,15 @@ class CommunityDetector:
         """Escape labels, relationship types, and property names for Cypher."""
         return "`" + identifier.replace("`", "``") + "`"
 
-    def _cleanup_communities(self):
+    def _cleanup_communities(self, executor=None):
         community_label = self._escape_cypher_identifier(self.community_label)
         query = f"""
         MATCH (c:{community_label} {{graph_name: $graph_name}})
         DETACH DELETE c
         """
-        self.graph_store.execute_query(query, {"graph_name": self.graph_name})
+        (executor or self.graph_store).execute_query(
+            query, {"graph_name": self.graph_name}
+        )
 
     def _project_graph(self):
         entity_label = self._escape_cypher_identifier(self.entity_label)
@@ -252,12 +257,34 @@ class CommunityDetector:
         return compact_path
 
     def _write_community_hierarchy(self, leiden_results: list[dict[str, Any]]):
+        membership_rows, parent_edges = self._build_hierarchy_rows(leiden_results)
+
+        executor: QueryExecutor
+        with replacement_transaction(self.graph_store) as executor:
+            self._cleanup_communities(executor)
+            self._write_entity_memberships(membership_rows, executor)
+            self._write_parent_community_edges(parent_edges, executor)
+
+    def _build_hierarchy_rows(
+        self, leiden_results: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], set[tuple[str, int, str, int]]]:
+        """Build and validate every row before any write happens."""
         membership_rows = []
         parent_edges = set()
 
         for rec in leiden_results:
             path = self._normalize_community_path(rec)
-            entity_element_id = rec["entity_element_id"]
+            entity_element_id = rec.get("entity_element_id")
+            if not entity_element_id:
+                raise RuntimeError(
+                    "Leiden returned a community assignment without a node id; "
+                    "existing communities were left untouched."
+                )
+            if not path:
+                raise RuntimeError(
+                    "Leiden returned an empty community path; "
+                    "existing communities were left untouched."
+                )
             max_level = len(path) - 1
 
             for index, community_id in enumerate(path):
@@ -278,10 +305,12 @@ class CommunityDetector:
         if not membership_rows:
             raise RuntimeError("Leiden returned no community assignments.")
 
-        self._write_entity_memberships(membership_rows)
-        self._write_parent_community_edges(parent_edges)
+        membership_rows.sort(
+            key=lambda r: (r["level"], r["community_id"], r["entity_element_id"])
+        )
+        return membership_rows, parent_edges
 
-    def _write_entity_memberships(self, rows: list[dict[str, Any]]):
+    def _write_entity_memberships(self, rows: list[dict[str, Any]], executor=None):
         entity_label = self._escape_cypher_identifier(self.entity_label)
         community_label = self._escape_cypher_identifier(self.community_label)
         query = f"""
@@ -298,11 +327,13 @@ class CommunityDetector:
         MERGE (e)-[rel:IN_COMMUNITY]->(c)
         ON CREATE SET rel.created = timestamp()
         """
-        self.graph_store.execute_query(
+        (executor or self.graph_store).execute_query(
             query, {"rows": rows, "graph_name": self.graph_name}
         )
 
-    def _write_parent_community_edges(self, parent_edges: set[tuple[str, int, str, int]]):
+    def _write_parent_community_edges(
+        self, parent_edges: set[tuple[str, int, str, int]], executor=None
+    ):
         if not parent_edges:
             return
 
@@ -332,7 +363,7 @@ class CommunityDetector:
         MERGE (child)-[rel:PARENT_COMMUNITY]->(parent)
         ON CREATE SET rel.created = timestamp()
         """
-        self.graph_store.execute_query(
+        (executor or self.graph_store).execute_query(
             query, {"rows": rows, "graph_name": self.graph_name}
         )
 

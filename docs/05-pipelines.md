@@ -137,6 +137,24 @@ same call.
 | `window_size` | `build_from_documents` page envelopes | Number of pages per window. Defaults to `2`. |
 | `window_overlap` | `build_from_documents` page envelopes | Number of pages shared between consecutive windows. Defaults to `1`. |
 
+#### What concurrency bounds, and what it does not
+
+`extraction_concurrency` and `document_concurrency` bound how much work runs
+**at once**. They do not bound the work a build does in total, and they do not
+bound memory.
+
+Internally a build uses a fixed pool of workers that pull from a shared queue,
+so a 10,000-document batch with `document_concurrency=2` keeps at most two
+documents in flight rather than creating 10,000 pending tasks. Still input-sized
+and unavoidable for a single call:
+
+- the `documents` / `rows` argument you pass in;
+- the returned result list, one entry per document;
+- one document's assembled extraction state, which is written once at the end.
+
+For bounded memory on very large corpora, call the build method repeatedly with
+smaller batches rather than passing one enormous list.
+
 ### Token-based chunking
 
 By default, `chunk_size` and `chunk_overlap` are measured in tokens using
@@ -231,14 +249,15 @@ How it works:
 | `llm` | An LLM instance from `create_llm()`. |
 | `embedder` | An embedder instance from `create_embedder()`. |
 | `graph_name` | Graph scope for all created nodes and relationships. Defaults to `"entity-graph"`. |
-| `graph_writer` | Optional `GraphWriter` implementation. When omitted, the pipeline writes directly to `graph_store`. |
+| `graph_writer` | Optional `GraphWriter` implementation. When omitted, the pipeline uses the shared `CypherGraphWriter` for Neo4j/Memgraph replacement semantics. |
 | `perform_entity_resolution` | When `True` (default), resolves duplicate entities after extraction. Set to `False` to skip resolution. |
 | `summarize_descriptions` | When `True` (default), runs a mandatory LLM pass after entity resolution to collapse raw entity and relationship `descriptions` arrays into scalar `description` summaries before embedding. |
 | `summarization_concurrency` | Maximum concurrent description summarization calls. Defaults to `5`. |
 | `summarization_limit` | Batch size for fetching unsummarized entities or relationships. Defaults to `500`. |
 | `embed_entities` | When `True` (default), embeds entity nodes after extraction and resolution. Set to `False` to skip embedding. |
+| `embed_chunks` | When `True`, also embeds source chunks after the build so search can rank source passages by similarity to the query. Defaults to `False`: it costs one embedding call per chunk and only affects which passages survive the retrieval-side source limit. See [Ranking source chunks](06-search.md#ranking-source-chunks). |
 | `fail_on_resolution_error` | When `True`, raises resolution errors instead of logging and continuing. Defaults to `False`. |
-| `fail_on_embedding_error` | When `True`, raises embedding errors instead of logging and continuing. Defaults to `False`. |
+| `fail_on_embedding_error` | When `True`, the build fails instead of logging and continuing when the embedding stage cannot complete: after the embedding pass the pipeline re-checks the graph and raises if any entity in the configured graph has a missing or stale embedding (for example, because input/model changed or the provider/vector write failed). Defaults to `False`. |
 
 ### `GraphBuilderPipeline` entity resolution parameters
 
@@ -287,6 +306,8 @@ pipeline = GraphBuilderPipeline(
     allow_ai_auto_merge=True,
 )
 ```
+
+The default `normalized` strategy also applies configured conflict properties. Matching names without a known conflict remain a heuristic, not proof of identity. Extracted IDs such as `p1` are local to a chunk; absent a trusted canonical/domain key, observations get document-and-chunk-scoped persistent IDs and are left for resolution to merge.
 
 Conflict properties are conservative: missing values do not block a merge, but
 two non-empty unequal values do. Blocked candidates are returned in
@@ -391,12 +412,64 @@ Claims are automatically available downstream:
 Claims are optional. The pipeline works without them; they simply add another
 layer of structured evidence when enabled.
 
+### Document replacement and legacy graphs
+
+The default writer replaces one document's contribution within its `graph_name`, including when called through `store.write_graph_document()`. Reusing the same document ID removes obsolete chunks, evidence and claims, replaces descriptions, and recomputes relationship chunk counts, weights and maximum strength from surviving document contributions. Shared evidence/descriptions survive; only unreferenced entities and relationships without surviving evidence are deleted.
+
+Use stable `metadata["document_id"]` to identify updates explicitly. Otherwise the ID hashes the exact source/title, or the text when neither is supplied. Changing text without stable source/ID metadata creates a separate document; it cannot be recognized as a replacement automatically. Replacing the same ID in another graph is independent.
+
+Description ownership (`description_sources`) and optional relationship strength ownership (`strength_sources`) are internal flat lists of JSON-encoded contribution records, compatible with both databases. Do not supply these fields. If legacy descriptions or strength have unknown ownership, the writer raises a migration diagnostic before writing. Identical text is not ownership evidence. Rebuild the affected documents/graph from their sources through the current writer; index creation alone cannot reconstruct ownership. Already mismerged identities also require rebuilding.
+
+Changed description inputs invalidate summaries and vectors. Removing an observation rebuilds raw text from the surviving contributions rather than retaining an obsolete summary. The embedding pass checks both input and provider/model fingerprints; changing a model refreshes vectors even when text is unchanged. Stale in-flight embedding results cannot certify newer input. Low-level vector writes without fingerprints remain supported but clear freshness certification and need a normal embedding pass before strict completion.
+
+Replacement of one document runs in **one database transaction**: `session.begin_transaction()` for Neo4j and Memgraph, committed after the last write and rolled back if any statement inside fails. A failure therefore leaves the document's previous state intact instead of a half-written one. The transaction covers only the document write: chunking, extraction, summarization and embedding stay outside it, and a failure later in the build still leaves the written document in place. Concurrent writes of different documents are not ordered; two writers can abort each other. Both a deadlock/serialization abort and a unique-constraint failure on the shared entity are retried inside the writer up to 3 times with a short backoff, reusing the same extracted document: the rollback leaves nothing to duplicate, and a constraint loser's retry matches the node its winner committed. An abort that survives all retries surfaces to the caller with the graph untouched. Nothing else is retried automatically. Stores that do not expose the transaction hook (custom store implementations and test doubles) keep the previous auto-commit behavior and its partial-write risk, and are not retried. `write_stats` reports what the database confirmed writing for each record kind, not the submitted input counts. A reference that cannot resolve — a relationship endpoint, evidence entity, or claim entity/chunk that exists neither in the document nor in the graph — raises `ValueError` before the first write, because those rows are only written when both endpoints exist. Custom writers must define their own guarantees.
+
+Blocking database calls in pipeline writes/backfill/validation, description summarization, entity embedding, and resolver preflight/load/merge run through `asyncio.to_thread`. Cancellation does not terminate an in-flight database call or undo its writes.
+
 ### Tips
 
-- Run `store.create_indexes()` before the first build.
-- The pipeline can be run multiple times on new text; it appends to the existing graph.
+- Run `store.create_indexes()` before the first build and before starting concurrent writers; see [identity constraints](04-indexing.md#identity-constraints-and-existing-graphs).
+- New document IDs extend the graph; an existing document ID replaces that document's contribution.
 - Pass `metadata` to link extracted chunks and entities back to any source
   shape: documents, pages, database rows, tickets, API objects, or list items.
+
+#### Embedding failures and recovery
+
+Entity embedding is best-effort by default: provider or vector-write errors are
+logged and the build continues. With `fail_on_embedding_error=True` (or when you
+ask for strict completion directly), the build raises
+`RuntimeError("Entity embedding incomplete ...")` if any entity in the configured
+graph has a missing or stale embedding after the embedding pass. The check is
+graph-wide and point-in-time: each entity must have a vector with current input
+and provider/model fingerprints in `graph_name`. It does not prove global
+coverage, atomicity under concurrent writers, or that every intended document
+was ingested.
+
+A failed strict build keeps earlier work: extraction results, graph writes,
+entity resolution, and any successfully stored vectors are retained; only
+missing/stale entities remain pending. It does not roll back partial writes,
+and extraction is not replayed for you.
+
+To recover, call `complete_embeddings()` on a pipeline pointing at the same
+graph store, embedder, and `graph_name`. It embeds entities with missing or stale
+vectors, verifies freshness/completion, and raises if anything remains:
+
+```python
+pipeline = GraphBuilderPipeline(
+    graph_store=store, llm=llm, embedder=embedder,
+    fail_on_embedding_error=True,
+)
+try:
+    await pipeline.build_from_text(text, schema=schema)
+except RuntimeError:
+    # Later, once the provider is healthy: refresh pending vectors, no extraction
+    await pipeline.complete_embeddings()
+```
+
+`complete_embeddings()` (and a strict build) does not resume interrupted
+extraction or resolve/summarize anything new; and re-running an entire
+`build_from_text(...)` after a failure re-extracts (and re-bills) documents, so
+prefer targeted recovery when only embeddings were incomplete.
 
 ---
 
@@ -458,7 +531,7 @@ result = await community.build(level=0)
 | `random_seed` | Random seed for deterministic Neo4j community detection. |
 | `report_rubric` | Optional rating rubric for structured reports. |
 | `report_prompt` | Optional custom report prompt string. A simple instruction (e.g. `"You are a security analyst. Identify risks in this community."`) gets the standard structured body (community context, reference allowlist, rubric, JSON format) appended. A full template must include all placeholders in `recon_graphrag.communities.reports.REQUIRED_REPORT_PLACEHOLDERS`; a partial template raises `ValueError` at construction. |
-| `summarize_concurrency` | Maximum number of community reports to generate in parallel. Defaults to `1`. Increase for faster community builds when the LLM provider supports high throughput. |
+| `summarize_concurrency` | Maximum number of community reports to generate in parallel. Bounds concurrent reports, not total reports: every selected community is still processed and every report returned. Defaults to `1`. Increase for faster community builds when the LLM provider supports high throughput. |
 | `skip_existing` | Skip community reports whose input fingerprint has not changed. |
 | `max_context_tokens` | Maximum tokens for community context passed to the LLM. Degree-ranked context is greedily packed to fit this budget. Defaults to `8000`. Set to `None` to include all context without budgeting. |
 | `token_counter` | Token counter for context packing. Defaults to `ApproximateTokenCounter` when `max_context_tokens` is set. |

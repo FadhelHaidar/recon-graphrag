@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any, cast
 
 import pytest
 
@@ -202,3 +203,58 @@ async def test_custom_report_prompt_appears_in_llm_prompt():
     assert llm.prompts
     assert "You are a security analyst. Identify risks in this community." in llm.prompts[0]
 
+
+
+class MultiCommunityStore(FakeReportGraphStore):
+    """Store with many communities, used for bounded-work checks."""
+
+    def __init__(self, count: int):
+        super().__init__()
+        self.count = count
+
+    def get_communities(self, graph_name, level=None):
+        return [
+            {"id": f"community:{i}", "level": 0, "entity_count": 2}
+            for i in range(self.count)
+        ]
+
+
+class TrackedValidReportLLM(FakeValidReportLLM):
+    """Records peak concurrent calls and peak live tasks."""
+
+    def __init__(self):
+        super().__init__()
+        self.active = 0
+        self.max_active = 0
+        self.max_tasks = 0
+
+    async def ainvoke(self, prompt):
+        import asyncio
+
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        self.max_tasks = max(self.max_tasks, len(asyncio.all_tasks()))
+        try:
+            await asyncio.sleep(0)
+            return await super().ainvoke(prompt)
+        finally:
+            self.active -= 1
+
+
+@pytest.mark.asyncio
+async def test_communities_bounded_workers_bound_pending_tasks():
+    count = 40
+    store = MultiCommunityStore(count)
+    llm = TrackedValidReportLLM()
+    summarizer = CommunitySummarizer(cast(Any, store), llm=cast(Any, llm), concurrency=2)
+
+    results, stats = await summarizer.generate_all(level=0)
+
+    assert stats.succeeded == count
+    assert llm.calls == count
+    # Concurrency bounds active report work, not the queued task count.
+    assert llm.max_active <= 2
+    # One task per community would push live tasks to ~count.
+    assert llm.max_tasks <= 8
+    # Report order stays the deterministic community order.
+    assert [r["id"] for r in results] == [f"community:{i}" for i in range(count)]

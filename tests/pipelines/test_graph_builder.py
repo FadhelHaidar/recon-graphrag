@@ -1,26 +1,30 @@
 """Tests for GraphBuilderPipeline."""
 
-from typing import cast
-from unittest.mock import AsyncMock, MagicMock
-
 import asyncio
 import logging
+import re
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
+from recon_graphrag.embeddings.base import BaseEmbedder
+from recon_graphrag.extraction.chunking import TextChunker
+from recon_graphrag.extraction.description_summarizer import DescriptionSummarizer
 from recon_graphrag.extraction.schema import (
     GraphSchema,
     NodeType,
     PropertyType,
     RelationshipType,
 )
-from recon_graphrag.extraction.chunking import TextChunker
+from recon_graphrag.extraction.structured import ColumnEntity, RowMapping
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.memgraph.store import MemgraphGraphStore
 from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
-from recon_graphrag.extraction.description_summarizer import DescriptionSummarizer
+from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.observability import UsageTrackingLLM, track_usage
 from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
-
+from recon_graphrag.pipelines.writer import CypherGraphWriter
 
 
 class FakeGraphStore:
@@ -44,24 +48,47 @@ class FakeGraphStore:
     def backfill_descriptions(self):
         pass
 
-    async def resolve_entities_exact(self, **kwargs):
-        self.resolve_kwargs = {"strategy": "exact", **kwargs}
+    async def resolve_entities_exact(self, graph_name="entity-graph", resolve_property="name", dry_run=False, **kwargs):
+        self.resolve_kwargs = {"strategy": "exact", "graph_name": graph_name, **kwargs}
         return {"skipped": False, "merged_groups": 0, "strategy": "exact"}
 
-    async def resolve_entities_normalized(self, **kwargs):
-        self.resolve_kwargs = {"strategy": "normalized", **kwargs}
+    async def resolve_entities_normalized(self, graph_name="entity-graph", resolve_property="name", dry_run=False, **kwargs):
+        self.resolve_kwargs = {"strategy": "normalized", "graph_name": graph_name, **kwargs}
         return {"skipped": False, "merged_groups": 0, "strategy": "normalized"}
 
-    async def resolve_entities_fuzzy(self, **kwargs):
-        self.resolve_kwargs = {"strategy": "fuzzy", **kwargs}
+    async def resolve_entities_fuzzy(self, graph_name="entity-graph", resolve_property="name", dry_run=False,
+                                     merge_threshold=95.0, review_threshold=85.0, max_candidates_per_entity=20, **kwargs):
+        self.resolve_kwargs = {"strategy": "fuzzy", "graph_name": graph_name, **kwargs}
         return {"skipped": False, "merged_groups": 0, "strategy": "fuzzy"}
 
-    async def resolve_entities_hybrid(self, **kwargs):
-        self.resolve_kwargs = {"strategy": "hybrid", **kwargs}
+    async def resolve_entities_hybrid(self, graph_name="entity-graph", resolve_property="name", dry_run=False,
+                                      merge_threshold=95.0, review_threshold=85.0, max_candidates_per_entity=20,
+                                      aliases=None, embedder=None, llm=None, llm_guidance=None,
+                                      allow_ai_auto_merge=False, context_properties=None, conflict_properties=None,
+                                      context_mode="safe_defaults", **kwargs):
+        self.resolve_kwargs = {
+            "strategy": "hybrid",
+            "graph_name": graph_name,
+            "embedder": embedder,
+            "llm": llm,
+            "aliases": aliases,
+            "llm_guidance": llm_guidance,
+            "allow_ai_auto_merge": allow_ai_auto_merge,
+            "context_properties": context_properties,
+            "conflict_properties": conflict_properties,
+            "context_mode": context_mode,
+            **kwargs,
+        }
         return {"skipped": False, "merged_groups": 0, "strategy": "hybrid"}
 
-    def get_unembedded_entities(self, limit=500):
+    def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None):
         return []
+
+    def get_unembedded_chunks(self, graph_name, limit=500, model_fingerprint=None):
+        return []
+
+    def count_communities_with_reports(self, graph_name: str) -> int:
+        return 0
 
     def get_entities_needing_summary(self, graph_name, limit=500):
         return []
@@ -75,7 +102,7 @@ class FakeGraphStore:
     def persist_relationship_summaries(self, graph_name, summaries):
         pass
 
-    def upsert_vectors(self, ids, property_name, vectors):
+    def upsert_vectors(self, node_ids, embedding_property, vectors, **kwargs):
         pass
 
     def validate_graph_build(self):
@@ -86,9 +113,187 @@ class FakeGraphStore:
             "entity_relationship_count": 1,
         }
 
+    def create_indexes(self, config=None, embedding_dim=1536):
+        pass
+
+    def drop_indexes(self, config=None):
+        pass
+
+    def create_vector_index(self, name, label, embedding_property, dimensions, similarity_fn="cosine"):
+        pass
+
+    def create_fulltext_index(self, name, label, node_properties):
+        pass
+
+    def vector_search(self, index_name, query_vector, k, label=None, filters=None):
+        return []
+
+    def keyword_search(self, index_name, query_text, k, label=None, filters=None):
+        return []
+
+    def fetch_entity_context(self, matches, retrieval_query=None, query_params=None, mode="local", graph_name=None):
+        return []
+
+    def detect_communities(self, graph_name, relationship_types=None, max_levels=3, gamma=1.0,
+                           theta=0.01, tolerance=1e-4, relationship_weight_property=None,
+                           random_seed=None, entity_label="__Entity__", community_label="Community"):
+        return []
+
+    def get_communities(self, graph_name, level=None):
+        return []
+
+    def get_community_stats(self, graph_name):
+        return []
+
+    def store_community_report(self, report, graph_name):
+        pass
+
+    def mark_community_report_failed(self, graph_name, community_id, level, error):
+        pass
+
+    def get_community_ranked_context(self, graph_name, community_id, level=0):
+        return []
+
+    def get_child_community_reports(self, graph_name, community_id, level, child_level):
+        return []
+
+    def get_claims_for_entities(self, graph_name, entity_ids):
+        return []
+
+    def resolve_chunk_citations(self, graph_name, chunk_ids):
+        return []
+
+    def get_community_reports_by_keys(self, graph_name, keys, top_k):
+        return []
+
+    def get_unembedded_community_reports(self, graph_name, limit=500):
+        return []
+
+    def upsert_community_report_vectors(self, node_ids, vectors, graph_name, levels):
+        pass
+
+    def vector_search_community_reports(self, query_vector, graph_name, top_k=3, level=None):
+        return []
+
+    def get_entity_count(self):
+        return 2
+
+    def get_chunk_count(self):
+        return 1
+
+    def get_evidence_link_count(self):
+        return 2
+
+    def get_relationship_count(self):
+        return 1
+
 
 class MyGraphStore(FakeGraphStore):
     pass
+
+
+class PendingEmbeddingFakeGraphStore(FakeGraphStore):
+    """FakeGraphStore whose entities remain pending until vectors are upserted.
+
+    Mirrors both backends' get_unembedded_entities (`embedding IS NULL`) so
+    strict-mode completion and recovery can be tested with the real embedder.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.entities = []
+        self.embedding_queries = 0
+        self.upsert_vectors_calls = 0
+        self.embed_calls = 0
+        self.embedding_calls = []
+
+    def write_graph_document(self, graph_document):
+        for entity in graph_document.entities:
+            name = entity.properties.get("name", entity.human_readable_id or entity.id)
+            self.entities.append(
+                {
+                    "id": entity.id,
+                    "labels": [entity.type, "__Entity__"],
+                    "name": name,
+                    "description": "",
+                    "embedding_state": "pending",
+                    "graph_name": entity.graph_name,
+                }
+            )
+        return super().write_graph_document(graph_document)
+
+    def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None):
+        self.embedding_queries += 1
+        self.embedding_calls.append({"graph_name": graph_name, "limit": limit})
+        return [
+            e
+            for e in self.entities
+            if e["embedding_state"] == "pending" and e["graph_name"] == graph_name
+        ][:limit]
+
+    def upsert_vectors(self, node_ids, embedding_property, vectors, **kwargs):
+        self.upsert_vectors_calls += 1
+        by_id = dict(zip(node_ids, vectors, strict=True))
+        for entity in self.entities:
+            if entity["id"] in by_id:
+                entity["embedding_state"] = "stored"
+                entity["embedding"] = by_id[entity["id"]]
+
+
+class NoOpUpsertStore(PendingEmbeddingFakeGraphStore):
+    """Upserts that persist nothing, so pending entities never clear."""
+
+    def upsert_vectors(self, node_ids, embedding_property, vectors, **kwargs):
+        self.upsert_vectors_calls += 1
+
+
+class ChunkEmbeddingFakeGraphStore(PendingEmbeddingFakeGraphStore):
+    """Records chunk-level embedding work separately from entity work."""
+
+    def __init__(self):
+        super().__init__()
+        self.chunks = [
+            {"id": "chunk-node-1", "chunk_id": "doc:0:0", "text": "chunk text"}
+        ]
+        self.chunk_embedding_calls = []
+        self.chunk_upserts = []
+
+    def get_unembedded_chunks(self, graph_name, limit=500, model_fingerprint=None):
+        self.chunk_embedding_calls.append({"graph_name": graph_name, "limit": limit})
+        pending, self.chunks = self.chunks[:limit], self.chunks[limit:]
+        return pending
+
+    def upsert_vectors(self, node_ids, embedding_property, vectors, **kwargs):
+        if any(str(node_id).startswith("chunk-node") for node_id in node_ids):
+            self.chunk_upserts.append(
+                (list(node_ids), embedding_property, vectors, kwargs)
+            )
+            return
+        super().upsert_vectors(node_ids, embedding_property, vectors, **kwargs)
+
+
+class RealWriterFakeGraphStore(FakeGraphStore):
+    """FakeGraphStore whose writes go through the real CypherGraphWriter."""
+
+    def __init__(self):
+        super().__init__()
+        self.params = []
+
+    def execute_query(self, query, parameters=None):
+        self.params.append(parameters or {})
+        return super().execute_query(query, parameters)
+
+    def write_graph_document(self, graph_document):
+        return CypherGraphWriter(cast(GraphStore, self)).write_graph_document(
+            graph_document
+        )
+
+
+def _write_rows(store, query_fragment):
+    for query, parameters in zip(store.queries, store.params, strict=True):
+        if query_fragment in query:
+            return next(iter(parameters.values()))
+    raise AssertionError(f"no writer query matching {query_fragment!r}")
 
 
 class CustomBackend(FakeGraphStore):
@@ -258,7 +463,7 @@ async def test_build_from_documents_preserves_page_metadata(
         {"text": "Page two", "metadata": {"record_id": "page-2"}},
         {"text": "Page three", "metadata": {"record_id": "page-3"}},
     ]
-    results = await pipeline.build_from_documents(
+    await pipeline.build_from_documents(
         [{"pages": pages, "metadata": {"source": "document-source", "collection": "movies"}}],
         schema=movie_schema,
         window_size=2,
@@ -366,7 +571,7 @@ async def test_build_from_documents_envelope_validation(
     )
 
     with pytest.raises(ValueError, match="must be a dict"):
-        await pipeline.build_from_documents(["not a dict"], schema=movie_schema)
+        await pipeline.build_from_documents(["not a dict"], schema=movie_schema)  # type: ignore[arg-type]
 
     with pytest.raises(ValueError, match="both 'text' and 'pages'"):
         await pipeline.build_from_documents(
@@ -391,7 +596,7 @@ async def test_build_from_documents_envelope_validation(
 
     with pytest.raises(ValueError, match="schema must be a GraphSchema"):
         await pipeline.build_from_documents(
-            [{"text": "x"}], schema=None
+            [{"text": "x"}], schema=None  # type: ignore[arg-type]
         )
 
     fake_writer.write_graph_document.assert_not_called()
@@ -472,7 +677,59 @@ def test_make_document_id_with_source():
         embedder=MagicMock(),
     )
     doc_id = pipeline._make_document_id("hello", {"source": "My Doc"})
-    assert doc_id == "doc:my-doc"
+    assert re.fullmatch(r"doc:[0-9a-f]{16}", doc_id), doc_id
+
+
+def test_make_document_id_slash_and_dash_sources_are_distinct():
+    """Slug slugs collapsed "A/B" and "A-B" to the same id; hashing must not."""
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=MagicMock(),
+        embedder=MagicMock(),
+    )
+    slash_id = pipeline._make_document_id("t", {"source": "A/B"})
+    dash_id = pipeline._make_document_id("t", {"source": "A-B"})
+    assert slash_id != dash_id
+
+
+def test_make_document_id_non_ascii_sources_are_distinct():
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=MagicMock(),
+        embedder=MagicMock(),
+    )
+    arabic_id = pipeline._make_document_id("t", {"source": "نص عربي"})
+    cjk_id = pipeline._make_document_id("t", {"source": "中文文档"})
+    assert arabic_id != cjk_id
+    assert re.fullmatch(r"doc:[0-9a-f]{16}", arabic_id)
+
+
+def test_make_document_id_same_source_is_stable():
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=MagicMock(),
+        embedder=MagicMock(),
+    )
+    first = pipeline._make_document_id("text one", {"source": "Report"})
+    second = pipeline._make_document_id("text two", {"source": "Report"})
+    # same source → same document identity even as text differs between chunks
+    assert first == second
+
+
+def test_make_document_id_explicit_document_id_wins():
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=MagicMock(),
+        embedder=MagicMock(),
+    )
+    assert (
+        pipeline._make_document_id("hello", {"source": "My Doc", "document_id": "doc:test"})
+        == "doc:test"
+    )
 
 
 @pytest.mark.parametrize(
@@ -632,19 +889,24 @@ async def test_concurrency_limit_respected(
 
     active = 0
     max_active = 0
+    calls = 0
     lock = asyncio.Lock()
 
     async def tracked_invoke(prompt):
-        nonlocal active, max_active
+        nonlocal active, max_active, calls
         async with lock:
             active += 1
+            calls += 1
             max_active = max(max_active, active)
         await asyncio.sleep(0.05)
         async with lock:
             active -= 1
         return MagicMock(content='{"nodes": [], "relationships": []}')
 
-    pipeline.llm.inner.ainvoke = AsyncMock(side_effect=tracked_invoke)
+    # The extractor awaits ``llm.ainvoke``; patching any other attribute would make
+    # this test measure nothing and pass vacuously.
+    llm_target = cast(Any, pipeline.llm)
+    llm_target.ainvoke = AsyncMock(side_effect=tracked_invoke)
 
     await pipeline._extract_and_write_chunks(
         document_id="doc:test",
@@ -657,6 +919,8 @@ async def test_concurrency_limit_respected(
         extract_claims=False,
     )
 
+    # Prove the hook is live before trusting the concurrency bound.
+    assert calls >= len(chunks)
     assert max_active <= 2
 
 
@@ -1180,3 +1444,633 @@ async def test_batch_gate_closes_before_failed_document_finishes_chunk_cleanup(
     assert all(task.done() for task in provider_tasks)
     fake_writer.write_graph_document.assert_called_once()
     pipeline._finalize_graph.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_build_from_text_rejects_reserved_metadata_without_writing(
+    movie_schema, fake_llm, fake_embedder
+):
+    store = RealWriterFakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=fake_llm,
+        embedder=fake_embedder,
+        perform_entity_resolution=False,
+        embed_entities=False,
+    )
+
+    with pytest.raises(ValueError, match="DocumentRecord.metadata"):
+        await pipeline.build_from_text(
+            "Alice directed Inception in 2010.",
+            metadata={"id": "doc:1"},
+            schema=movie_schema,
+        )
+
+    assert store.queries == []
+
+
+@pytest.mark.asyncio
+async def test_build_from_text_keeps_metadata_document_id_authoritative(
+    movie_schema, fake_llm, fake_embedder
+):
+    store = RealWriterFakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=fake_llm,
+        embedder=fake_embedder,
+        perform_entity_resolution=False,
+        embed_entities=False,
+    )
+
+    result = await pipeline.build_from_text(
+        "Alice directed Inception in 2010.",
+        metadata={"document_id": "doc:abc", "source": "report"},
+        schema=movie_schema,
+    )
+
+    assert result["extraction"]["document_id"] == "doc:abc"
+    (document,) = _write_rows(store, "UNWIND $documents")
+    assert document["id"] == "doc:abc"
+    assert document["metadata"] == {"document_id": "doc:abc", "source": "report"}
+
+    chunk_rows = _write_rows(store, "UNWIND $chunks")
+    assert [row["id"] for row in chunk_rows] == ["doc:abc:chunk:0"]
+    assert [row["document_id"] for row in chunk_rows] == ["doc:abc"]
+    assert chunk_rows[0]["metadata"]["document_id"] == "doc:abc"
+    assert chunk_rows[0]["text"].startswith("Alice directed Inception")
+    assert result["extraction"]["write_stats"] == {
+        "documents": 1,
+        "chunks": 1,
+        "entities": 2,
+        "relationships": 1,
+        "evidence_links": 2,
+        "claims": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_build_from_documents_converts_page_id_to_source_ids(
+    movie_schema, fake_llm, fake_embedder
+):
+    store = RealWriterFakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=fake_llm,
+        embedder=fake_embedder,
+        perform_entity_resolution=False,
+        embed_entities=False,
+    )
+
+    results = await pipeline.build_from_documents(
+        [
+            {
+                "pages": [
+                    {"text": "Alice directed Inception.", "metadata": {"id": "page-1"}}
+                ],
+                "metadata": {"source": "report"},
+            }
+        ],
+        schema=movie_schema,
+        max_gleanings=0,
+        window_size=1,
+        window_overlap=0,
+    )
+
+    assert len(results) == 1
+    document_id = results[0]["extraction"]["document_id"]
+    assert document_id.startswith("doc:")
+    (document,) = _write_rows(store, "UNWIND $documents")
+    assert document["id"] == document_id
+    assert document["metadata"] == {"source": "report"}
+
+    (chunk,) = _write_rows(store, "UNWIND $chunks")
+    assert chunk["document_id"] == document_id
+    assert chunk["metadata"]["source_ids"] == ["page-1"]
+    assert "id" not in chunk["metadata"]
+    assert (chunk["metadata"]["page_start"], chunk["metadata"]["page_end"]) == (1, 1)
+    assert results[0]["extraction"]["write_stats"] == {
+        "documents": 1,
+        "chunks": 1,
+        "entities": 2,
+        "relationships": 1,
+        "evidence_links": 2,
+        "claims": 0,
+    }
+
+
+def _extraction_llm(payload: str):
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(return_value=MagicMock(content=payload, usage=None))
+    return llm
+
+
+@pytest.mark.asyncio
+async def test_schema_declared_id_property_survives_validation_but_not_persistence(
+    fake_embedder,
+):
+    schema = GraphSchema(
+        node_types=[
+            NodeType(
+                label="Person",
+                properties=[
+                    PropertyType(name="name", type="STRING"),
+                    PropertyType(name="id", type="STRING"),
+                ],
+            )
+        ],
+        relationship_types=[],
+    )
+    llm = _extraction_llm(
+        """
+        {
+            "nodes": [
+                {"id": "p1", "label": "Person",
+                 "properties": {"name": "Alice", "id": "E-7"}}
+            ],
+            "relationships": []
+        }
+        """
+    )
+    store = RealWriterFakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=llm,
+        embedder=fake_embedder,
+        perform_entity_resolution=False,
+        embed_entities=False,
+    )
+
+    with pytest.raises(
+        ValueError, match=r"EntityRecord\.properties contains reserved persistence field\(s\) id;"
+    ):
+        await pipeline.build_from_text(
+            "Alice's employee id is E-7.", schema=schema, max_gleanings=0
+        )
+
+    assert store.queries == []
+
+
+@pytest.mark.asyncio
+async def test_undeclared_id_property_is_filtered_and_artifact_writes(
+    movie_schema, fake_embedder
+):
+    llm = _extraction_llm(
+        """
+        {
+            "nodes": [
+                {"id": "p1", "label": "Person",
+                 "properties": {"name": "Alice", "id": "E-7"}},
+                {"id": "m1", "label": "Movie",
+                 "properties": {"title": "Inception", "year": "2010"}}
+            ],
+            "relationships": [
+                {"source_id": "p1", "target_id": "m1", "type": "DIRECTED"}
+            ]
+        }
+        """
+    )
+    store = RealWriterFakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=llm,
+        embedder=fake_embedder,
+        perform_entity_resolution=False,
+        embed_entities=False,
+    )
+
+    result = await pipeline.build_from_text(
+        "Alice directed Inception in 2010.", schema=movie_schema, max_gleanings=0
+    )
+
+    entity_rows = _write_rows(store, "UNWIND $entities")
+    assert all("id" not in row["properties"] for row in entity_rows)
+    person = next(row for row in entity_rows if row["type"] == "Person")
+    assert person["properties"]["name"] == "Alice"
+    assert result["extraction"]["write_stats"] == {
+        "documents": 1,
+        "chunks": 1,
+        "entities": 2,
+        "relationships": 1,
+        "evidence_links": 2,
+        "claims": 0,
+    }
+
+class PoisonEmbedderStore(PendingEmbeddingFakeGraphStore):
+    """PendingEmbeddingFakeGraphStore whose embedder succeeds once (or never)."""
+
+    def __init__(self, success_on_call=None):
+        super().__init__()
+        self.success_on_call = success_on_call
+
+
+def _working_embedder():
+    embedder = MagicMock()
+    embedder.async_embed_query = AsyncMock(return_value=[0.1] * 1536)
+    return embedder
+
+
+async def _make_poison_embedder(store):
+    embedder = MagicMock()
+
+    async def async_embed_query(_text):
+        store.embed_calls += 1
+        if (
+            store.success_on_call is not None
+            and store.embed_calls == store.success_on_call
+        ):
+            return [0.1] * 1536
+        raise RuntimeError("provider unavailable")
+
+    embedder.async_embed_query = async_embed_query
+    return embedder
+
+
+def _embed_pipeline(store, embedder, **overrides):
+    kwargs = {
+        "graph_store": store,
+        "llm": MagicMock(),
+        "embedder": embedder,
+        "perform_entity_resolution": False,
+        "summarize_descriptions": False,
+    }
+    kwargs.update(overrides)
+    return GraphBuilderPipeline(
+        graph_store=cast(GraphStore, kwargs["graph_store"]),
+        llm=cast(BaseLLM, kwargs["llm"]),
+        embedder=cast(BaseEmbedder, kwargs["embedder"]),
+        graph_writer=kwargs.get("graph_writer"),
+        perform_entity_resolution=kwargs["perform_entity_resolution"],
+        summarize_descriptions=kwargs["summarize_descriptions"],
+        embed_entities=kwargs.get("embed_entities", True),
+        fail_on_embedding_error=kwargs.get("fail_on_embedding_error", False),
+    )
+
+
+def _two_pending_entities(store, graph_name="entity-graph"):
+    store.entities = [
+        {
+            "id": f"Person:{name}",
+            "labels": ["Person", "__Entity__"],
+            "name": name,
+            "description": "",
+            "embedding_state": "pending",
+            "graph_name": graph_name,
+        }
+        for name in ("Alice", "Bob")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_strict_build_raises_when_every_embedding_call_fails():
+    store = PoisonEmbedderStore()
+    _two_pending_entities(store)
+    pipeline = _embed_pipeline(
+        store, await _make_poison_embedder(store), fail_on_embedding_error=True
+    )
+
+    with pytest.raises(RuntimeError, match="embedding incomplete"):
+        await asyncio.wait_for(pipeline._embed_entities(), timeout=5)
+    assert store.embed_calls > 0
+
+
+@pytest.mark.asyncio
+async def test_strict_build_partial_success_raises_and_keeps_stored_vectors():
+    store = PoisonEmbedderStore(success_on_call=1)
+    _two_pending_entities(store)
+    pipeline = _embed_pipeline(
+        store, await _make_poison_embedder(store), fail_on_embedding_error=True
+    )
+
+    with pytest.raises(RuntimeError, match="embedding incomplete"):
+        await asyncio.wait_for(pipeline._embed_entities(), timeout=5)
+    stored = [e for e in store.entities if e["embedding_state"] == "stored"]
+    pending = [e for e in store.entities if e["embedding_state"] == "pending"]
+    assert len(stored) == 1
+    assert len(pending) == 1
+    assert stored[0]["embedding"] == [0.1] * 1536
+
+
+@pytest.mark.asyncio
+async def test_strict_no_progress_upsert_still_raises():
+    store = NoOpUpsertStore()
+    _two_pending_entities(store)
+    pipeline = _embed_pipeline(
+        store, _working_embedder(), fail_on_embedding_error=True
+    )
+
+    with pytest.raises(RuntimeError, match="embedding incomplete"):
+        await asyncio.wait_for(pipeline._embed_entities(), timeout=5)
+    assert store.upsert_vectors_calls > 0
+    assert all(e["embedding_state"] == "pending" for e in store.entities)
+
+
+@pytest.mark.asyncio
+async def test_strict_build_succeeds_when_all_embeddings_stored():
+    store = PendingEmbeddingFakeGraphStore()
+    _two_pending_entities(store)
+    pipeline = _embed_pipeline(
+        store, _working_embedder(), fail_on_embedding_error=True
+    )
+
+    result = await asyncio.wait_for(pipeline._embed_entities(), timeout=5)
+
+    assert result is None
+    assert all(e["embedding_state"] == "stored" for e in store.entities)
+
+
+@pytest.mark.asyncio
+async def test_best_effort_mode_with_persistent_failure_skips_completion_check():
+    store = PoisonEmbedderStore()
+    _two_pending_entities(store)
+    pipeline = _embed_pipeline(store, await _make_poison_embedder(store))
+
+    result = await asyncio.wait_for(pipeline._embed_entities(), timeout=5)
+
+    assert result is None
+    assert all(call["limit"] == 500 for call in store.embedding_calls)
+
+
+@pytest.mark.asyncio
+async def test_embed_entities_false_skips_embedding_and_completion_check(
+    movie_schema, fake_llm, fake_embedder
+):
+    store = PoisonEmbedderStore()
+    _two_pending_entities(store)
+    pipeline = GraphBuilderPipeline(
+        graph_store=cast(GraphStore, store),
+        llm=fake_llm,
+        embedder=fake_embedder,
+        perform_entity_resolution=False,
+        summarize_descriptions=False,
+        embed_entities=False,
+        fail_on_embedding_error=True,
+    )
+
+    result = await pipeline.build_from_text(
+        "Alice directed Inception in 2010.", schema=movie_schema, max_gleanings=0
+    )
+
+    assert "validation" in result
+    assert store.embed_calls == 0
+    assert store.embedding_calls == []
+
+
+@pytest.mark.asyncio
+async def test_embed_chunks_flag_stores_normalized_chunk_vectors(
+    movie_schema, fake_llm, fake_embedder
+):
+    store = ChunkEmbeddingFakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=cast(GraphStore, store),
+        llm=fake_llm,
+        embedder=fake_embedder,
+        perform_entity_resolution=False,
+        summarize_descriptions=False,
+        embed_chunks=True,
+    )
+
+    await pipeline.build_from_text(
+        "Alice directed Inception in 2010.", schema=movie_schema, max_gleanings=0
+    )
+
+    assert store.chunk_embedding_calls
+    assert len(store.chunk_upserts) == 1
+    ids, property_name, vectors, kwargs = store.chunk_upserts[0]
+    assert ids == ["chunk-node-1"]
+    assert property_name == "embedding"
+    # Unit length is what makes the portable dot product a cosine similarity.
+    assert abs(sum(value * value for value in vectors[0]) - 1.0) < 1e-9
+    assert "content_fingerprints" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_embed_chunks_is_off_by_default(movie_schema, fake_llm, fake_embedder):
+    store = ChunkEmbeddingFakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=cast(GraphStore, store),
+        llm=fake_llm,
+        embedder=fake_embedder,
+        perform_entity_resolution=False,
+        summarize_descriptions=False,
+    )
+
+    await pipeline.build_from_text(
+        "Alice directed Inception in 2010.", schema=movie_schema, max_gleanings=0
+    )
+
+    # Opt-in only: one provider call per chunk is never spent unless asked for.
+    assert store.chunk_embedding_calls == []
+    assert store.chunk_upserts == []
+
+
+@pytest.mark.asyncio
+async def test_strict_completion_check_is_graph_scoped_and_limit_one():
+    store = PendingEmbeddingFakeGraphStore()
+    _two_pending_entities(store, graph_name="other-graph")
+    pipeline = _embed_pipeline(store, _working_embedder(), fail_on_embedding_error=True)
+
+    result = await asyncio.wait_for(pipeline._embed_entities(), timeout=5)
+
+    assert result is None
+    assert store.embedding_calls == [
+        {"graph_name": "entity-graph", "limit": 500},
+        {"graph_name": "entity-graph", "limit": 1},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_strict_vector_write_error_propagates():
+    store = PoisonEmbedderStore()
+
+    def failing_upsert(node_ids, embedding_property, vectors, **kwargs):
+        store.upsert_vectors_calls += 1
+        raise RuntimeError("database write failed")
+
+    store.upsert_vectors = failing_upsert
+    _two_pending_entities(store)
+    pipeline = _embed_pipeline(store, _working_embedder(), fail_on_embedding_error=True)
+
+    with pytest.raises(RuntimeError, match="database write failed"):
+        await asyncio.wait_for(pipeline._embed_entities(), timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_non_strict_vector_write_error_is_logged_and_continues(caplog):
+    store = PoisonEmbedderStore()
+
+    def failing_upsert(node_ids, embedding_property, vectors, **kwargs):
+        store.upsert_vectors_calls += 1
+        raise RuntimeError("database write failed")
+
+    store.upsert_vectors = failing_upsert
+    _two_pending_entities(store)
+    pipeline = _embed_pipeline(store, _working_embedder())
+
+    with caplog.at_level(logging.ERROR):
+        result = await asyncio.wait_for(pipeline._embed_entities(), timeout=5)
+
+    assert result is None
+    assert "database write failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_strict_completion_lookup_failure_propagates():
+    class FinalCheckFailureStore(PendingEmbeddingFakeGraphStore):
+        def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None):
+            if limit == 1:
+                raise RuntimeError("completion query failed")
+            return super().get_unembedded_entities(graph_name, limit, model_fingerprint)
+
+    store = FinalCheckFailureStore()
+    _two_pending_entities(store)
+    pipeline = _embed_pipeline(
+        store, _working_embedder(), fail_on_embedding_error=True
+    )
+
+    with pytest.raises(RuntimeError, match="completion query failed"):
+        await asyncio.wait_for(pipeline._embed_entities(), timeout=5)
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+@pytest.mark.asyncio
+async def test_non_positive_concurrency_raises_before_any_work(
+    movie_schema, fake_llm, fake_embedder, fake_writer, bad
+):
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=store,
+        llm=fake_llm,
+        embedder=fake_embedder,
+        graph_writer=fake_writer,
+        perform_entity_resolution=False,
+        embed_entities=False,
+        summarize_descriptions=False,
+    )
+    mapping = RowMapping(
+        entities=[ColumnEntity(label="Company", identity_column="supplier_name")],
+        record_id_column="order_id",
+    )
+
+    with pytest.raises(ValueError, match="extraction_concurrency"):
+        await pipeline.build_from_text(
+            "Alice directed Inception.",
+            schema=movie_schema,
+            extraction_concurrency=bad,
+        )
+    with pytest.raises(ValueError, match="extraction_concurrency"):
+        await pipeline.build_from_documents(
+            [{"text": "Alice directed Inception."}],
+            schema=movie_schema,
+            extraction_concurrency=bad,
+        )
+    with pytest.raises(ValueError, match="document_concurrency"):
+        await pipeline.build_from_documents(
+            [{"text": "Alice directed Inception."}],
+            schema=movie_schema,
+            document_concurrency=bad,
+        )
+    with pytest.raises(ValueError, match="extraction_concurrency"):
+        await pipeline.build_from_rows(
+            [{"supplier_name": "Acme", "order_id": "O-1"}],
+            mapping,
+            extraction_concurrency=bad,
+        )
+
+    assert fake_llm.ainvoke.await_count == 0
+    assert fake_writer.write_graph_document.call_count == 0
+    assert store.queries == []
+
+
+def _tracked_invoke(state: dict) -> object:
+    """Fake LLM call that records peak concurrency and peak live tasks."""
+
+    async def invoke(prompt, **kwargs):
+        state["active"] += 1
+        state["max_active"] = max(state["max_active"], state["active"])
+        state["max_tasks"] = max(state["max_tasks"], len(asyncio.all_tasks()))
+        try:
+            await asyncio.sleep(0)
+            return MagicMock(content='{"nodes": [], "relationships": []}', usage=None)
+        finally:
+            state["active"] -= 1
+
+    return invoke
+
+
+@pytest.mark.asyncio
+async def test_document_workers_bound_pending_tasks(
+    movie_schema, fake_llm, fake_embedder, fake_writer
+):
+    """Document concurrency bounds live tasks, not just active extractions."""
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=cast(GraphStore, store),
+        llm=fake_llm,
+        embedder=fake_embedder,
+        graph_writer=fake_writer,
+        perform_entity_resolution=False,
+        embed_entities=False,
+    )
+    state = {"active": 0, "max_active": 0, "max_tasks": 0}
+    fake_llm.ainvoke = AsyncMock(side_effect=_tracked_invoke(state))
+
+    document_count = 30
+    documents = [
+        {
+            "text": f"Alice directed Inception in 2010 with Christopher Nolan {i}.",
+            "metadata": {"source": f"doc-{i}"},
+        }
+        for i in range(document_count)
+    ]
+
+    results = await pipeline.build_from_documents(
+        documents,
+        schema=movie_schema,
+        document_concurrency=2,
+        extraction_concurrency=1,
+        max_gleanings=0,
+        chunk_size=64,
+        chunk_overlap=0,
+    )
+
+    assert len(results) == document_count
+    assert fake_llm.ainvoke.call_count == document_count
+    assert state["max_active"] <= 2
+    # One task per document would push live tasks past document_count.
+    assert state["max_tasks"] <= 10
+
+
+@pytest.mark.asyncio
+async def test_extraction_workers_bound_pending_tasks(
+    movie_schema, fake_llm, fake_embedder, fake_writer
+):
+    """Chunk concurrency bounds live tasks, not just active extractions."""
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        graph_store=cast(GraphStore, store),
+        llm=fake_llm,
+        embedder=fake_embedder,
+        graph_writer=fake_writer,
+        perform_entity_resolution=False,
+        embed_entities=False,
+    )
+    state = {"active": 0, "max_active": 0, "max_tasks": 0}
+    fake_llm.ainvoke = AsyncMock(side_effect=_tracked_invoke(state))
+
+    text = "Alice directed Inception in 2010 with Christopher Nolan. " * 20
+    result = await pipeline.build_from_text(
+        text,
+        metadata={"source": "test"},
+        schema=movie_schema,
+        extraction_concurrency=2,
+        max_gleanings=0,
+        chunk_size=15,
+        chunk_overlap=5,
+    )
+
+    chunk_count = result["extraction"]["chunks"]
+    assert chunk_count >= 10
+    assert fake_llm.ainvoke.call_count == chunk_count
+    assert state["max_active"] <= 2
+    # One task per chunk would push live tasks past chunk_count.
+    assert state["max_tasks"] <= 10

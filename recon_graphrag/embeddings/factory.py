@@ -7,9 +7,16 @@ embedding wrappers.
 from __future__ import annotations
 
 import asyncio
+import os
+import warnings
 from typing import Any
 
-from recon_graphrag.embeddings.base import BaseEmbedder, ModelParamsEmbedder
+from recon_graphrag.embeddings.base import (
+    BaseEmbedder,
+    ModelParamsEmbedder,
+    TruncatingEmbedder,
+    detect_embedding_dim,
+)
 from recon_graphrag.providers._compat import (
     OpenAICompatibleProviderError,
     _response_error,
@@ -41,7 +48,31 @@ def create_embedder(
     embedder = providers[provider](**kwargs)
     if model_params:
         embedder = ModelParamsEmbedder(embedder, model_params)
+    wanted = int(os.getenv("EMBEDDING_DIM", "0")) or None
+    if wanted:
+        embedder = scale_down_embeddings(embedder, wanted)
     return embedder
+
+
+def scale_down_embeddings(embedder: BaseEmbedder, target_dim: int) -> BaseEmbedder:
+    """Emit embeddings of ``target_dim`` from whatever the model natively outputs.
+
+    Works when the model uses MORE dimensions than requested (e.g. a 1536-dim
+    model emitting 768-dim vectors). Models with fewer dims are left as-is —
+    upscaling a vector manufactures no information. databases/index stores
+    already auto-detect, so index dims follow whatever this emits.
+    """
+    native = detect_embedding_dim(embedder)
+    if native is not None and target_dim > native:
+        warnings.warn(
+            f"EMBEDDING_DIM={target_dim} exceeds the model's native {native} dims; "
+            f"keeping the native {native} (cannot manufacture dimensions).",
+            stacklevel=2,
+        )
+        return embedder
+    if native is not None and target_dim == native:
+        return embedder
+    return TruncatingEmbedder(embedder, target_dim)
 
 
 class OpenAIEmbeddings:

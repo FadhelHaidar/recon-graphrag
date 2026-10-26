@@ -20,6 +20,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 from recon_graphrag._version import __version__, get_git_sha
 from recon_graphrag.graphdb.base import GraphStore
@@ -156,14 +157,19 @@ async def run_baseline(
     model_identifiers = model_identifiers or {}
     prompt_versions = prompt_versions or {}
 
-    fake_run = graph_store is None or llm is None
-    if fake_run:
-        graph_store = FakeGraphStore(_make_fake_communities(corpus))
-        llm = FakeLLM()
+    if graph_store is None or llm is None:
+        # The baseline fakes implement only the methods global search uses.
+        effective_graph_store: GraphStore = cast(
+            GraphStore, FakeGraphStore(_make_fake_communities(corpus))
+        )
+        effective_llm: BaseLLM = cast(BaseLLM, FakeLLM())
+    else:
+        effective_graph_store = graph_store
+        effective_llm = llm
 
     retriever = GlobalSearchRetriever(
-        graph_store=graph_store,
-        llm=llm,
+        graph_store=effective_graph_store,
+        llm=effective_llm,
     )
 
     run_id = uuid.uuid4().hex
@@ -188,7 +194,7 @@ async def run_baseline(
             reports_used = search_result.metadata.get("reports_used", 0)
             if reports_used > 0:
                 # Re-read reports for context capture
-                raw_communities = graph_store.execute_query(
+                raw_communities = effective_graph_store.execute_query(
                     """
                     MATCH (c:Community {graph_name: $graph_name, level: $level})
                     WHERE coalesce(c.report_status, 'success') <> 'failed'

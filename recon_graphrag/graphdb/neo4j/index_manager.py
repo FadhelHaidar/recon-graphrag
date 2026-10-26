@@ -42,26 +42,120 @@ class IndexManager:
             self.embedding_dim = 1536
 
     def create_indexes(self):
-        """Create all required vector, fulltext, and uniqueness indexes."""
-        self._drop_indexes()
-        self.graph_store.create_vector_index(
+        """Create the required indexes, reusing compatible existing ones.
+
+        Existing indexes are never dropped implicitly: a dropped vector index
+        makes retrieval fail or degrade until it is rebuilt, so replacing an
+        index stays an explicit administrative action (``drop_indexes()``).
+        """
+        existing = self._inspect_indexes()
+        self._ensure_vector_index(
+            existing,
             name=self.config.entity_vector_index,
             label=self.config.entity_label,
             embedding_property="embedding",
-            dimensions=self.embedding_dim,
         )
-        self.graph_store.create_fulltext_index(
+        self._ensure_fulltext_index(
+            existing,
             name=self.config.entity_fulltext_index,
             label=self.config.entity_label,
             node_properties=["name"],
         )
-        self.graph_store.create_vector_index(
+        self._ensure_vector_index(
+            existing,
             name=self.config.community_vector_index,
             label=self.config.community_label,
             embedding_property=self.config.community_report_embedding_property,
-            dimensions=self.embedding_dim,
         )
         self._create_constraints()
+
+    def _inspect_indexes(self) -> dict[str, dict]:
+        """Inspect extended columns, including the vector configuration."""
+        try:
+            rows = self.graph_store.execute_query("SHOW INDEXES YIELD *")
+        except Exception:
+            raise RuntimeError(
+                "Cannot verify existing Neo4j indexes. Grant index-inspection "
+                "access and retry; no indexes were changed."
+            ) from None
+        return {row["name"]: row for row in rows if row.get("name")}
+
+    def _ensure_vector_index(
+        self, existing: dict[str, dict], *, name: str, label: str, embedding_property: str
+    ) -> None:
+        current = existing.get(name)
+        if current is None:
+            self.graph_store.create_vector_index(
+                name=name,
+                label=label,
+                embedding_property=embedding_property,
+                dimensions=self.embedding_dim,
+            )
+            return
+
+        problems = self._definition_problems(
+            current, kind="VECTOR", label=label, properties=[embedding_property]
+        )
+        config = (current.get("options") or {}).get("indexConfig") or {}
+        if "vector.dimensions" in config:
+            if int(config["vector.dimensions"]) != int(self.embedding_dim):
+                problems.append(
+                    f"dimensions={config['vector.dimensions']}, "
+                    f"expected {self.embedding_dim}"
+                )
+            similarity = config.get("vector.similarity_function")
+            if str(similarity).lower() != "cosine":
+                problems.append(
+                    f"similarity_function={similarity!r}, expected 'cosine'"
+                )
+        else:
+            problems.append(
+                "vector configuration is unavailable; verify dimensions and "
+                "similarity or explicitly rebuild the index"
+            )
+        self._raise_if_incompatible(name, problems)
+
+    def _ensure_fulltext_index(
+        self, existing: dict[str, dict], *, name: str, label: str, node_properties: list[str]
+    ) -> None:
+        current = existing.get(name)
+        if current is None:
+            self.graph_store.create_fulltext_index(
+                name=name, label=label, node_properties=node_properties
+            )
+            return
+
+        problems = self._definition_problems(
+            current, kind="FULLTEXT", label=label, properties=node_properties
+        )
+        self._raise_if_incompatible(name, problems)
+
+    @staticmethod
+    def _definition_problems(
+        current: dict, *, kind: str, label: str, properties: list[str]
+    ) -> list[str]:
+        problems = []
+        if current.get("type") != kind:
+            problems.append(f"type={current.get('type')!r}, expected {kind!r}")
+        if list(current.get("labelsOrTypes") or []) != [label]:
+            problems.append(
+                f"labels={current.get('labelsOrTypes')!r}, expected {[label]!r}"
+            )
+        if list(current.get("properties") or []) != list(properties):
+            problems.append(
+                f"properties={current.get('properties')!r}, expected {properties!r}"
+            )
+        return problems
+
+    @staticmethod
+    def _raise_if_incompatible(name: str, problems: list[str]) -> None:
+        if not problems:
+            return
+        raise ValueError(
+            f"Index {name!r} already exists with an incompatible definition "
+            f"({'; '.join(problems)}). Call store.drop_indexes() and re-run index "
+            "setup; existing indexes are never dropped automatically."
+        )
 
     def _drop_indexes(self):
         """Drop existing indexes so they can be recreated with updated settings."""
@@ -78,7 +172,17 @@ class IndexManager:
                 pass
 
     def _create_constraints(self):
-        """Create constraints required by the community hierarchy."""
+        """Create constraints required by the SDK.
+
+        Community hierarchy needs a composite uniqueness constraint; the
+        writer needs per-label uid uniqueness for safe concurrent upserts
+        (F8). Unexpected failures now propagate instead of being muted so
+        a silently missing constraint cannot corrupt later ingestion.
+        """
+        self._create_community_constraint()
+        self._create_uid_constraints()
+
+    def _create_community_constraint(self):
         try:
             self.graph_store.execute_query(
                 """
@@ -88,7 +192,60 @@ class IndexManager:
                 """
             )
         except Exception as e:
-            logger.warning("community uniqueness constraint failed: %s", e)
+            raise RuntimeError(
+                "Failed to create the Community uniqueness constraint; "
+                "duplicate communities already in the graph must be resolved "
+                "before ingestion can continue safely."
+            ) from e
+
+    # Labels whose per-graph (graph_name, id) pair must be unique.
+    _UID_LABELS = ("Document", "Chunk", "__Entity__")
+
+    def _create_uid_constraints(self):
+        for label in self._UID_LABELS:
+            self._preflight_unique_uids(label)
+            self._backfill_uids(label)
+            self.graph_store.execute_query(
+                f"""
+                CREATE CONSTRAINT uid_{label}_unique IF NOT EXISTS
+                FOR (n:{label})
+                REQUIRE n.uid IS UNIQUE
+                """
+            )
+
+    def _preflight_unique_uids(self, label: str) -> None:
+        rows = self.graph_store.execute_query(
+            f"""
+            MATCH (n:{label})
+            WITH n.graph_name AS graph_name, n.id AS id, count(*) AS duplicates
+            WHERE duplicates > 1
+            RETURN graph_name, id, duplicates
+            ORDER BY duplicates DESC
+            LIMIT 50
+            """
+        )
+        if rows:
+            dup = rows[0]
+            raise ValueError(
+                f"Cannot create the uid uniqueness constraint for label "
+                f"'{label}': the graph already contains duplicate (graph_name, id) "
+                f"pairs, e.g. graph_name={dup['graph_name']!r}, id={dup['id']!r} "
+                f"with {dup['duplicates']} duplicates. Resolve existing "
+                "duplicates (for example by re-ingesting the affected documents "
+                "after upgrading) before re-running index setup."
+            )
+
+    def _backfill_uids(self, label: str) -> None:
+        # Same length-prefixed encoding as the writer, so backfilled uids
+        # match newly written ones for graphs ingested before F8.
+        self.graph_store.execute_query(
+            f"""
+            MATCH (n:{label})
+            WHERE n.uid IS NULL
+            SET n.uid = toString(size(n.graph_name)) + ':' + n.graph_name + ':' + n.id
+            RETURN count(n) AS backfilled
+            """
+        )
 
     async def resolve_entities_exact(
         self,

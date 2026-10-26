@@ -1,5 +1,7 @@
 """Tests for internal hybrid entity retrieval."""
 
+from typing import Any, cast
+
 import pytest
 
 from recon_graphrag.llm import LLMResponse
@@ -164,8 +166,8 @@ async def test_hybrid_entity_retriever_embeds_queries_and_fetches_context():
     store = FakeGraphStore()
     embedder = FakeEmbedder()
     retriever = HybridEntityRetriever(
-        graph_store=store,
-        embedder=embedder,
+        graph_store=cast(Any, store),
+        embedder=cast(Any, embedder),
         retrieval_query="RETURN node.name AS title, score",
         vector_index_name="entity-embeddings",
         fulltext_index_name="entity-names",
@@ -204,8 +206,8 @@ async def test_hybrid_entity_retriever_accepts_precomputed_query_vector():
     store = FakeGraphStore()
     embedder = FakeEmbedder()
     retriever = HybridEntityRetriever(
-        graph_store=store,
-        embedder=embedder,
+        graph_store=cast(Any, store),
+        embedder=cast(Any, embedder),
         retrieval_query="RETURN node.name AS title, score",
         vector_index_name="entity-embeddings",
         fulltext_index_name="entity-names",
@@ -226,7 +228,7 @@ async def test_local_search_uses_internal_retriever_and_llm():
     store = FakeGraphStore()
     embedder = FakeEmbedder()
     llm = FakeLLM()
-    retriever = LocalSearchRetriever(store, llm, embedder)
+    retriever = LocalSearchRetriever(cast(Any, store), cast(Any, llm), cast(Any, embedder))
 
     result = await retriever.search("Who directed Inception?", top_k=2)
 
@@ -242,7 +244,9 @@ async def test_local_search_can_include_citation_metadata_in_prompt():
     store = FakeGraphStore()
     embedder = FakeEmbedder()
     llm = FakeLLM()
-    retriever = LocalSearchRetriever(store, llm, embedder, use_mixed_context=False)
+    retriever = LocalSearchRetriever(
+        cast(Any, store), cast(Any, llm), cast(Any, embedder), use_mixed_context=False
+    )
 
     result = await retriever.search(
         "Who directed Inception?",
@@ -264,7 +268,9 @@ async def test_local_search_with_synthesize_false_skips_llm():
     store = FakeGraphStore()
     embedder = FakeEmbedder()
     llm = FakeLLM()
-    retriever = LocalSearchRetriever(store, llm, embedder, use_mixed_context=False)
+    retriever = LocalSearchRetriever(
+        cast(Any, store), cast(Any, llm), cast(Any, embedder), use_mixed_context=False
+    )
 
     result = await retriever.search(
         "Who directed Inception?",
@@ -325,8 +331,8 @@ async def test_hybrid_search_with_empty_vector_and_keyword_results():
     store = EmptyResultGraphStore()
     embedder = EmptyEmbedder()
     retriever = HybridEntityRetriever(
-        store,
-        embedder,
+        cast(Any, store),
+        cast(Any, embedder),
         retrieval_query=None,
         vector_index_name="entity-vector",
         fulltext_index_name="entity-names",
@@ -337,3 +343,30 @@ async def test_hybrid_search_with_empty_vector_and_keyword_results():
     assert result.items == []
 
 
+
+
+class BrokenCitationStore(FakeGraphStore):
+    """Fails citation resolution with a message that must never leak."""
+
+    def resolve_chunk_citations(self, graph_name, chunk_ids):
+        raise RuntimeError("driver said: password=hunter2")
+
+
+@pytest.mark.asyncio
+async def test_local_search_reports_citation_failure_without_leaking_payloads():
+    store = BrokenCitationStore()
+    retriever = LocalSearchRetriever(
+        cast(Any, store), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()),
+        use_mixed_context=False
+    )
+
+    result = await retriever.search("Who directed Inception?", top_k=2)
+
+    assert result.citations == []
+    assert result.metadata["citation_warnings"] == [
+        {"code": "citation_resolution_failed", "stage": "chunk"}
+    ]
+    assert "hunter2" not in str(result.metadata)
+    # A degraded citation list must not cost the caller the answer.
+    assert result.context
+    assert result.answer

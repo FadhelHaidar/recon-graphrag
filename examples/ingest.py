@@ -16,7 +16,7 @@ from pathlib import Path
 from recon_graphrag.embeddings import EntityEmbedder
 from recon_graphrag.extraction.artifacts import load_graph_document_json
 
-from common import BACKEND_CHOICES, DEFAULT_ARTIFACT_PATH, get_backend_targets
+from common import BACKEND_CHOICES, DEFAULT_ARTIFACT_PATH, ensure_indexes, get_backend_targets
 from config import EMBEDDING_DIM, get_embedder, get_llm
 
 
@@ -70,27 +70,21 @@ async def ingest_artifact(
     for name, store, index_manager_cls in get_backend_targets(backend):
         print(f"\n=== Ingesting {input_path} into {name} ===")
 
-        # 1. Create indexes
-        index_manager_cls(store, embedding_dim=EMBEDDING_DIM).create_indexes()
+        ensure_indexes(index_manager_cls, store, EMBEDDING_DIM)
 
-        # 2. Write graph document
         write_stats = store.write_graph_document(graph_document)
         print(f"Write complete: {write_stats}")
 
-        # 3. Backfill missing descriptions
         store.backfill_descriptions()
 
-        # 4. Resolve duplicate entities
         print("Resolving duplicate entities ...")
         resolution = await store.resolve_entities_normalized(
             graph_name=graph_document.document.graph_name,
         )
         print(f"Entity resolution result: {resolution}")
 
-        # 5. Embed entity nodes
         await EntityEmbedder(store, embedder).embed_entities()
 
-        # 6. Validate graph build
         validation = store.validate_graph_build()
         print(f"Validation: {validation}")
 

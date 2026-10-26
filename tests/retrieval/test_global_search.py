@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -12,11 +14,6 @@ from recon_graphrag.retrieval.search_global import (
     MapBatch,
     PartialAnswer,
 )
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_reports(n: int = 5) -> list[dict]:
@@ -128,11 +125,6 @@ class FakeLLM:
         return MagicMock(content=content)
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-
 class TestShuffle:
     def test_deterministic_with_seed(self):
         reports = _make_reports(10)
@@ -155,9 +147,7 @@ class TestShuffle:
 
 class TestCreateBatches:
     def test_oversized_report_is_truncated_to_map_budget(self):
-        retriever = GlobalSearchRetriever(
-            FakeGraphStore(), FakeLLM(), map_budget_tokens=1000
-        )
+        retriever = GlobalSearchRetriever(cast(Any, FakeGraphStore()), cast(Any, FakeLLM()), map_budget_tokens=1000)
         reports = [{"id": "huge", "report_text": "x" * 20000}]
 
         batches = retriever._create_batches("question", reports)
@@ -171,7 +161,7 @@ class TestCreateBatches:
     def test_single_batch_fits_all(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm, map_budget_tokens=10000)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm), map_budget_tokens=10000)
         reports = _make_reports(3)
         batches = search._create_batches("test query", reports)
         assert len(batches) == 1
@@ -180,7 +170,7 @@ class TestCreateBatches:
     def test_multiple_batches_when_budget_small(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm, map_budget_tokens=300)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm), map_budget_tokens=300)
         reports = _make_reports(5)
         batches = search._create_batches("test query", reports)
         assert len(batches) > 1
@@ -191,7 +181,7 @@ class TestMapPhase:
     async def test_map_parses_response(self):
         store = FakeGraphStore()
         llm = FakeLLM(map_responses=[_make_map_response(helpfulness=80, answer="Nolan directed.")])
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         batches = [MapBatch(batch_id="0", report_ids=["r1"], text="content", token_count=100)]
 
         partials = await search._map_phase("Who directed?", batches)
@@ -208,7 +198,7 @@ class TestMapPhase:
 
         llm = MagicMock()
         llm.ainvoke = fail
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         batches = [MapBatch(batch_id="0", report_ids=["r1"], text="content", token_count=100)]
 
         partials = await search._map_phase("query", batches)
@@ -222,14 +212,15 @@ class TestReducePhase:
     async def test_reduce_calls_llm(self):
         store = FakeGraphStore()
         llm = FakeLLM(reduce_response="Combined final answer.")
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
 
         partials = [
             PartialAnswer(batch_id="0", answer="Part 1.", helpfulness=80, report_ids=["r1"]),
             PartialAnswer(batch_id="1", answer="Part 2.", helpfulness=60, report_ids=["r2"]),
         ]
-        result = await search._reduce_phase("query", partials)
+        result, retained = await search._reduce_phase("query", partials)
         assert result == "Combined final answer."
+        assert retained == {"0", "1"}
 
 
 class TestFullSearch:
@@ -245,7 +236,7 @@ class TestFullSearch:
             ],
             reduce_response="Final synthesized answer.",
         )
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         result = await search.search("test query", community_level=0, random_seed=42)
 
         assert result.mode == "global"
@@ -271,7 +262,7 @@ class TestFullSearch:
             ],
             reduce_response="Final synthesized answer.",
         )
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
 
         result = await search.search("test query", community_level=0, random_seed=42)
 
@@ -283,7 +274,7 @@ class TestFullSearch:
     async def test_search_requires_level(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         result = await search.search("query", community_level=None)
         assert "requires" in result.answer.lower()
         # No LLM call happened before this early return, so nothing was
@@ -294,7 +285,7 @@ class TestFullSearch:
     async def test_search_empty_reports(self):
         store = FakeGraphStore(reports=[])
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         result = await search.search("query", community_level=0)
         assert "No community reports" in result.answer
         assert "token_usage" not in result.metadata
@@ -309,7 +300,7 @@ class TestFullSearch:
                 _make_map_response(helpfulness=0),
             ]
         )
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         result = await search.search("query", community_level=0)
         assert "No relevant" in result.answer
 
@@ -318,14 +309,14 @@ class TestParseMapResponse:
     def test_parse_valid_json(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         data = search._parse_map_response(_make_map_response(helpfulness=85))
         assert data["helpfulness"] == 85
 
     def test_parse_strips_fences(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         fenced = f"```json\n{_make_map_response()}\n```"
         data = search._parse_map_response(fenced)
         assert "answer" in data
@@ -333,7 +324,7 @@ class TestParseMapResponse:
     def test_parse_extracts_json_from_wrapped_response(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         wrapped = f"Here is the JSON:\n{_make_map_response(helpfulness=80)}\nThanks."
         data = search._parse_map_response(wrapped)
         assert data["helpfulness"] == 80
@@ -341,28 +332,28 @@ class TestParseMapResponse:
     def test_parse_accepts_numeric_string_score(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         data = search._parse_map_response(json.dumps({"answer": "x", "helpfulness": "70"}))
         assert data["helpfulness"] == 70
 
     def test_parse_clamps_invalid_score(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         data = search._parse_map_response(json.dumps({"answer": "x", "helpfulness": 150}))
         assert data["helpfulness"] == 0
 
     def test_parse_clamps_negative_score(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         data = search._parse_map_response(json.dumps({"answer": "x", "helpfulness": -5}))
         assert data["helpfulness"] == 0
 
     def test_parse_keeps_only_valid_references(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         data = search._parse_map_response(
             json.dumps(
                 {
@@ -427,7 +418,7 @@ class TestResolveUsedReportIds:
                 batch_id="0",
                 answer="a",
                 helpfulness=80,
-                report_ids=None,
+                report_ids=cast(Any, None),
                 batch_report_ids=["report:0:0"],
             ),
         ]
@@ -523,7 +514,7 @@ class TestSourceResolution:
             ],
             reduce_response="Final answer.",
         )
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         result = await search.search("test query", community_level=0, random_seed=42)
 
         assert len(result.citations) == 1
@@ -546,7 +537,7 @@ class TestSourceResolution:
             ],
             reduce_response="Final answer.",
         )
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         result = await search.search("test query", community_level=0, random_seed=42)
 
         assert len(result.citations) == 1
@@ -566,7 +557,7 @@ class TestSourceResolution:
             ],
             reduce_response="Final answer.",
         )
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         result = await search.search("test query", community_level=0, random_seed=42)
 
         assert len(result.citations) == 1
@@ -589,7 +580,7 @@ class TestSourceResolution:
             ],
             reduce_response="Final answer.",
         )
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         result = await search.search("test query", community_level=0, random_seed=42)
 
         assert len(result.citations) == 1
@@ -619,7 +610,7 @@ class TestSourceResolution:
             ],
             reduce_response="Final answer.",
         )
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         result = await search.search("test query", community_level=0, random_seed=42)
 
         assert len(result.citations) == 1
@@ -646,7 +637,7 @@ class TestSourceResolution:
             ],
             reduce_response="Final answer.",
         )
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         result = await search.search("test query", community_level=0, random_seed=42)
 
         assert result.citations == []
@@ -660,21 +651,21 @@ class TestParseMapResponseEdgeCases:
     def test_parse_missing_helpfulness_defaults_to_zero(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         data = search._parse_map_response(json.dumps({"answer": "some answer"}))
         assert data["helpfulness"] == 0
 
     def test_parse_non_numeric_helpfulness_defaults_to_zero(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         data = search._parse_map_response(json.dumps({"answer": "x", "helpfulness": "high"}))
         assert data["helpfulness"] == 0
 
     def test_parse_missing_answer_defaults_to_empty(self):
         store = FakeGraphStore()
         llm = FakeLLM()
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         data = search._parse_map_response(json.dumps({"helpfulness": 50}))
         assert data.get("answer", "") == ""
 
@@ -692,7 +683,7 @@ class TestSynthesizeResponse:
             ],
             reduce_response="Final synthesized answer.",
         )
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         result = await search.search(
             "test query", community_level=0, random_seed=42, synthesize_response=False
         )
@@ -726,7 +717,7 @@ class TestSynthesizeResponse:
             ],
             reduce_response="Final answer.",
         )
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         result = await search.search(
             "test query", community_level=0, random_seed=42, synthesize_response=False
         )
@@ -746,9 +737,172 @@ class TestSynthesizeResponse:
                 _make_map_response(helpfulness=0),
             ]
         )
-        search = GlobalSearchRetriever(store, llm)
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
         result = await search.search(
             "query", community_level=0, synthesize_response=False
         )
         # All zero still returns early with "No relevant" message
         assert "No relevant" in result.answer
+
+
+class RecordingGraphStore(FakeGraphStore):
+    """Store that records report-read params and honors the report LIMIT."""
+
+    def __init__(self, reports: list[dict] | None = None):
+        super().__init__(reports)
+        self.report_params: list[dict] = []
+
+    def execute_query(self, query, params=None):
+        params = params or {}
+        if "report_limit" in params:
+            self.report_params.append(dict(params))
+            rows = super().execute_query(query, params)
+            return rows[: params["report_limit"]]
+        return super().execute_query(query, params)
+
+
+class CapturingLLM(FakeLLM):
+    """Fake LLM that records map prompts and peak concurrency/tasks."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.map_prompts: list[str] = []
+        self.active = 0
+        self.max_active = 0
+        self.max_tasks = 0
+
+    async def ainvoke(self, prompt):
+        if "Synthesize" in prompt or "Partial Answers" in prompt:
+            return await super().ainvoke(prompt)
+        self.map_prompts.append(prompt)
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        self.max_tasks = max(self.max_tasks, len(asyncio.all_tasks()))
+        try:
+            await asyncio.sleep(0)
+            return await super().ainvoke(prompt)
+        finally:
+            self.active -= 1
+
+
+class TestWholeQueryLimits:
+    """max_reports / max_map_tokens / max_map_calls bound total work."""
+
+    def test_default_report_read_is_unbounded(self):
+        store = RecordingGraphStore(_make_reports(3))
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, FakeLLM()))
+
+        search._read_reports(0)
+
+        assert store.report_params[-1]["report_limit"] == 2**31 - 1
+
+    def test_max_reports_limits_rows_read(self):
+        store = RecordingGraphStore(_make_reports(6))
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, FakeLLM()), max_reports=2)
+
+        rows = search._read_reports(0, search.max_reports)
+
+        assert store.report_params[-1]["report_limit"] == 2
+        assert [r["id"] for r in rows] == ["report:0:0", "report:1:0"]
+
+    def test_max_map_calls_stops_batch_construction(self):
+        search = GlobalSearchRetriever(cast(Any, FakeGraphStore()), cast(Any, FakeLLM()), map_budget_tokens=300)
+        reports = _make_reports(20)
+
+        unbounded = search._create_batches("q", reports)
+        bounded = search._create_batches("q", reports, max_batches=2)
+
+        assert len(unbounded) > 2
+        assert len(bounded) == 2
+        # Truncation keeps a deterministic prefix.
+        assert bounded == unbounded[:2]
+
+    def test_max_map_tokens_stops_batch_construction(self):
+        search = GlobalSearchRetriever(cast(Any, FakeGraphStore()), cast(Any, FakeLLM()), map_budget_tokens=300)
+        reports = _make_reports(20)
+
+        unbounded = search._create_batches("q", reports)
+        budget = sum(
+            search.token_counter.count(search.map_prompt.format(query="q", batch_text=b.text))
+            for b in unbounded[:2]
+        )
+        bounded = search._create_batches("q", reports, max_tokens=budget)
+
+        assert bounded == unbounded[:2]
+        assert sum(
+            search.token_counter.count(search.map_prompt.format(query="q", batch_text=b.text))
+            for b in bounded
+        ) <= budget
+        assert search._create_batches("q", reports, max_tokens=budget - 1) == unbounded[:1]
+
+    @pytest.mark.parametrize("budget", [0, 1, 10])
+    def test_token_budget_below_first_prompt_sends_no_batch(self, budget):
+        search = GlobalSearchRetriever(cast(Any, FakeGraphStore()), cast(Any, FakeLLM()))
+        reports = [{"id": "oversized", "report_text": "x" * 5000}]
+
+        assert search._create_batches("q", reports, max_tokens=budget) == []
+
+    @pytest.mark.asyncio
+    async def test_search_counts_actual_map_prompts_with_repeated_overhead(self):
+        llm = CapturingLLM()
+        search = GlobalSearchRetriever(cast(Any, FakeGraphStore(_make_reports(20))), cast(Any, llm), map_budget_tokens=300,)
+        batches = search._create_batches("q", _make_reports(20))
+        search.max_map_tokens = sum(
+            search.token_counter.count(search.map_prompt.format(query="q", batch_text=b.text))
+            for b in batches[:2]
+        )
+
+        await search.search("q", community_level=0, random_seed=42, synthesize_response=False)
+
+        assert llm.map_prompts
+        assert sum(search.token_counter.count(p) for p in llm.map_prompts) <= search.max_map_tokens
+
+    def test_unlimited_defaults_batch_every_report(self):
+        search = GlobalSearchRetriever(cast(Any, FakeGraphStore()), cast(Any, FakeLLM()))
+        reports = _make_reports(20)
+
+        batches = search._create_batches("q", reports)
+
+        packed = [rid for batch in batches for rid in batch.report_ids]
+        assert packed == [r["id"] for r in reports]
+
+    @pytest.mark.asyncio
+    async def test_search_honors_max_reports(self):
+        store = RecordingGraphStore(_make_reports(6))
+        llm = CapturingLLM()
+        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm), max_reports=2)
+
+        result = await search.search("q", community_level=0, random_seed=42)
+
+        assert store.report_params[-1]["report_limit"] == 2
+        assert result.metadata["reports_used"] == 2
+        assert result.metadata["map_batches"] == 1
+
+    @pytest.mark.asyncio
+    async def test_search_truncation_is_repeatable(self):
+        reports = _make_reports(12)
+
+        async def run() -> list[str]:
+            llm = CapturingLLM()
+            search = GlobalSearchRetriever(cast(Any, FakeGraphStore(reports)), cast(Any, llm), map_budget_tokens=300, max_map_calls=2)
+            await search.search("q", community_level=0, random_seed=42)
+            return llm.map_prompts
+
+        assert await run() == await run()
+
+    @pytest.mark.asyncio
+    async def test_map_workers_bound_pending_tasks(self):
+        llm = CapturingLLM()
+        reports = [
+            {"id": f"report:{i}:0", "level": 0, "report_text": "x" * 600}
+            for i in range(40)
+        ]
+        search = GlobalSearchRetriever(cast(Any, FakeGraphStore(reports)), cast(Any, llm), map_budget_tokens=400,
+        map_concurrency=2,)
+
+        await search.search("q", community_level=0, random_seed=42)
+
+        assert len(llm.map_prompts) > 10
+        assert llm.max_active <= 2
+        # One task per batch would push live tasks past the batch count.
+        assert llm.max_tasks <= 10

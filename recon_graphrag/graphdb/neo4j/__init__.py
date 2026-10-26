@@ -1,5 +1,12 @@
 """Neo4j graph database backend."""
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from recon_graphrag.communities.neo4j.detection import CommunityDetector
+    from recon_graphrag.graphdb.neo4j.index_manager import IndexManager
+    from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
+
 __all__ = [
     "Neo4jGraphStore",
     "IndexManager",

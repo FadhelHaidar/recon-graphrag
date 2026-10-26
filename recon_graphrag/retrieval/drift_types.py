@@ -23,6 +23,8 @@ class DriftAction:
     follow_ups: list[str] = field(default_factory=list)
     references: list[dict] = field(default_factory=list)
     report_ids: list[str] = field(default_factory=list)
+    # Structured evidence for this action; {} when graph inclusion is disabled.
+    graph: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -35,7 +37,7 @@ class DriftQueryState:
     stopping_reason: str = ""
     total_llm_calls: int = 0
     phase_tokens: dict = field(default_factory=dict)
-    failures: list[str] = field(default_factory=list)
+    failures: list[str | dict[str, str]] = field(default_factory=list)
 
 
 @dataclass

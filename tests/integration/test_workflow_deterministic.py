@@ -27,10 +27,7 @@ from recon_graphrag.extraction.schema import (
 from recon_graphrag.llm.base import LLMResponse, LLMUsage
 from tests.integration.support import cleanup_graph, single_count, require_integration_env
 
-# ---------------------------------------------------------------------------
 # Schema
-# ---------------------------------------------------------------------------
-
 WORKFLOW_SCHEMA = GraphSchema(
     node_types=[
         NodeType(
@@ -56,10 +53,7 @@ WORKFLOW_SCHEMA = GraphSchema(
     ],
 )
 
-# ---------------------------------------------------------------------------
 # Deterministic fake LLM / embedder
-# ---------------------------------------------------------------------------
-
 _EXTRACTION_RESPONSE = json.dumps({
     "nodes": [
         {"id": "alice", "label": "Person", "properties": {"name": "Alice Rivera"}},
@@ -83,23 +77,45 @@ def _make_fake_llm():
     return llm
 
 
-# Memgraph's vector index is global per label+property (not scoped by
-# graph_name), so this fake embedder must use the same dimension as every
-# other integration test or CREATE VECTOR INDEX collides with leftover
-# embeddings from a prior test on the shared :__Entity__ label.
-_FAKE_EMBED_DIM = 1536
+# Memgraph/Neo4j vector indexes are global per label+property (not scoped by
+# graph_name), so this fake embedder must produce the same dimension as the
+# real .env embedder used by neighboring integration tests on the shared
+# :__Entity__ label. The dim is probed once from the configured embedder
+# instead of hardcoded, so swapping embedding models in .env can't desync it.
+_REAL_EMBED_DIM: int | None = None
+
+
+def _probe_embed_dim() -> int:
+    import asyncio
+
+    from tests.integration.factories import get_embedder
+
+    real = get_embedder()
+    try:
+        vector = asyncio.run(real.async_embed_query("dimension probe"))
+        return len(vector)
+    finally:
+        close = getattr(real, "aclose", None)
+        if close is not None:
+            asyncio.run(close())
+
+
+def _fake_embed_dim() -> int:
+    # Probed in a worker thread: the caller may be inside a running loop.
+    global _REAL_EMBED_DIM
+    if _REAL_EMBED_DIM is None:
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            _REAL_EMBED_DIM = executor.submit(_probe_embed_dim).result()
+    return _REAL_EMBED_DIM
 
 
 def _make_fake_embedder():
     embedder = MagicMock()
-    embedder.async_embed_query = AsyncMock(return_value=[0.1] * _FAKE_EMBED_DIM)
+    embedder.async_embed_query = AsyncMock(return_value=[0.1] * _fake_embed_dim())
     embedder.aclose = AsyncMock()
     return embedder
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 
 def _make_workflow_fixture(store_factory, run_flag, required_env, graph_name):
@@ -136,17 +152,13 @@ memgraph_workflow = _make_workflow_fixture(
 )
 
 
-# ---------------------------------------------------------------------------
 # Pipeline runner
-# ---------------------------------------------------------------------------
-
-
 async def _run_deterministic_workflow(store, graph_name: str):
     llm = _make_fake_llm()
     embedder = _make_fake_embedder()
 
     try:
-        IndexManager(store, embedding_dim=_FAKE_EMBED_DIM).create_indexes()
+        IndexManager(store, embedding_dim=_fake_embed_dim()).create_indexes()
 
         builder = GraphBuilderPipeline(
             graph_store=store,
@@ -215,11 +227,6 @@ async def _run_deterministic_workflow(store, graph_name: str):
     finally:
         await llm.aclose()
         await embedder.aclose()
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration

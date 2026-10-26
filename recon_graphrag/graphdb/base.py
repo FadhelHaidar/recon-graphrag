@@ -6,7 +6,7 @@ plus GraphWriter protocol for write operations.
 
 from __future__ import annotations
 
-from typing import Any, Optional, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from recon_graphrag.extraction.types import GraphDocument
 from recon_graphrag.models.artifacts import CommunityReport
@@ -21,11 +21,8 @@ class GraphStore(Protocol):
     database driver. Implement this to add a new backend.
     """
 
-    # ------------------------------------------------------------------
-    # Escape hatch — backend-specific query language
-    # ------------------------------------------------------------------
     def execute_query(
-        self, query: str, parameters: Optional[dict] = None
+        self, query: str, parameters: dict | None = None
     ) -> list[dict]:
         """Execute a raw query and return results as list of dicts.
 
@@ -34,29 +31,20 @@ class GraphStore(Protocol):
         """
         ...
 
-    # ------------------------------------------------------------------
-    # Write
-    # ------------------------------------------------------------------
     def write_graph_document(self, graph_document: GraphDocument) -> dict:
         """Persist a GraphDocument to the store."""
         ...
 
-    # ------------------------------------------------------------------
-    # Indexes
-    # ------------------------------------------------------------------
     def create_indexes(
-        self, config: Optional[IndexConfig] = None, embedding_dim: int = 1536
+        self, config: IndexConfig | None = None, embedding_dim: int = 1536
     ) -> None:
         """Create all required vector, fulltext, and uniqueness indexes."""
         ...
 
-    def drop_indexes(self, config: Optional[IndexConfig] = None) -> None:
+    def drop_indexes(self, config: IndexConfig | None = None) -> None:
         """Drop existing indexes so they can be recreated."""
         ...
 
-    # ------------------------------------------------------------------
-    # Entity resolution
-    # ------------------------------------------------------------------
     async def resolve_entities_exact(
         self,
         graph_name: str = "entity-graph",
@@ -71,6 +59,8 @@ class GraphStore(Protocol):
         graph_name: str = "entity-graph",
         resolve_property: str = "name",
         dry_run: bool = False,
+        *,
+        conflict_properties: dict[str, list[str]] | list[str] | None = None,
     ) -> dict:
         """Merge duplicate entity nodes using normalized matching."""
         ...
@@ -95,21 +85,18 @@ class GraphStore(Protocol):
         merge_threshold: float = 95.0,
         review_threshold: float = 85.0,
         max_candidates_per_entity: int = 20,
-        aliases: Optional[dict] = None,
-        embedder: Optional[Any] = None,
-        llm: Optional[Any] = None,
-        llm_guidance: Optional[str] = None,
+        aliases: dict | None = None,
+        embedder: Any | None = None,
+        llm: Any | None = None,
+        llm_guidance: str | None = None,
         allow_ai_auto_merge: bool = False,
-        context_properties: Optional[dict[str, list[str]] | list[str]] = None,
-        conflict_properties: Optional[dict[str, list[str]] | list[str]] = None,
+        context_properties: dict[str, list[str]] | list[str] | None = None,
+        conflict_properties: dict[str, list[str]] | list[str] | None = None,
         context_mode: str = "safe_defaults",
     ) -> dict:
         """Merge duplicate entity nodes using hybrid fuzzy + embedding + LLM matching."""
         ...
 
-    # ------------------------------------------------------------------
-    # Indexes (low-level)
-    # ------------------------------------------------------------------
     def create_vector_index(
         self,
         name: str,
@@ -130,16 +117,20 @@ class GraphStore(Protocol):
         """Create a fulltext index."""
         ...
 
-    # ------------------------------------------------------------------
-    # Embeddings
-    # ------------------------------------------------------------------
     def upsert_vectors(
         self,
         node_ids: list[str],
         embedding_property: str,
         vectors: list[list[float]],
+        *,
+        content_fingerprints: list[str] | None = None,
+        model_fingerprint: str | None = None,
     ) -> None:
-        """Batch upsert vector embeddings onto nodes by internal ID."""
+        """Batch upsert vector embeddings onto nodes by internal ID.
+
+        ``content_fingerprints`` records the text each vector was built from so
+        a later change to that text marks the vector stale.
+        """
         ...
 
     def get_entities_needing_summary(
@@ -166,16 +157,13 @@ class GraphStore(Protocol):
         """Persist relationship summary text and metadata by internal ID."""
         ...
 
-    # ------------------------------------------------------------------
-    # Search
-    # ------------------------------------------------------------------
     def vector_search(
         self,
         index_name: str,
         query_vector: list[float],
         k: int,
-        label: Optional[str] = None,
-        filters: Optional[dict] = None,
+        label: str | None = None,
+        filters: dict | None = None,
     ) -> list[dict]:
         """Vector search returning rows with 'id' and 'score' keys."""
         ...
@@ -185,8 +173,8 @@ class GraphStore(Protocol):
         index_name: str,
         query_text: str,
         k: int,
-        label: Optional[str] = None,
-        filters: Optional[dict] = None,
+        label: str | None = None,
+        filters: dict | None = None,
     ) -> list[dict]:
         """Keyword/fulltext search returning rows with 'id' and 'score' keys."""
         ...
@@ -194,27 +182,24 @@ class GraphStore(Protocol):
     def fetch_entity_context(
         self,
         matches: list[dict],
-        retrieval_query: Optional[str] = None,
-        query_params: Optional[dict] = None,
+        retrieval_query: str | None = None,
+        query_params: dict | None = None,
         mode: str = "local",
         graph_name: str | None = None,
     ) -> list[dict]:
         """Fetch formatted entity context for ranked entity matches."""
         ...
 
-    # ------------------------------------------------------------------
-    # Communities
-    # ------------------------------------------------------------------
     def detect_communities(
         self,
         graph_name: str,
-        relationship_types: Optional[list[str]] = None,
+        relationship_types: list[str] | None = None,
         max_levels: int = 3,
         gamma: float = 1.0,
         theta: float = 0.01,
         tolerance: float = 1e-4,
-        relationship_weight_property: Optional[str] = None,
-        random_seed: Optional[int] = 42,
+        relationship_weight_property: str | None = None,
+        random_seed: int | None = 42,
         entity_label: str = "__Entity__",
         community_label: str = "Community",
     ) -> list[dict]:
@@ -228,7 +213,7 @@ class GraphStore(Protocol):
     def get_communities(
         self,
         graph_name: str,
-        level: Optional[int] = None,
+        level: int | None = None,
     ) -> list[dict]:
         """Get communities at a given level."""
         ...
@@ -255,8 +240,16 @@ class GraphStore(Protocol):
         """Record a failed community report generation attempt."""
         ...
 
-    def get_unembedded_entities(self, limit: int = 500) -> list[dict]:
-        """Get entities without embeddings."""
+    def get_unembedded_entities(
+        self, graph_name: str, limit: int = 500, model_fingerprint: str | None = None
+    ) -> list[dict]:
+        """Get graph-scoped entities whose stored vector is missing or stale."""
+        ...
+
+    def get_unembedded_chunks(
+        self, graph_name: str, limit: int = 500, model_fingerprint: str | None = None
+    ) -> list[dict]:
+        """Get graph-scoped source chunks whose stored vector is missing or stale."""
         ...
 
     def get_community_ranked_context(
@@ -270,6 +263,23 @@ class GraphStore(Protocol):
         Returns rows with keys: e_id, e_name, e_description, e_labels, e_degree,
         rel_type, rel_description, observation_count, combined_degree,
         other_id, other_name, other_description, other_labels, other_degree.
+        """
+        ...
+
+    def fetch_community_member_graph(
+        self,
+        graph_name: str,
+        community_id: str,
+        level: int,
+        member_limit: int = 25,
+    ) -> list[dict]:
+        """Fetch degree-ranked member entities and member-to-member edges.
+
+        Returns at most one row with keys ``members`` (id, name, labels,
+        description, degree), ``member_count``, ``edges`` (source, target, type,
+        description, weight) and ``edge_count``. Members are bounded by
+        ``member_limit``; edges keep their stored direction and only ever
+        connect selected members. Community nodes are never returned.
         """
         ...
 
@@ -316,9 +326,10 @@ class GraphStore(Protocol):
         """Fetch reports for graph-scoped community keys."""
         ...
 
-    # ------------------------------------------------------------------
-    # Community report embeddings
-    # ------------------------------------------------------------------
+    def count_communities_with_reports(self, graph_name: str) -> int:
+        """Count graph-scoped communities that already carry report text."""
+        ...
+
     def get_unembedded_community_reports(
         self,
         graph_name: str,
@@ -354,9 +365,6 @@ class GraphStore(Protocol):
         """
         ...
 
-    # ------------------------------------------------------------------
-    # Stats / validation
-    # ------------------------------------------------------------------
     def get_entity_count(self) -> int:
         """Count all __Entity__ nodes."""
         ...

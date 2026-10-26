@@ -14,10 +14,7 @@ from recon_graphrag.models.artifacts import (
 from recon_graphrag.utils.templates import format_template, has_placeholder
 
 
-# ---------------------------------------------------------------------------
 # Report prompt builder
-# ---------------------------------------------------------------------------
-
 DEFAULT_REPORT_PROMPT = """\
 You are generating a structured community report for a knowledge graph.
 
@@ -181,11 +178,6 @@ def build_report_prompt(
     )
 
 
-# ---------------------------------------------------------------------------
-# Reference ID extraction from context
-# ---------------------------------------------------------------------------
-
-
 def extract_reference_ids(
     entity_ids: list[str],
     relationship_keys: list[str],
@@ -206,11 +198,6 @@ def extract_reference_ids(
     ids.extend(relationship_keys)
     ids.extend(claim_ids)
     return ids
-
-
-# ---------------------------------------------------------------------------
-# Report parser
-# ---------------------------------------------------------------------------
 
 
 class ReportParser:
@@ -355,11 +342,6 @@ class ReportParser:
                     FindingReference(target_id=target_id, target_type=target_type)
                 )
         return refs
-
-
-# ---------------------------------------------------------------------------
-# Validation error and repair
-# ---------------------------------------------------------------------------
 
 
 class ReportValidationError(Exception):

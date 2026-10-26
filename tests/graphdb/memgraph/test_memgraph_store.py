@@ -51,11 +51,32 @@ class FakeSession:
         self.params.append(parameters or {})
         return self._next_result
 
+    def begin_transaction(self):
+        return FakeTransaction(self)
+
     def __enter__(self):
         return self
 
     def __exit__(self, *args):
         pass
+
+
+class FakeTransaction:
+    """Explicit transaction over FakeSession; records commit/rollback."""
+
+    def __init__(self, session: FakeSession):
+        self._session = session
+        self.committed = False
+        self.rolled_back = False
+
+    def run(self, query: str, parameters: dict | None = None):
+        return self._session.run(query, parameters)
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
 
 
 class FakeDriver:
@@ -196,6 +217,7 @@ async def test_resolve_entities_normalized_forwards_basic_parameters(store, monk
         "graph_name": "movie-graph",
         "resolve_property": "title",
         "dry_run": True,
+        "conflict_properties": None,
     }
 
 
@@ -308,7 +330,40 @@ def test_upsert_vectors_runs_unwind_set(store, fake_driver):
     )
     query_text = "\n".join(fake_driver.session_obj.queries)
     assert "UNWIND $rows" in query_text
-    assert "SET n.`embedding` = row.vector" in query_text
+    assert "n.`embedding` = row.vector" in query_text
+
+
+def test_get_unembedded_entities_selects_missing_or_stale_vectors(store, fake_driver):
+    fake_driver.session_obj._next_result = FakeResult([])
+
+    store.get_unembedded_entities("g", limit=5, model_fingerprint="model-1")
+
+    query_text = "\n".join(fake_driver.session_obj.queries)
+    assert "e.embedding IS NULL" in query_text
+    assert "e.embedding_content_fingerprint" in query_text
+    assert "e.embedding_input_fingerprint" in query_text
+    assert "e.embedding_model_fingerprint" in query_text
+
+
+def test_upsert_vectors_records_content_and_model_fingerprints(store, fake_driver):
+    fake_driver.session_obj._next_result = FakeResult([])
+
+    store.upsert_vectors(
+        [1],
+        "embedding",
+        [[0.1]],
+        content_fingerprints=["content-1"],
+        model_fingerprint="model-1",
+    )
+
+    query_text = "\n".join(fake_driver.session_obj.queries)
+    assert "n.embedding_content_fingerprint" in query_text
+    assert "n.embedding_input_fingerprint" in query_text
+    assert "n.embedding_model_fingerprint" in query_text
+    assert fake_driver.session_obj.params[-1]["rows"] == [
+        {"id": 1, "vector": [0.1], "content_fingerprint": "content-1"}
+    ]
+    assert fake_driver.session_obj.params[-1]["model_fingerprint"] == "model-1"
 
 
 def test_upsert_vectors_rejects_mismatched_lengths(store):
@@ -356,6 +411,42 @@ def test_vector_search_overfetches_when_label_filtering(store, fake_driver):
     assert "WHERE node:`__Entity__`" in query_text
     assert fake_driver.session_obj.params[-1]["k"] == 25
     assert fake_driver.session_obj.params[-1]["top_k"] == 5
+
+
+def test_vector_search_graph_filter_overfetches_and_scopes(store, fake_driver):
+    fake_driver.session_obj._next_result = FakeResult([])
+
+    store.vector_search(
+        index_name="entity-embeddings",
+        query_vector=[0.1, 0.2],
+        k=5,
+        filters={"graph_name": "graph-a"},
+    )
+
+    query_text = fake_driver.session_obj.queries[-1]
+    params = fake_driver.session_obj.params[-1]
+    assert "node.graph_name = $graph_name" in query_text
+    assert params["graph_name"] == "graph-a"
+    assert params["k"] == 25  # over-fetch before post-filter trims to top_k
+    assert params["top_k"] == 5
+
+
+def test_keyword_search_graph_filter_overfetches_and_scopes(store, fake_driver):
+    fake_driver.session_obj._next_result = FakeResult([])
+
+    store.keyword_search(
+        index_name="entity-names",
+        query_text="Alice",
+        k=5,
+        filters={"graph_name": "graph-a"},
+    )
+
+    query_text = fake_driver.session_obj.queries[-1]
+    params = fake_driver.session_obj.params[-1]
+    assert "node.graph_name = $graph_name" in query_text
+    assert params["graph_name"] == "graph-a"
+    assert params["k"] == 25
+    assert params["top_k"] == 5
 
 
 def test_keyword_search_runs_text_search_procedure(store, fake_driver):
@@ -553,3 +644,41 @@ def test_create_indexes_runs_uid_constraint(store, fake_driver):
     assert "CREATE TEXT INDEX `entity-names`" in query_text
     assert "CREATE CONSTRAINT" in query_text
     assert "c.uid IS UNIQUE" in query_text
+
+
+def test_fetch_entity_context_ranks_sources_only_with_a_query_vector(store, fake_driver):
+    matches = [{"id": "1", "score": 0.9}]
+
+    store.fetch_entity_context(matches, graph_name="g")
+    assert "source_score" not in fake_driver.session_obj.queries[-1]
+    assert "ORDER BY chunk.id ASC" in fake_driver.session_obj.queries[-1]
+
+    store.fetch_entity_context(
+        matches, query_params={"query_vector": [1.0, 0.0]}, graph_name="g"
+    )
+    assert "source_score" in fake_driver.session_obj.queries[-1]
+    assert fake_driver.session_obj.params[-1]["query_vector"] == [1.0, 0.0]
+
+
+def test_fetch_entity_context_ranks_drift_sources_too(store, fake_driver):
+    store.fetch_entity_context(
+        [{"id": "1", "score": 0.9}],
+        query_params={"query_vector": [1.0, 0.0]},
+        mode="drift",
+        graph_name="g",
+    )
+
+    assert "source_score" in fake_driver.session_obj.queries[-1]
+
+
+def test_fetch_entity_context_custom_query_wins_over_ranking(store, fake_driver):
+    store.fetch_entity_context(
+        [{"id": "1", "score": 0.9}],
+        retrieval_query="RETURN node AS context_row",
+        query_params={"query_vector": [1.0, 0.0]},
+        graph_name="g",
+    )
+
+    query = fake_driver.session_obj.queries[-1]
+    assert "RETURN node AS context_row" in query
+    assert "source_score" not in query

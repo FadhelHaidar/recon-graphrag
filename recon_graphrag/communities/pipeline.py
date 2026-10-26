@@ -123,6 +123,9 @@ class CommunityPipeline:
         """
         with run_scope():
             logger.info("detecting communities")
+            existing_reports = self.graph_store.count_communities_with_reports(
+                self.graph_name
+            )
             community_stats = self.graph_store.detect_communities(
                 graph_name=self.graph_name,
                 relationship_types=self.relationship_types,
@@ -134,6 +137,14 @@ class CommunityPipeline:
                 random_seed=self.random_seed,
             )
             logger.info("found %s communities", len(community_stats))
+            if existing_reports:
+                logger.warning(
+                    "community detection replaced %s community(ies) that already "
+                    "had reports in graph %r; their reports are regenerated on "
+                    "this run.",
+                    existing_reports,
+                    self.graph_name,
+                )
 
             detected_levels = sorted({s["level"] for s in community_stats}, reverse=True)
             levels = (
@@ -143,6 +154,7 @@ class CommunityPipeline:
             )
             total_reports = 0
             level_stats: list[dict] = []
+            maintenance_warnings: list[dict] = []
 
             summarizer = CommunitySummarizer(
                 self.graph_store,
@@ -166,6 +178,12 @@ class CommunityPipeline:
                     stats.elapsed_seconds,
                 )
 
+                if stats.failed:
+                    maintenance_warnings.append({
+                        "code": "community_report_generation_failed",
+                        "level": lvl,
+                        "failed": stats.failed,
+                    })
                 total_reports += len(reports)
                 level_stats.append({
                     "level": lvl,
@@ -194,6 +212,8 @@ class CommunityPipeline:
                 embedded_count = await report_embedder.embed_reports()
 
             result = {
+                "status": "degraded" if maintenance_warnings else "completed",
+                "maintenance_warnings": maintenance_warnings,
                 "communities": len(community_stats),
                 "reports": total_reports,
                 "levels": levels,

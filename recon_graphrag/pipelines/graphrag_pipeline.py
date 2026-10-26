@@ -13,19 +13,22 @@ import asyncio
 import hashlib
 import logging
 import re
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any
 
 from tqdm.asyncio import tqdm_asyncio
 
-from recon_graphrag.embeddings import EntityEmbedder
+from recon_graphrag.embeddings import ChunkEmbedder, EntityEmbedder
+from recon_graphrag.embeddings.base import BaseEmbedder
+from recon_graphrag.extraction.assembler import GraphDocumentAssembler
 from recon_graphrag.extraction.chunking import (
     PageWindowBuilder,
     TextChunker,
     _page_text,
 )
-from recon_graphrag.extraction.extractor import LLMGraphExtractor
 from recon_graphrag.extraction.description_summarizer import DescriptionSummarizer
+from recon_graphrag.extraction.extractor import LLMGraphExtractor
 from recon_graphrag.extraction.parser import _PropertyValidationError
 from recon_graphrag.extraction.prompts import SchemaPromptBuilder
 from recon_graphrag.extraction.schema import GraphSchema
@@ -37,14 +40,12 @@ from recon_graphrag.extraction.structured import (
     row_text,
     rows_to_chunks_and_extractions,
 )
-from recon_graphrag.extraction.assembler import GraphDocumentAssembler
 from recon_graphrag.extraction.types import (
     ExtractedClaim,
     ExtractedRelationship,
     GraphExtraction,
 )
 from recon_graphrag.extraction.validator import SchemaValidator
-from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graphdb.base import GraphStore, GraphWriter
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.observability import (
@@ -54,10 +55,11 @@ from recon_graphrag.observability import (
     usage_delta,
     usage_snapshot,
 )
-from recon_graphrag.utils.tokens import TokenCounter, TiktokenTokenCounter
-
+from recon_graphrag.utils.tokens import TiktokenTokenCounter, TokenCounter
 
 logger = logging.getLogger(__name__)
+# Default tiktoken encoding for token-based chunking (not a secret).
+_DEFAULT_CHUNK_ENCODING = "cl100k_base"
 
 
 class GraphBuilderPipeline:
@@ -75,20 +77,21 @@ class GraphBuilderPipeline:
         llm: BaseLLM,
         embedder: BaseEmbedder,
         graph_name: str = "entity-graph",
-        graph_writer: Optional[GraphWriter] = None,
+        graph_writer: GraphWriter | None = None,
         perform_entity_resolution: bool = True,
         entity_resolution_strategy: str = "normalized",
-        entity_resolution_aliases: Optional[dict] = None,
-        entity_resolution_llm_guidance: Optional[str] = None,
-        entity_resolution_context_properties: Optional[
-            dict[str, list[str]] | list[str]
-        ] = None,
-        entity_resolution_conflict_properties: Optional[
-            dict[str, list[str]] | list[str]
-        ] = None,
+        entity_resolution_aliases: dict | None = None,
+        entity_resolution_llm_guidance: str | None = None,
+        entity_resolution_context_properties: dict[str, list[str]]
+        | list[str]
+        | None = None,
+        entity_resolution_conflict_properties: dict[str, list[str]]
+        | list[str]
+        | None = None,
         entity_resolution_context_mode: str = "safe_defaults",
         allow_ai_auto_merge: bool = False,
         embed_entities: bool = True,
+        embed_chunks: bool = False,
         summarize_descriptions: bool = True,
         summarization_concurrency: int = 5,
         summarization_limit: int = 500,
@@ -112,15 +115,17 @@ class GraphBuilderPipeline:
         self.entity_resolution_strategy = entity_resolution_strategy
         self.entity_resolution_aliases = entity_resolution_aliases
         self.entity_resolution_llm_guidance = entity_resolution_llm_guidance
-        self.entity_resolution_context_properties = (
-            entity_resolution_context_properties
-        )
+        self.entity_resolution_context_properties = entity_resolution_context_properties
         self.entity_resolution_conflict_properties = (
             entity_resolution_conflict_properties
         )
         self.entity_resolution_context_mode = entity_resolution_context_mode
         self.allow_ai_auto_merge = allow_ai_auto_merge
         self.embed_entity_nodes = embed_entities
+        # Off by default: chunk vectors cost one embedding call per chunk and
+        # only enable relevance-ranked source selection, which degrades to the
+        # previous chunk-id order when vectors are absent.
+        self.embed_chunk_nodes = embed_chunks
         self.summarize_descriptions = summarize_descriptions
         self.summarization_concurrency = summarization_concurrency
         self.summarization_limit = summarization_limit
@@ -145,7 +150,7 @@ class GraphBuilderPipeline:
     async def build_from_text(
         self,
         text: str,
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
         *,
         schema: GraphSchema,
         extraction_concurrency: int = 5,
@@ -155,7 +160,7 @@ class GraphBuilderPipeline:
         chunk_overlap: int = 100,
         chunk_unit: str = "tokens",
         token_counter: TokenCounter | None = None,
-        token_encoding: str = "cl100k_base",
+        token_encoding: str = _DEFAULT_CHUNK_ENCODING,
     ) -> dict:
         """Build knowledge graph from raw text.
 
@@ -169,6 +174,7 @@ class GraphBuilderPipeline:
         Steps 4-5 must be run separately via CommunityPipeline.
         """
         self._require_schema(schema)
+        self._require_concurrency(extraction_concurrency)
         with run_scope():
             result = await self._ingest_text(
                 text=text,
@@ -254,7 +260,7 @@ class GraphBuilderPipeline:
         chunk_overlap: int = 100,
         chunk_unit: str = "tokens",
         token_counter: TokenCounter | None = None,
-        token_encoding: str = "cl100k_base",
+        token_encoding: str = _DEFAULT_CHUNK_ENCODING,
         window_size: int = 2,
         window_overlap: int = 1,
     ) -> list[dict]:
@@ -272,10 +278,10 @@ class GraphBuilderPipeline:
         Returns one result dict per input envelope.
         """
         self._require_schema(schema)
+        self._require_concurrency(extraction_concurrency, document_concurrency)
         self._validate_document_envelopes(documents)
 
         with run_scope():
-            semaphore = asyncio.Semaphore(max(int(document_concurrency), 1))
             batch_abort = asyncio.Event()
 
             # Extract + write each document concurrently. Whole-graph finalization
@@ -288,15 +294,14 @@ class GraphBuilderPipeline:
             # documents can bleed into each other's counts. Exact when
             # document_concurrency=1 (the default).
             async def _build_one(envelope: dict) -> dict | None:
-                async with semaphore:
-                    if batch_abort.is_set():
-                        return None
-                    try:
-                        return await _ingest_one(envelope)
-                    except BaseException:
-                        # Nested extraction also closes this gate before draining.
-                        batch_abort.set()
-                        raise
+                if batch_abort.is_set():
+                    return None
+                try:
+                    return await _ingest_one(envelope)
+                except BaseException:
+                    # Nested extraction also closes this gate before draining.
+                    batch_abort.set()
+                    raise
 
             async def _ingest_one(envelope: dict) -> dict:
                 metadata = envelope.get("metadata") or {}
@@ -335,21 +340,33 @@ class GraphBuilderPipeline:
                     result["token_usage"] = usage_delta(before, after)
                 return result
 
-            tasks = [
-                asyncio.create_task(_build_one(envelope)) for envelope in documents
+            # Fixed workers over an iterator: only ``document_concurrency`` tasks
+            # exist no matter how many documents were passed.
+            pending = iter(list(enumerate(documents)))
+            results: list[dict | None] = [None] * len(documents)
+
+            async def _document_worker() -> None:
+                for position, envelope in pending:
+                    results[position] = await _build_one(envelope)
+
+            workers = [
+                asyncio.create_task(_document_worker())
+                for _ in range(max(int(document_concurrency), 1))
             ]
             try:
-                results = await asyncio.gather(*tasks)
+                await asyncio.gather(*workers)
             finally:
-                for task in tasks:
+                for task in workers:
                     if not task.done():
                         task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
+                await asyncio.gather(*workers, return_exceptions=True)
 
             completed: list[dict] = []
             for result in results:
                 if result is None:
-                    raise RuntimeError("Document batch aborted before all documents completed")
+                    raise RuntimeError(
+                        "Document batch aborted before all documents completed"
+                    )
                 completed.append(result)
             validation = await self._finalize_graph()
             for result in completed:
@@ -377,7 +394,11 @@ class GraphBuilderPipeline:
         logger.info(
             "graph build start from pages: document_id=%s pages=%s chars=%s "
             "window_size=%s window_overlap=%s",
-            document_id, len(pages), len(text), window_size, window_overlap,
+            document_id,
+            len(pages),
+            len(text),
+            window_size,
+            window_overlap,
         )
 
         window_builder = PageWindowBuilder(
@@ -393,7 +414,8 @@ class GraphBuilderPipeline:
         if chunks:
             logger.info(
                 "built page windows: document_id=%s chunks=%s first_page=%s last_page=%s",
-                document_id, len(chunks),
+                document_id,
+                len(chunks),
                 chunks[0].metadata.get("page_start"),
                 chunks[-1].metadata.get("page_end"),
             )
@@ -420,9 +442,9 @@ class GraphBuilderPipeline:
         self,
         rows: Iterable[dict],
         mapping: RowMapping,
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
         *,
-        extraction_schema: Optional[GraphSchema] = None,
+        extraction_schema: GraphSchema | None = None,
         extraction_concurrency: int = 5,
         max_gleanings: int = 1,
         finalize: bool = True,
@@ -435,6 +457,7 @@ class GraphBuilderPipeline:
         extracted entities are linked to the row's anchor entity and merge with
         same-label/same-name direct entities during finalize entity resolution.
         """
+        self._require_concurrency(extraction_concurrency)
         mapping.validate()
         rows = [dict(row) for row in rows]
         metadata = metadata or {}
@@ -446,7 +469,8 @@ class GraphBuilderPipeline:
             text_hash = self._hash_text(text)
             logger.info(
                 "graph build start from rows: document_id=%s rows=%s",
-                document_id, len(rows),
+                document_id,
+                len(rows),
             )
 
             chunks, extractions, llm_rows = rows_to_chunks_and_extractions(
@@ -471,8 +495,11 @@ class GraphBuilderPipeline:
                 chunk_extractions=extractions,
                 metadata=metadata,
                 graph_name=self.graph_name,
+                identity_properties=self._identity_properties(llm_schema),
             )
-            write_stats = self.graph_writer.write_graph_document(graph_document)
+            write_stats = await asyncio.to_thread(
+                self.graph_writer.write_graph_document, graph_document
+            )
             logger.info(
                 "write complete to %s: %s entities, %s relationships",
                 self._graph_store_name(),
@@ -500,7 +527,7 @@ class GraphBuilderPipeline:
         self,
         path: str | Path,
         mapping: RowMapping,
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
         *,
         encoding: str = "utf-8-sig",
         **row_kwargs: Any,
@@ -515,9 +542,9 @@ class GraphBuilderPipeline:
         self,
         path: str | Path,
         mapping: RowMapping,
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
         *,
-        sheet: Optional[str] = None,
+        sheet: str | None = None,
         **row_kwargs: Any,
     ) -> dict:
         """Build knowledge graph from an Excel worksheet (requires openpyxl)."""
@@ -531,7 +558,7 @@ class GraphBuilderPipeline:
         connection: Any,
         query: str,
         mapping: RowMapping,
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
         *,
         params: Any = None,
         **row_kwargs: Any,
@@ -557,56 +584,58 @@ class GraphBuilderPipeline:
         Extraction runs on the full row chunk text so FROM_CHUNK evidence
         points at exactly what the LLM saw.
         """
-        pending = [chunk for chunk in chunks if chunk.id in llm_rows]
-        semaphore = asyncio.Semaphore(extraction_concurrency)
+        pending_rows = [chunk for chunk in chunks if chunk.id in llm_rows]
         stopped = False
+        # Fixed workers over an iterator: pending tasks are bounded by
+        # extraction_concurrency instead of one task per row chunk.
+        row_source = iter(pending_rows)
 
-        async def _extract_one(chunk):
+        async def _extract_worker(bar) -> None:
             nonlocal stopped
-            async with semaphore:
+            for chunk in row_source:
                 if stopped:
-                    return None
+                    return
                 try:
                     validated, _ = await self._extract_chunk(
                         chunk, document_id, schema, max_gleanings, False
                     )
-                    return chunk.id, validated
                 except BaseException:
                     stopped = True
                     raise
-
-        tasks = [asyncio.create_task(_extract_one(chunk)) for chunk in pending]
-        try:
-            with tqdm_asyncio(total=len(tasks), desc="Extracting rows", disable=None) as bar:
-                for future in asyncio.as_completed(tasks):
-                    result = await future
-                    if result is None:  # A sibling failed; its exception follows.
+                target = extractions[chunk.id]
+                target.nodes.extend(validated.nodes)
+                target.relationships.extend(validated.relationships)
+                for anchor_key, anchor_identity, rel_type in llm_rows[chunk.id]:
+                    if not anchor_key:
                         continue
-                    chunk_id, validated = result
-                    target = extractions[chunk_id]
-                    target.nodes.extend(validated.nodes)
-                    target.relationships.extend(validated.relationships)
-                    for anchor_key, anchor_identity, rel_type in llm_rows[chunk_id]:
-                        if not anchor_key:
+                    for node in validated.nodes:
+                        # Skip self-links: resolution later merges the LLM
+                        # node with the direct anchor when names match.
+                        if node.id.strip().lower() == anchor_identity.lower():
                             continue
-                        for node in validated.nodes:
-                            # Skip self-links: resolution later merges the LLM
-                            # node with the direct anchor when names match.
-                            if node.id.strip().lower() == anchor_identity.lower():
-                                continue
-                            target.relationships.append(
-                                ExtractedRelationship(
-                                    source_id=anchor_key,
-                                    target_id=node.id,
-                                    type=rel_type,
-                                )
+                        target.relationships.append(
+                            ExtractedRelationship(
+                                source_id=anchor_key,
+                                target_id=node.id,
+                                type=rel_type,
                             )
-                    bar.update(1)
-        finally:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+                        )
+                bar.update(1)
+
+        with tqdm_asyncio(
+            total=len(pending_rows), desc="Extracting rows", disable=None
+        ) as bar:
+            workers = [
+                asyncio.create_task(_extract_worker(bar))
+                for _ in range(max(int(extraction_concurrency), 1))
+            ]
+            try:
+                await asyncio.gather(*workers)
+            finally:
+                for task in workers:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*workers, return_exceptions=True)
 
     async def _extract_chunk(
         self,
@@ -619,8 +648,7 @@ class GraphBuilderPipeline:
         # Public IDs may contain source/title metadata. Use an opaque document
         # fingerprint and chunk ordinal in errors, never text or provider errors.
         context = (
-            f"document={self._hash_text(document_id)[:16]} "
-            f"chunk={chunk.index + 1}"
+            f"document={self._hash_text(document_id)[:16]} chunk={chunk.index + 1}"
         )
         try:
             raw = await self.extractor.extract(
@@ -671,6 +699,25 @@ class GraphBuilderPipeline:
                 "text, call analyze_schema/aanalyze_schema and pass the result"
             )
 
+    @staticmethod
+    def _require_concurrency(
+        extraction_concurrency: int, document_concurrency: int | None = None
+    ) -> None:
+        if extraction_concurrency < 1:
+            raise ValueError("extraction_concurrency must be at least 1")
+        if document_concurrency is not None and document_concurrency < 1:
+            raise ValueError("document_concurrency must be at least 1")
+
+    @staticmethod
+    def _identity_properties(schema: GraphSchema) -> dict[str, str] | None:
+        """Map node label to a non-name identity property for entity keys."""
+        identity_properties = {
+            node_type.label: node_type.identity_property
+            for node_type in schema.node_types
+            if node_type.identity_property and node_type.identity_property != "name"
+        }
+        return identity_properties or None
+
     def _validate_document_envelopes(self, documents: list[dict]) -> None:
         if not isinstance(documents, list):
             raise ValueError("documents must be a list")
@@ -683,9 +730,13 @@ class GraphBuilderPipeline:
             has_pages = "pages" in envelope
 
             if has_text and has_pages:
-                raise ValueError("document envelope must not contain both 'text' and 'pages'")
+                raise ValueError(
+                    "document envelope must not contain both 'text' and 'pages'"
+                )
             if not has_text and not has_pages:
-                raise ValueError("document envelope must contain either 'text' or 'pages'")
+                raise ValueError(
+                    "document envelope must contain either 'text' or 'pages'"
+                )
 
             if has_text and not isinstance(envelope["text"], str):
                 raise ValueError("document envelope 'text' must be a string")
@@ -752,7 +803,7 @@ class GraphBuilderPipeline:
         once per build batch, not once per document.
         """
         logger.info("backfilling missing entity descriptions")
-        self._backfill_descriptions()
+        await self._backfill_descriptions()
 
         resolution = None
         if self.perform_entity_resolution:
@@ -773,8 +824,11 @@ class GraphBuilderPipeline:
         if self.embed_entity_nodes:
             await self._embed_entities()
 
+        if self.embed_chunk_nodes:
+            await self._embed_chunks()
+
         logger.info("validating graph build")
-        validation = self._validate_graph_build()
+        validation = await self._validate_graph_build()
         token_usage = usage_snapshot(self.llm)
         self._write_finalize_summary(resolution, validation, token_usage)
         return validation
@@ -789,9 +843,7 @@ class GraphBuilderPipeline:
             f"{validation.get('entity_relationship_count')} relationships",
         ]
         if resolution and resolution.get("skipped"):
-            lines.append(
-                f"  entity resolution: skipped ({resolution.get('reason')})"
-            )
+            lines.append(f"  entity resolution: skipped ({resolution.get('reason')})")
         elif resolution:
             merged_groups = resolution.get("merged_groups", 0)
             llm_merged = len(resolution.get("ai_merged_review_groups", []))
@@ -827,22 +879,26 @@ class GraphBuilderPipeline:
 
         logger.info(
             "extraction start: document_id=%s chunks=%s concurrency=%s",
-            document_id, total, extraction_concurrency,
+            document_id,
+            total,
+            extraction_concurrency,
         )
 
-        semaphore = asyncio.Semaphore(extraction_concurrency)
         stopped = False
+        node_total = rel_total = 0
+        # Fixed workers over an iterator: pending tasks are bounded by
+        # extraction_concurrency instead of one task per chunk.
+        pending = iter(chunks)
 
-        async def _extract_one(chunk):
-            nonlocal stopped
-            async with semaphore:
+        async def _extract_worker(bar) -> None:
+            nonlocal stopped, node_total, rel_total
+            for chunk in pending:
                 if stopped:
-                    return None
+                    return
                 try:
                     validated, claims = await self._extract_chunk(
                         chunk, document_id, schema, max_gleanings, extract_claims
                     )
-                    return chunk.id, validated, claims
                 except BaseException:
                     stopped = True
                     # Close the document gate immediately, not after sibling
@@ -850,28 +906,26 @@ class GraphBuilderPipeline:
                     if batch_abort is not None:
                         batch_abort.set()
                     raise
+                chunk_extractions[chunk.id] = validated
+                node_total += len(validated.nodes)
+                rel_total += len(validated.relationships)
+                if claims:
+                    chunk_claims[chunk.id] = claims
+                bar.set_postfix(entities=node_total, relationships=rel_total)
+                bar.update(1)
 
-        tasks = [asyncio.create_task(_extract_one(chunk)) for chunk in chunks]
-        node_total = rel_total = 0
-        try:
-            with tqdm_asyncio(total=total, desc="Extracting", disable=None) as bar:
-                for future in asyncio.as_completed(tasks):
-                    result = await future
-                    if result is None:  # A sibling failed; its exception follows.
-                        continue
-                    chunk_id, validated, claims = result
-                    chunk_extractions[chunk_id] = validated
-                    node_total += len(validated.nodes)
-                    rel_total += len(validated.relationships)
-                    if claims:
-                        chunk_claims[chunk_id] = claims
-                    bar.set_postfix(entities=node_total, relationships=rel_total)
-                    bar.update(1)
-        finally:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+        with tqdm_asyncio(total=total, desc="Extracting", disable=None) as bar:
+            workers = [
+                asyncio.create_task(_extract_worker(bar))
+                for _ in range(max(int(extraction_concurrency), 1))
+            ]
+            try:
+                await asyncio.gather(*workers)
+            finally:
+                for task in workers:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*workers, return_exceptions=True)
 
         tqdm_asyncio.write(
             f"extraction complete: {len(chunk_extractions)}/{total} succeeded, "
@@ -890,10 +944,13 @@ class GraphBuilderPipeline:
             chunk_extractions=chunk_extractions,
             metadata=metadata,
             graph_name=self.graph_name,
+            identity_properties=self._identity_properties(schema),
             chunk_claims=chunk_claims if chunk_claims else None,
         )
 
-        write_stats = self.graph_writer.write_graph_document(graph_document)
+        write_stats = await asyncio.to_thread(
+            self.graph_writer.write_graph_document, graph_document
+        )
         logger.info(
             "write complete to %s: %s entities, %s relationships, %s claims",
             self._graph_store_name(),
@@ -908,9 +965,9 @@ class GraphBuilderPipeline:
             "write_stats": write_stats,
         }
 
-    def _backfill_descriptions(self):
+    async def _backfill_descriptions(self):
         """Set description = '' on __Entity__ nodes missing the property."""
-        self.graph_store.backfill_descriptions()
+        await asyncio.to_thread(self.graph_store.backfill_descriptions)
 
     async def _resolve_entities(self):
         """Step 2: Merge duplicate entities with the internal resolver."""
@@ -923,6 +980,7 @@ class GraphBuilderPipeline:
             elif strategy == "normalized":
                 result = await self.graph_store.resolve_entities_normalized(
                     graph_name=self.graph_name,
+                    conflict_properties=self.entity_resolution_conflict_properties,
                 )
             elif strategy == "fuzzy":
                 result = await self.graph_store.resolve_entities_fuzzy(
@@ -946,7 +1004,9 @@ class GraphBuilderPipeline:
                 for rg in result.get("review_groups", []):
                     logger.debug(
                         "review group: names=%s scores=%s decision=%s",
-                        rg.get("names"), rg.get("scores"), rg.get("decision"),
+                        rg.get("names"),
+                        rg.get("scores"),
+                        rg.get("decision"),
                     )
             return result if isinstance(result, dict) else None
         except Exception as e:
@@ -955,18 +1015,65 @@ class GraphBuilderPipeline:
                 raise
             return None
 
-    async def _embed_entities(self):
-        """Step 3: Generate vector embeddings for entity nodes."""
-        embedder = EntityEmbedder(self.graph_store, self.embedder)
+    async def _embed_entities(self, *, require_complete: bool = False):
+        """Step 3: Generate vector embeddings for entity nodes.
+
+        With ``require_complete`` (or ``fail_on_embedding_error``), verifies
+        that no entity in this graph still lacks an embedding after the
+        embedding pass and raises if any remain.
+        """
+        embedder = EntityEmbedder(
+            self.graph_store, self.embedder, graph_name=self.graph_name
+        )
+        strict = require_complete or self.fail_on_embedding_error
         try:
             await embedder.embed_entities()
+            if strict and (
+                await asyncio.to_thread(
+                    self.graph_store.get_unembedded_entities,
+                    graph_name=self.graph_name,
+                    limit=1,
+                    model_fingerprint=embedder.model_fingerprint,
+                )
+            ):
+                raise RuntimeError(
+                    "Entity embedding incomplete: unembedded entities remain "
+                    "in the configured graph."
+                )
         except Exception as e:
             logger.error("entity embedding failed: %s", e)
-            if self.fail_on_embedding_error:
+            if strict:
                 raise
 
-    def _validate_graph_build(self) -> dict:
-        return self.graph_store.validate_graph_build()
+    async def _embed_chunks(self):
+        """Generate vector embeddings for source chunks.
+
+        Optional stage: chunk vectors only enable relevance-ranked source
+        selection in local/DRIFT retrieval. A failure is logged and never fails
+        the build, because ranking falls back to chunk-id order without them.
+        """
+        embedder = ChunkEmbedder(
+            self.graph_store, self.embedder, graph_name=self.graph_name
+        )
+        try:
+            await embedder.embed_chunks()
+        except Exception as e:
+            logger.error("chunk embedding failed: %s", e)
+
+    async def complete_embeddings(self) -> None:
+        """Embed every entity in this graph that still lacks an embedding.
+
+        Recovery after a failed embedding stage: uses the configured graph
+        store, embedder, and graph name to fill only missing entity vectors,
+        then verifies completion and raises if any remain. Existing vectors
+        are not replaced; extraction, writes, resolution, and summarization
+        are not rerun. A graph without missing vectors does not prove that
+        all intended documents were ingested.
+        """
+        await self._embed_entities(require_complete=True)
+
+    async def _validate_graph_build(self) -> dict:
+        return await asyncio.to_thread(self.graph_store.validate_graph_build)
 
     def _graph_store_name(self) -> str:
         """Return a human-readable name derived from the graph store class."""
@@ -980,9 +1087,12 @@ class GraphBuilderPipeline:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     def _make_document_id(self, text: str, metadata: dict) -> str:
+        explicit = metadata.get("document_id")
+        if explicit:
+            return str(explicit)
         source = metadata.get("source") or metadata.get("title")
         if source:
-            slug = re.sub(r"[^a-zA-Z0-9]+", "-", str(source).lower()).strip("-")
-            return f"doc:{slug}"
+            # Slipugged slugs collided ("A/B" → "a-b" == "A-B"); hash instead.
+            return f"doc:{self._hash_text(str(source))[:16]}"
 
         return f"doc:{self._hash_text(text)[:16]}"

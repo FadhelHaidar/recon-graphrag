@@ -25,6 +25,9 @@ class FakeGraphStore:
         if "MATCH (e:__Entity__)" in query and "id(e) AS node_id" in query:
             return self._rows
 
+        if "properties(r) AS rel_props" in query:
+            return []
+
         if "RETURN DISTINCT type(r) AS rel_type" in query:
             return [{"rel_type": "ACTED_IN", "node_id": 2}]
 

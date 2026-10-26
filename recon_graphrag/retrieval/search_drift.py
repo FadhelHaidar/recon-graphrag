@@ -17,20 +17,25 @@ Pipeline:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import random as _random
 import re
 import time
 import zlib
-from typing import Optional
+from typing import Any, Optional
 
 from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.models.types import SearchResult
-from recon_graphrag.observability import run_scope, token_stage, track_usage, usage_snapshot
-
+from recon_graphrag.observability import (
+    run_scope,
+    token_stage,
+    track_usage,
+    usage_snapshot,
+)
 from recon_graphrag.retrieval.citations import (
     resolve_chunk_citations,
     resolve_reference_citations,
@@ -44,16 +49,19 @@ from recon_graphrag.retrieval.drift_types import (
     DriftQueryState,
     DriftSearchConfig,
 )
+from recon_graphrag.retrieval.graph_evidence import (
+    GraphEvidenceBuilder,
+    build_evidence,
+)
 from recon_graphrag.retrieval.hybrid import HybridEntityRetriever, HybridRanker
-from recon_graphrag.retrieval.search_local import _source_chunk_ids_from_result
 from recon_graphrag.retrieval.mixed_context import MixedContextBuilder
+from recon_graphrag.retrieval.search_local import _source_chunk_ids_from_result
 from recon_graphrag.utils.tokens import (
     ApproximateTokenCounter,
+    PackItem,
     TokenCounter,
     pack_items,
-    PackItem,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +70,7 @@ class _LLMCallLimitReached(RuntimeError):
     """Internal signal used to enforce a per-search hard call budget."""
 
 
-# ---------------------------------------------------------------------------
 # Prompts
-# ---------------------------------------------------------------------------
-
 PRIMER_PROMPT = """\
 You are answering a question using community reports from a knowledge graph.
 
@@ -177,10 +182,7 @@ Return only the report text, no JSON formatting.
 Hypothetical Report:"""
 
 
-# ---------------------------------------------------------------------------
 # Local fallback prompt
-# ---------------------------------------------------------------------------
-
 FALLBACK_ANSWER_PROMPT = """Answer the query using the local graph findings.
 
 Query: {query}
@@ -191,11 +193,6 @@ Query: {query}
 Answer:"""
 
 
-# ---------------------------------------------------------------------------
-# DriftSearchRetriever
-# ---------------------------------------------------------------------------
-
-
 class DriftSearchRetriever:
     """DRIFT search: iterative traversal with community report priming."""
 
@@ -204,14 +201,16 @@ class DriftSearchRetriever:
         graph_store: GraphStore,
         llm: BaseLLM,
         embedder: BaseEmbedder,
-        retrieval_query: Optional[str] = None,
-        reduce_prompt: Optional[str] = None,
+        retrieval_query: Optional[str] = None,  # noqa: UP045 - public signature compatibility
+        reduce_prompt: Optional[str] = None,  # noqa: UP045 - public signature compatibility
         vector_index_name: str = "entity-embeddings",
         fulltext_index_name: str = "entity-names",
         graph_name: str = "entity-graph",
         config: DriftSearchConfig | None = None,
         token_counter: TokenCounter | None = None,
         track_token_usage: bool = True,
+        top_k_relationships: int = 10,
+        top_k_sources: int = 2,
     ):
         self.graph_store = graph_store
         self.llm = track_usage(llm) if track_token_usage else llm
@@ -223,8 +222,27 @@ class DriftSearchRetriever:
         self.graph_name = graph_name
         self.config = config or DriftSearchConfig()
         self.counter = token_counter or ApproximateTokenCounter()
+        self.top_k_relationships = top_k_relationships
+        self.top_k_sources = top_k_sources
         self._retriever = self._build_retriever()
         self._mixed_context_builder: MixedContextBuilder | None = None
+
+    def _retrieval_params(
+        self, query_params: dict | None, query_vector: list[float] | None = None
+    ) -> dict:
+        """Per-seed caps pushed into the database so hub degree cannot bound work.
+
+        Passing a query vector also switches source-chunk selection from chunk-id
+        order to relevance ranking; without one the previous order is kept.
+        """
+        params: dict[str, Any] = {
+            "rel_limit": self.top_k_relationships,
+            "source_limit": self.top_k_sources,
+        }
+        if query_vector:
+            params["query_vector"] = query_vector
+        params.update(query_params or {})
+        return params
 
     def _build_retriever(self) -> HybridEntityRetriever:
         return HybridEntityRetriever(
@@ -251,6 +269,7 @@ class DriftSearchRetriever:
         synthesis_metadata_keys: list[str] | None = None,
         synthesize_response: bool = True,
         conversation_history: str = "",
+        include_graph_evidence: bool = False,
     ) -> SearchResult:
         """Run iterative DRIFT search.
 
@@ -270,6 +289,12 @@ class DriftSearchRetriever:
                 context + trace without synthesis.
             conversation_history: Optional conversation history string injected
                 into prompts.
+            include_graph_evidence: When True, attach the structured entity and
+                relationship evidence that reached synthesis to
+                ``SearchResult.graph``. Each action carries its own evidence in
+                ``DriftAction.graph``; the result payload merges only the
+                actions packed into the final reduction and expands the primer's
+                selected community reports (extra database reads).
         """
         with run_scope():
             start = time.monotonic()
@@ -297,7 +322,7 @@ class DriftSearchRetriever:
             )
 
             if primer_result.get("fallback"):
-                return await self._fallback_search(
+                result = await self._fallback_search(
                     query=query,
                     state=state,
                     top_k=top_k,
@@ -308,32 +333,41 @@ class DriftSearchRetriever:
                     synthesize_response=synthesize_response,
                     reason=primer_result.get("fallback_reason", "missing_report_embeddings"),
                     call_lock=call_lock,
+                    include_graph_evidence=include_graph_evidence,
                 )
+                self._add_citation_warnings(result, state)
+                return result
 
             # --- Phase 2: Traversal ---
             await self._traversal_phase(
                 query, state, config, top_k, effective_search_ratio,
                 query_params, ranker, alpha, conversation_history,
                 synthesize_citation_metadata, synthesis_metadata_keys, call_lock,
-                synthesize_response,
+                synthesize_response, include_graph_evidence,
             )
 
             # --- Phase 3: Reduction ---
             elapsed_ms = int((time.monotonic() - start) * 1000)
             state.phase_tokens["elapsed_ms"] = elapsed_ms
 
-            return await self._reduction_phase(
+            result = await self._reduction_phase(
                 query=query,
                 state=state,
                 synthesize_response=synthesize_response,
                 conversation_history=conversation_history,
                 call_lock=call_lock,
+                include_graph_evidence=include_graph_evidence,
             )
+            self._add_citation_warnings(result, state)
+            return result
 
-    # ------------------------------------------------------------------
+    @staticmethod
+    def _add_citation_warnings(result: SearchResult, state: DriftQueryState) -> None:
+        warnings = [failure for failure in state.failures if isinstance(failure, dict)]
+        if warnings:
+            result.metadata["citation_warnings"] = warnings
+
     # Phase 1: Primer
-    # ------------------------------------------------------------------
-
     async def _primer_phase(
         self,
         query: str,
@@ -546,10 +580,7 @@ class DriftSearchRetriever:
             folds.append(reports[i : i + fold_size])
         return folds
 
-    # ------------------------------------------------------------------
     # Phase 2: Traversal
-    # ------------------------------------------------------------------
-
     async def _traversal_phase(
         self,
         query: str,
@@ -565,6 +596,7 @@ class DriftSearchRetriever:
         synthesis_metadata_keys: list[str] | None,
         call_lock: asyncio.Lock,
         synthesize_response: bool,
+        include_graph_evidence: bool = False,
     ) -> None:
         """Breadth-first expansion of follow-up questions."""
         # Seed from primer follow-ups
@@ -614,12 +646,13 @@ class DriftSearchRetriever:
                     ranker, alpha, conversation_history,
                     synthesize_citation_metadata, synthesis_metadata_keys,
                     call_lock, traversal_call_limit,
+                    include_graph_evidence,
                 )
                 for action in batch
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            for action, result in zip(batch, results):
+            for action, result in zip(batch, results, strict=True):
                 if isinstance(result, Exception):
                     action.status = "failed"
                     state.failures.append(f"action {action.id} failed: {result}")
@@ -666,15 +699,18 @@ class DriftSearchRetriever:
         synthesis_metadata_keys: list[str] | None,
         call_lock: asyncio.Lock,
         llm_call_limit: int,
+        include_graph_evidence: bool = False,
     ) -> None:
         """Process a single follow-up action."""
         # Local retrieval
         try:
+            action_vector = await self.embedder.async_embed_query(action.query)
             retriever_result = await self._retriever.search(
                 query_text=action.query,
+                query_vector=action_vector,
                 top_k=top_k,
                 effective_search_ratio=effective_search_ratio,
-                query_params=query_params,
+                query_params=self._retrieval_params(query_params, action_vector),
                 ranker=ranker,
                 alpha=alpha,
             )
@@ -684,19 +720,29 @@ class DriftSearchRetriever:
             return
 
         # Build context
-        chunk_ids = _source_chunk_ids_from_result(retriever_result)
-        if chunk_ids:
-            try:
-                action.citations = resolve_chunk_citations(
-                    self.graph_store, self.graph_name, chunk_ids
-                )
-            except Exception:
-                pass
+        mixed = None
         if config.action_use_mixed_context:
-            local_context = self._build_action_mixed_context(retriever_result)
+            mixed = self._build_action_mixed_context(
+                retriever_result,
+                synthesize_citation_metadata=synthesize_citation_metadata,
+                synthesis_metadata_keys=synthesis_metadata_keys,
+            )
+            state.failures.extend(mixed.citation_warnings)
+            action.citations = mixed.citations
+            local_context = mixed.context
         else:
             from recon_graphrag.retrieval.search_local import _format_entity_context
 
+            chunk_ids = _source_chunk_ids_from_result(retriever_result)
+            if chunk_ids:
+                try:
+                    action.citations = resolve_chunk_citations(
+                        self.graph_store, self.graph_name, chunk_ids
+                    )
+                except Exception:
+                    state.failures.append({
+                        "code": "citation_resolution_failed", "stage": "chunk"
+                    })
             local_context = _format_entity_context(
                 retriever_result,
                 citations=(action.citations if synthesize_citation_metadata else None),
@@ -704,6 +750,11 @@ class DriftSearchRetriever:
                 drift=True,
             )
         action.context = local_context
+
+        if include_graph_evidence:
+            action.graph = await self._action_graph_evidence(
+                mixed=mixed, retriever_result=retriever_result, action_id=action.id
+            )
 
         # Get parent answer for context
         parent_answer = ""
@@ -746,16 +797,22 @@ class DriftSearchRetriever:
                     action.citations = self._dedupe_citations(
                         action.citations + ref_citations
                     )
-                except Exception as citation_error:
-                    state.failures.append(
-                        f"citation resolution failed for {action.id}: {citation_error}"
-                    )
+                except Exception:
+                    state.failures.append({
+                        "code": "citation_resolution_failed", "stage": "reference"
+                    })
             action.status = "completed"
         except Exception as e:
             action.status = "failed"
             state.failures.append(f"action LLM failed for {action.id}: {e}")
 
-    def _build_action_mixed_context(self, retriever_result) -> str:
+    def _build_action_mixed_context(
+        self,
+        retriever_result,
+        *,
+        synthesize_citation_metadata: bool = False,
+        synthesis_metadata_keys: list[str] | None = None,
+    ):
         """Build mixed context for a DRIFT action using MixedContextBuilder."""
         if self._mixed_context_builder is None:
             self._mixed_context_builder = MixedContextBuilder(
@@ -775,17 +832,84 @@ class DriftSearchRetriever:
             entity_id = content.get("entity_id") or content.get("title", "")
             entity_matches.append({"id": entity_id, "score": score})
 
-        mixed = self._mixed_context_builder.build_context(
+        return self._mixed_context_builder.build_context(
             entity_matches=entity_matches,
             entity_context_rows=entity_context_rows,
             token_budget=self.config.action_mixed_context_tokens,
+            synthesize_citation_metadata=synthesize_citation_metadata,
+            synthesis_metadata_keys=synthesis_metadata_keys,
         )
-        return mixed.context
 
-    # ------------------------------------------------------------------
+    async def _action_graph_evidence(
+        self, *, action_id: str, mixed=None, retriever_result=None
+    ) -> dict:
+        """Structured evidence for one action's local context."""
+        if mixed is not None:
+            return await build_evidence(
+                graph_name=self.graph_name,
+                mode="drift",
+                graph_store=self.graph_store,
+                entities=mixed.included_entities,
+                relationships=mixed.included_relationships,
+                reports=[
+                    {"community_id": c.community_id, "level": c.level}
+                    for c in mixed.included_community_reports
+                ],
+                provenance={"action_id": action_id},
+            )
+        rows = [
+            item.content
+            for item in (retriever_result.items if retriever_result else [])
+            if isinstance(item.content, dict)
+        ]
+        # DRIFT renders every relationship of an entity, so no top_k cut here.
+        return await build_evidence(
+            graph_name=self.graph_name,
+            mode="drift",
+            graph_store=self.graph_store,
+            rows=rows,
+            provenance={"action_id": action_id},
+        )
+
+    def _primer_report_selection(self, state: DriftQueryState) -> list[dict]:
+        """Reports the primer explicitly selected, else every report it read."""
+        primer = next((a for a in state.actions if a.id == "primer"), None)
+        selected = set(primer.report_ids if primer else [])
+        chosen = [
+            report
+            for report in state.primer_reports
+            if str(report.get("id")) in selected
+        ]
+        return chosen or list(state.primer_reports)
+
+    async def _reduction_graph_evidence(
+        self, state: DriftQueryState, completed: list[DriftAction], packed_ids: set[str]
+    ) -> dict:
+        """Merge evidence of the actions packed into the final reduction."""
+        builder = GraphEvidenceBuilder(
+            graph_name=self.graph_name, mode="drift", graph_store=self.graph_store
+        )
+        for action in completed:
+            if action.id in packed_ids and action.graph:
+                builder.add_payload(action.graph)
+        if "primer" in packed_ids:
+            await builder.expand_communities(
+                self._primer_report_selection(state), origin="primer"
+            )
+        primer_reports = [
+            {"id": str(report.get("id")), "level": report.get("level")}
+            for report in self._primer_report_selection(state)
+        ]
+        builder.set_provenance(
+            retained_actions=sorted(packed_ids),
+            explored_actions=sorted(
+                action.id for action in completed if action.id not in packed_ids
+            ),
+            primer_reports=primer_reports,
+        )
+        return builder.build()
+
     # Phase 3: Reduction
-    # ------------------------------------------------------------------
-
     async def _reduction_phase(
         self,
         query: str,
@@ -793,6 +917,7 @@ class DriftSearchRetriever:
         synthesize_response: bool,
         conversation_history: str,
         call_lock: asyncio.Lock,
+        include_graph_evidence: bool = False,
     ) -> SearchResult:
         """Sort actions by score, pack context, synthesize final answer."""
         completed = [a for a in state.actions if a.status == "completed" and a.answer]
@@ -843,8 +968,16 @@ class DriftSearchRetriever:
                     if key not in seen_cite_keys:
                         seen_cite_keys.add(key)
                         all_citations.append(cite)
-            except Exception as e:
-                state.failures.append(f"report citation resolution failed: {e}")
+            except Exception:
+                state.failures.append({
+                    "code": "citation_resolution_failed", "stage": "reference"
+                })
+
+        graph = (
+            await self._reduction_graph_evidence(state, completed, packed_ids)
+            if include_graph_evidence
+            else {}
+        )
 
         if not synthesize_response:
             trace = self._build_trace(state)
@@ -863,6 +996,7 @@ class DriftSearchRetriever:
                 context=action_context,
                 citations=all_citations,
                 metadata=metadata,
+                graph=graph,
             )
 
         # Reduce LLM
@@ -879,6 +1013,7 @@ class DriftSearchRetriever:
                 context="",
                 citations=all_citations,
                 metadata=metadata,
+                graph=graph,
             )
 
         prompt = self.reduce_prompt.format(
@@ -916,11 +1051,9 @@ class DriftSearchRetriever:
             context=action_context,
             citations=all_citations,
             metadata=metadata,
+            graph=graph,
         )
 
-    # ------------------------------------------------------------------
-    # Local fallback
-    # ------------------------------------------------------------------
 
     async def _fallback_search(
         self,
@@ -934,14 +1067,17 @@ class DriftSearchRetriever:
         synthesize_response: bool,
         reason: str,
         call_lock: asyncio.Lock,
+        include_graph_evidence: bool = False,
     ) -> SearchResult:
         """Fall back to local-style retrieval when report embeddings missing."""
         logger.warning("DRIFT falling back to local-style retrieval: %s", reason)
+        fallback_vector = await self.embedder.async_embed_query(query)
         retriever_result = await self._retriever.search(
             query_text=query,
+            query_vector=fallback_vector,
             top_k=top_k,
             effective_search_ratio=effective_search_ratio,
-            query_params=query_params,
+            query_params=self._retrieval_params(query_params, fallback_vector),
             ranker=ranker,
             alpha=alpha,
         )
@@ -949,6 +1085,19 @@ class DriftSearchRetriever:
         from recon_graphrag.retrieval.search_local import _format_entity_context
 
         entity_context = _format_entity_context(retriever_result, drift=True)
+        graph = {}
+        if include_graph_evidence:
+            graph = await build_evidence(
+                graph_name=self.graph_name,
+                mode="drift",
+                graph_store=self.graph_store,
+                rows=[
+                    item.content
+                    for item in (retriever_result.items if retriever_result else [])
+                    if isinstance(item.content, dict)
+                ],
+                provenance={"fallback_reason": reason},
+            )
         chunk_ids = _source_chunk_ids_from_result(retriever_result)
         citations = []
         if chunk_ids:
@@ -957,7 +1106,9 @@ class DriftSearchRetriever:
                     self.graph_store, self.graph_name, chunk_ids
                 )
             except Exception:
-                pass
+                state.failures.append({
+                    "code": "citation_resolution_failed", "stage": "chunk"
+                })
 
         if not synthesize_response:
             trace = self._build_trace(state)
@@ -978,6 +1129,7 @@ class DriftSearchRetriever:
                 context=entity_context,
                 citations=citations,
                 metadata=metadata,
+                graph=graph,
             )
 
         prompt = FALLBACK_ANSWER_PROMPT.format(
@@ -1013,11 +1165,9 @@ class DriftSearchRetriever:
             context=entity_context,
             citations=citations,
             metadata=metadata,
+            graph=graph,
         )
 
-    # ------------------------------------------------------------------
-    # JSON parsing
-    # ------------------------------------------------------------------
 
     async def _parse_json_strict(
         self,
@@ -1136,9 +1286,6 @@ class DriftSearchRetriever:
     def _normalize_question(question: str) -> str:
         return " ".join(re.sub(r"[^\w]+", " ", question.casefold()).split())
 
-    # ------------------------------------------------------------------
-    # Context formatting
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _format_primer_reports(reports: list[dict]) -> str:
@@ -1156,9 +1303,6 @@ class DriftSearchRetriever:
             return ""
         return f"\n## Conversation History\n{history}\n"
 
-    # ------------------------------------------------------------------
-    # Citation extraction
-    # ------------------------------------------------------------------
 
     def _extract_report_refs_from_state(self, state: DriftQueryState) -> list[dict]:
         """Extract references from primer reports via JSON or [refs: ...] text."""
@@ -1205,19 +1349,17 @@ class DriftSearchRetriever:
             if not json_refs:
                 report_text = report.get("report_text", "")
                 if report_text:
-                    try:
-                        from recon_graphrag.retrieval.search_global import (
-                            GlobalSearchRetriever,
-                        )
+                    from recon_graphrag.retrieval.search_global import (
+                        GlobalSearchRetriever,
+                    )
 
+                    with contextlib.suppress(Exception):
                         text_refs = GlobalSearchRetriever._extract_report_text_refs(report_text)
                         for ref in text_refs:
                             key = (ref["target_type"], ref["target_id"])
                             if key not in seen and ref["target_type"] in allowed_types:
                                 seen.add(key)
                                 refs.append(ref)
-                    except Exception:
-                        pass
 
         return refs
 
@@ -1237,9 +1379,6 @@ class DriftSearchRetriever:
                 deduped.append(citation)
         return deduped
 
-    # ------------------------------------------------------------------
-    # Trace
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _build_trace(state: DriftQueryState) -> dict:

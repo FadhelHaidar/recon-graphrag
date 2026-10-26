@@ -38,10 +38,7 @@ class FakeGraphStore:
         pass
 
 
-# ------------------------------------------------------------------
 # _Neo4jEntityResolver — exact strategy
-# ------------------------------------------------------------------
-
 @pytest.mark.asyncio
 async def test_neo4j_resolver_exact_groups_by_raw_name():
     rows = [
@@ -104,10 +101,7 @@ async def test_neo4j_resolver_exact_does_not_merge_across_graphs():
     assert result["merged_groups"] == 0
 
 
-# ------------------------------------------------------------------
 # _Neo4jEntityResolver — normalized strategy
-# ------------------------------------------------------------------
-
 @pytest.mark.asyncio
 async def test_neo4j_resolver_normalized_merges_case_variants():
     rows = [
@@ -212,10 +206,7 @@ async def test_neo4j_resolver_normalized_does_not_merge_across_domain_labels():
     assert result["merged_groups"] == 0
 
 
-# ------------------------------------------------------------------
 # _Neo4jEntityResolver — fuzzy strategy
-# ------------------------------------------------------------------
-
 @pytest.mark.asyncio
 async def test_neo4j_resolver_fuzzy_produces_review_candidate():
     rows = [
@@ -308,7 +299,7 @@ async def test_neo4j_resolver_fuzzy_does_not_merge_short_different_names():
             "node_id": "4:b",
             "entity_id": "e2",
             "graph_name": "g1",
-            "resolve_value": "ABD",
+            "resolve_value": "ABX",
             "labels": ["__Entity__", "Organization"],
             "properties": {},
         },
@@ -325,10 +316,7 @@ async def test_neo4j_resolver_fuzzy_does_not_merge_short_different_names():
     assert len(result["review_groups"]) == 0
 
 
-# ------------------------------------------------------------------
 # _Neo4jEntityResolver — alias / hybrid strategy
-# ------------------------------------------------------------------
-
 @pytest.mark.asyncio
 async def test_neo4j_resolver_hybrid_with_simple_alias():
     rows = [
@@ -849,10 +837,6 @@ async def test_neo4j_resolver_hybrid_auto_merges_llm_approved_review():
     assert merge_call[1]["node_ids"] == ["4:a", "4:b"]
 
 
-# ------------------------------------------------------------------
-# Dry run
-# ------------------------------------------------------------------
-
 @pytest.mark.asyncio
 async def test_neo4j_resolver_dry_run_does_not_call_apoc_merge():
     rows = [
@@ -882,10 +866,6 @@ async def test_neo4j_resolver_dry_run_does_not_call_apoc_merge():
     assert len(merge_calls) == 0
 
 
-# ------------------------------------------------------------------
-# APOC unavailable
-# ------------------------------------------------------------------
-
 @pytest.mark.asyncio
 async def test_neo4j_resolver_skips_when_apoc_unavailable():
     store = FakeGraphStore(apoc_available=False)
@@ -894,3 +874,73 @@ async def test_neo4j_resolver_skips_when_apoc_unavailable():
     assert result["skipped"] is True
     assert "merged_groups" in result
     assert result["merged_groups"] == 0
+
+
+# _Neo4jEntityResolver — normalized + conflict properties (F7)
+def _entity_row(node_id, entity_id, country=None):
+    properties = {"name": "Bruce Wayne"}
+    if country is not None:
+        properties["citizenship"] = country
+    return {
+        "node_id": node_id,
+        "entity_id": entity_id,
+        "graph_name": "g1",
+        "resolve_value": "Bruce Wayne",
+        "labels": ["__Entity__", "Person"],
+        "properties": properties,
+    }
+
+
+@pytest.mark.asyncio
+async def test_neo4j_resolver_normalized_conflict_properties_block_merge():
+    """Different non-empty values on a conflict property move the group to review."""
+    rows = [
+        _entity_row("4:a", "e1", country="US"),
+        _entity_row("4:b", "e2", country="UK"),
+    ]
+    store = FakeGraphStore(apoc_available=True, rows=rows)
+    resolver = _Neo4jEntityResolver(store)
+
+    result = await resolver.resolve_normalized(
+        graph_name="g1",
+        dry_run=True,
+        conflict_properties={"Person": ["citizenship"]},
+    )
+
+    assert result["merged_groups"] == 0
+    assert result["review_groups"][0]["decision"] == "blocked"
+    assert result["review_groups"][0]["conflicts"][0]["property"] == "citizenship"
+
+
+@pytest.mark.asyncio
+async def test_neo4j_resolver_normalized_conflict_missing_values_merge():
+    """A missing conflict value on either side is not a conflict."""
+    rows = [
+        _entity_row("4:a", "e1", country=None),
+        _entity_row("4:b", "e2", country="US"),
+    ]
+    store = FakeGraphStore(apoc_available=True, rows=rows)
+    resolver = _Neo4jEntityResolver(store)
+
+    result = await resolver.resolve_normalized(
+        graph_name="g1",
+        dry_run=True,
+        conflict_properties={"Person": ["citizenship"]},
+    )
+
+    assert result["merged_groups"] == 1
+    assert result["review_groups"] == []
+
+
+@pytest.mark.asyncio
+async def test_neo4j_resolver_normalized_without_conflict_properties_merges():
+    rows = [
+        _entity_row("4:a", "e1", country="US"),
+        _entity_row("4:b", "e2", country="UK"),
+    ]
+    store = FakeGraphStore(apoc_available=True, rows=rows)
+    resolver = _Neo4jEntityResolver(store)
+
+    result = await resolver.resolve_normalized(graph_name="g1", dry_run=True)
+
+    assert result["merged_groups"] == 1

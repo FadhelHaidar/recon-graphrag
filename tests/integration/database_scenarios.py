@@ -354,3 +354,85 @@ def assert_cross_document_rerun_idempotent(store, graph_name: str) -> None:
     store.write_graph_document(doc)
 
     assert entity_count(store, graph_name) == 1
+
+
+def _expected_uid(graph_name: str, node_id: str) -> str:
+    return f"{len(graph_name)}:{graph_name}:{node_id}"
+
+
+def assert_uid_contract(store, graph_name: str) -> None:
+    """F8: uid is written, backfilled, and enforced as unique by DB constraints."""
+    doc = _make_simple_graph_document(graph_name, f"{graph_name}:doc-uid")
+    store.write_graph_document(doc)
+
+    uid_rows = store.execute_query(
+        """
+        MATCH (n {graph_name: $graph_name})
+        WHERE n:Document OR n:Chunk OR n:__Entity__
+        RETURN n.id AS id, n.uid AS uid
+        """,
+        {"graph_name": graph_name},
+    )
+    assert uid_rows, "expected persisted Document/Chunk/Entity rows"
+    for row in uid_rows:
+        assert row["uid"] == _expected_uid(graph_name, row["id"]), (
+            f"unexpected uid for {row['id']}: {row['uid']!r}"
+        )
+
+    # Legacy rows written before the uid property existed must be backfilled
+    # when the index manager creates the uniqueness constraints.
+    seed_entities(
+        store,
+        graph_name,
+        "Person",
+        [
+            {"id": f"{graph_name}:legacy-1", "name": "Legacy One"},
+            {"id": f"{graph_name}:legacy-2", "name": "Legacy Two"},
+        ],
+    )
+    store.create_indexes()
+
+    backfilled = store.execute_query(
+        """
+        MATCH (e:__Entity__ {graph_name: $graph_name})
+        WHERE e.id STARTS WITH $prefix
+        RETURN e.id AS id, e.uid AS uid
+        """,
+        {"graph_name": graph_name, "prefix": f"{graph_name}:legacy-"},
+    )
+    assert len(backfilled) == 2
+    for row in backfilled:
+        assert row["uid"] == _expected_uid(graph_name, row["id"])
+
+    # The constraint must reject a duplicate uid.
+    duplicate_uid = _expected_uid(graph_name, f"{graph_name}:legacy-1")
+    count_before = single_count(
+        store,
+        "MATCH (e:__Entity__ {graph_name: $graph_name}) RETURN count(e) AS count",
+        graph_name,
+    )
+    constraint_error = None
+    try:
+        store.execute_query(
+            f"""
+            CREATE (e:__Entity__:Person {{
+                id: '{graph_name}:legacy-dup',
+                graph_name: '{graph_name}',
+                name: 'Legacy Duplicate',
+                description: '',
+                uid: '{duplicate_uid}'
+            }})
+            """,
+            {},
+        )
+    except Exception as exc:  # backend-specific constraint error types differ
+        constraint_error = exc
+    assert constraint_error is not None, (
+        "duplicate uid write succeeded; uniqueness constraint is missing"
+    )
+    count_after = single_count(
+        store,
+        "MATCH (e:__Entity__ {graph_name: $graph_name}) RETURN count(e) AS count",
+        graph_name,
+    )
+    assert count_after == count_before

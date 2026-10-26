@@ -117,7 +117,7 @@ async def _dedup_dry_run(store, strategy: str, embedder, llm) -> dict:
 
 def _safe_stats(store) -> dict:
     try:
-        stats = store.validate_graph_build()
+        stats: dict[str, object] = store.validate_graph_build()
     except Exception as exc:
         stats = {"error": str(exc)}
 

@@ -144,21 +144,41 @@ async def _run_synthetic_e2e(store, graph_name: str):
                 "Who investigated the suspicious login incident?",
                 synthesize_citation_metadata=True,
                 synthesis_metadata_keys=["record_ids", "collections", "external_id"],
+                include_graph_evidence=True,
             ),
             await global_search.search(
                 "What systems and organizations are involved in incident response?",
                 community_level="coarsest",
+                include_graph_evidence=True,
             ),
             await drift_search.search(
                 "How does the Identity Gateway connect to the Payments API?",
                 community_level="finest",
                 synthesize_citation_metadata=True,
                 synthesis_metadata_keys=["record_ids", "collections", "external_id"],
+                include_graph_evidence=True,
             ),
         ]
 
         for result in results:
             assert result.answer.strip(), f"Empty answer for {result.mode} search"
+
+        # Structured graph evidence must mirror the answered synthesis: entity
+        # vertices only, directed edges with both endpoints present, no
+        # cross-graph leakage, and provenance that names the searched graph.
+        for result in results:
+            graph = result.graph
+            assert graph, f"Missing graph evidence for {result.mode} search"
+            node_ids = {node["id"] for node in graph["nodes"]}
+            assert node_ids, f"No nodes for {result.mode} search"
+            assert graph["provenance"]["graph_name"] == graph_name
+            assert graph["provenance"]["mode"] == result.mode
+            for node in graph["nodes"]:
+                assert "Community" not in node["labels"], node
+            for edge in graph["edges"]:
+                assert edge["source"] in node_ids and edge["target"] in node_ids, edge
+                assert edge["type"] not in {"IN_COMMUNITY", "FROM_CHUNK", "SOURCED_FROM"}
+            assert graph["truncation"]["applied"] in (True, False)
 
         drift_result = results[2]
         assert "drift_fallback_reason" not in drift_result.metadata

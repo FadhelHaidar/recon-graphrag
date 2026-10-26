@@ -37,6 +37,22 @@ BACKEND_REGISTRY = {
 BACKEND_CHOICES = (*BACKEND_REGISTRY, ALL_BACKENDS)
 
 
+def ensure_indexes(index_manager_cls: type, store: Any, embedding_dim: int) -> None:
+    """Create retrieval indexes, tolerating an already-present unverifiable index.
+
+    Memgraph does not report vector index dimensions, so a second setup run
+    fails closed. The example scripts are re-runnable, so an index this script
+    already created is treated as present; change the embedding dimension with
+    ``store.drop_indexes()`` first.
+    """
+    try:
+        index_manager_cls(store, embedding_dim=embedding_dim).create_indexes()
+    except ValueError as exc:
+        if "Cannot verify dimensions" not in str(exc):
+            raise
+        print(f"Indexes already present ({exc})")
+
+
 def get_backend_targets(backend: str) -> list[tuple[str, Any, type]]:
     """Return (name, store, index_manager_cls) for the selected backend(s)."""
     if backend == ALL_BACKENDS:

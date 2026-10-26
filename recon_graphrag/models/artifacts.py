@@ -13,19 +13,12 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-# ---------------------------------------------------------------------------
 # Version constants
-# ---------------------------------------------------------------------------
-
 ARTIFACT_SCHEMA_VERSION = "1.1"
 ARTIFACT_PROMPT_VERSION = "0.1"  # updated when prompts change
 
 
-# ---------------------------------------------------------------------------
 # Provenance types
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class SourceReference:
     """Internal provenance linking an observation back to its source chunk.
@@ -71,11 +64,7 @@ class DocumentSource:
     chunk_list: list[Citation] = field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
 # Observation types
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class DescriptionObservation:
     """A single description observation for an entity."""
@@ -86,12 +75,7 @@ class DescriptionObservation:
     created_at: str | None = None
 
 
-
-# ---------------------------------------------------------------------------
 # Claim types
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class ClaimRecord:
     """A claim or covariate extracted from text (Phase 3 scope)."""
@@ -111,11 +95,7 @@ class ClaimRecord:
     text_unit_id: str | None = None
 
 
-# ---------------------------------------------------------------------------
 # Community report types
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class FindingReference:
     """A typed reference from a finding to evidence in the community context.
@@ -165,12 +145,7 @@ class CommunityReport:
     context_truncated: bool = False
 
 
-
-# ---------------------------------------------------------------------------
 # Canonical rendering
-# ---------------------------------------------------------------------------
-
-
 def source_ref(source: SourceReference) -> str:
     """Stable reference rendering for a source."""
     return f"[Source:{source.document_id}:{source.chunk_id}]"

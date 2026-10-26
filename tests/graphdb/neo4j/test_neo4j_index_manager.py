@@ -1,7 +1,10 @@
 """Tests for the Neo4j index manager and internal entity resolver."""
 
+from typing import Any, cast
+
 import pytest
 
+from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.neo4j.index_manager import IndexManager
 
 
@@ -51,9 +54,108 @@ class FakeGraphStore:
         pass
 
 
+class ExistingIndexStore(FakeGraphStore):
+    def __init__(self, existing=None, inspect_error=None):
+        super().__init__()
+        self.existing = existing or []
+        self.inspect_error = inspect_error
+
+    def execute_query(self, query, parameters=None):
+        if query.strip() == "SHOW INDEXES YIELD *":
+            self.calls.append((query.strip(), parameters or {}))
+            if self.inspect_error:
+                raise self.inspect_error
+            return self.existing
+        return super().execute_query(query, parameters)
+
+
+COMPATIBLE_INDEXES = [
+    {
+        "name": "entity-embeddings",
+        "type": "VECTOR",
+        "labelsOrTypes": ["__Entity__"],
+        "properties": ["embedding"],
+        "options": {
+            "indexConfig": {
+                "vector.dimensions": 42,
+                "vector.similarity_function": "cosine",
+            }
+        },
+    },
+    {
+        "name": "entity-names",
+        "type": "FULLTEXT",
+        "labelsOrTypes": ["__Entity__"],
+        "properties": ["name"],
+    },
+    {
+        "name": "community-report-embeddings",
+        "type": "VECTOR",
+        "labelsOrTypes": ["Community"],
+        "properties": ["report_embedding"],
+        "options": {
+            "indexConfig": {
+                "vector.dimensions": 42,
+                "vector.similarity_function": "cosine",
+            }
+        },
+    },
+]
+
+
+def test_create_indexes_reuses_compatible_existing_indexes():
+    store = ExistingIndexStore(COMPATIBLE_INDEXES)
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    manager.create_indexes()
+
+    assert store.vector_indexes == []
+    assert store.fulltext_indexes == []
+
+
+def test_create_indexes_never_drops_existing_indexes():
+    store = ExistingIndexStore(COMPATIBLE_INDEXES)
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    manager.create_indexes()
+
+    assert not any("DROP INDEX" in query for query, _ in store.calls)
+
+
+def test_create_indexes_raises_on_incompatible_definition():
+    incompatible = [dict(COMPATIBLE_INDEXES[0])]
+    incompatible[0]["options"] = {
+        "indexConfig": {
+            "vector.dimensions": 99,
+            "vector.similarity_function": "cosine",
+        }
+    }
+    store = ExistingIndexStore(incompatible)
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    with pytest.raises(ValueError) as excinfo:
+        manager.create_indexes()
+
+    message = str(excinfo.value)
+    assert "entity-embeddings" in message
+    assert "dimensions=99" in message
+    assert not any("DROP INDEX" in query for query, _ in store.calls)
+
+
+def test_create_indexes_stops_when_inspection_fails():
+    store = ExistingIndexStore(inspect_error=RuntimeError("SHOW INDEXES unsupported"))
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    with pytest.raises(RuntimeError, match="Cannot verify existing Neo4j indexes"):
+        manager.create_indexes()
+
+    assert store.vector_indexes == []
+    assert not any("DROP INDEX" in query for query, _ in store.calls)
+
+
 def test_index_manager_create_indexes_uses_graph_store_methods():
     store = FakeGraphStore()
-    manager = IndexManager(store, embedding_dim=42)
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
 
     manager.create_indexes()
 
@@ -67,14 +169,18 @@ def test_index_manager_create_indexes_uses_graph_store_methods():
         }
     ]
     constraint_calls = [call for call in store.calls if "CREATE CONSTRAINT" in call[0]]
-    assert len(constraint_calls) == 1
-    assert "(c.graph_name, c.level, c.id) IS UNIQUE" in constraint_calls[0][0]
+    assert len(constraint_calls) == 4
+    assert (
+        "(c.graph_name, c.level, c.id) IS UNIQUE" in [c[0] for c in constraint_calls][0]
+    )
+    # F8: per-label uid uniqueness for Document/Chunk/__Entity__.
+    assert sum("REQUIRE n.uid IS UNIQUE" in c[0] for c in constraint_calls) == 3
 
 
 @pytest.mark.asyncio
 async def test_index_manager_resolve_entities_normalized_forwards_graph_name():
     store = FakeGraphStore(apoc_available=True)
-    manager = IndexManager(store)
+    manager = IndexManager(cast(GraphStore, store))
 
     result = await manager.resolve_entities_normalized(
         graph_name="movie-graph",
@@ -84,7 +190,8 @@ async def test_index_manager_resolve_entities_normalized_forwards_graph_name():
     assert result["strategy"] == "normalized"
     assert result["merged_groups"] == 1
     load_call = next(
-        call for call in store.calls
+        call
+        for call in store.calls
         if "MATCH (e:__Entity__)" in call[0] and "elementId(e) AS node_id" in call[0]
     )
     assert load_call[1]["graph_name"] == "movie-graph"
@@ -93,8 +200,8 @@ async def test_index_manager_resolve_entities_normalized_forwards_graph_name():
 @pytest.mark.asyncio
 async def test_index_manager_resolve_entities_hybrid_uses_embedder():
     store = FakeGraphStore(apoc_available=True)
-    embedder = object()
-    manager = IndexManager(store, embedder=embedder)
+    embedder = cast(Any, object())
+    manager = IndexManager(cast(GraphStore, store), embedder=embedder)
     captured = {}
 
     class CapturingResolver:
@@ -106,6 +213,7 @@ async def test_index_manager_resolve_entities_hybrid_uses_embedder():
             return {"strategy": "hybrid"}
 
     import recon_graphrag.graphdb.neo4j.index_manager as im
+
     original_resolver = im._Neo4jEntityResolver
     im._Neo4jEntityResolver = CapturingResolver
     try:

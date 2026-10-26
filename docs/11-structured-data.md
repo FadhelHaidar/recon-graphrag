@@ -100,10 +100,11 @@ await pipeline.build_from_rows(list_of_dicts, mapping, metadata={"source": "tick
 ```
 
 **Document identity:** the CSV/Excel wrappers set `metadata["source"]` to the
-file name, which produces a stable document id (`doc:orders-csv`) so re-runs
-update the same Document node. For `build_from_sql`/`build_from_rows`, pass
-`metadata={"source": ...}` yourself — otherwise the id falls back to a content
-hash and changes whenever the data does.
+file name, which produces a stable, collision-resistant source hash as the
+document ID. Re-runs replace that document's contribution, not just its Document
+node. For `build_from_sql`/`build_from_rows`, pass `metadata={"source": ...}` or
+an explicit `metadata["document_id"]` yourself — otherwise the ID falls back to
+a content hash and changes whenever the data does.
 
 ---
 
@@ -178,6 +179,14 @@ column names. Both surface later in search results through
 `citation.metadata` — so an answer can cite `order O-1, region EU` instead of
 an opaque chunk id.
 
+Column names in `metadata_columns` must avoid the writer's reserved chunk
+persistence fields, including `id`, `text`, and `index`. A collision raises
+`ValueError` before that artifact is written — rename the column or drop it from
+`metadata_columns`. The separate `metadata=` argument to `build_from_rows`
+follows document-metadata rules, not chunk-metadata rules. The full list,
+per-record rules, and recovery steps are in
+[Reserved persistence fields](09-workflows.md#reserved-persistence-fields).
+
 ---
 
 ## Type coercion
@@ -213,7 +222,7 @@ One row, both modes. Input:
 ```
 
 ```text
-(:Document {id:"doc:orders-csv"})
+(:Document {id:"<stable source-derived ID>"})
    ▲ PART_OF
 (:Chunk {id:"...:row:0", record_id:"O-1", text:"order_id: O-1\nsupplier_name: Acme Corp\n..."})
    │ FROM_CHUNK                          │ FROM_CHUNK (also to every LLM entity)
@@ -421,7 +430,7 @@ pipeline = GraphBuilderPipeline(
 )
 result = await pipeline.build_from_csv("orders.csv", mapping, extraction_schema=notes_schema)
 print(result["extraction"])
-# {'document_id': 'doc:orders-csv', 'chunks': 3, 'llm_rows': 2, 'write_stats': {...}}
+# {'document_id': '<stable source-derived ID>', 'chunks': 3, 'llm_rows': 2, 'write_stats': {...}}
 ```
 
 `chunks: 3` — one chunk per row. `llm_rows: 2` — only O-1 and O-3 have notes;
@@ -487,10 +496,20 @@ business keys, not opaque chunk ids.
 
 ### 8. Re-running
 
-Run the same ingest again after the CSV changes: the file-name `source` keeps
-`document_id` stable, entity ids are deterministic, and the writer MERGEs —
-updated prices overwrite properties, new rows add chunks/entities, and
-nothing duplicates.
+Run the same ingest again after the CSV changes: the exact file-name `source`
+keeps `document_id` stable. The shared writer replaces that document's
+contribution, including removed rows/chunks, evidence, claims, descriptions and
+relationship observations; other documents' contributions survive. Replays do
+not inflate observation counts. Properties still use the existing update rules;
+this is not historical version storage or a document-wide transaction.
+
+Direct column mappings use trusted label-scoped domain identities. By contrast,
+LLM-extracted local IDs such as `p1` are chunk-local references, not domain
+identities: name-only observations stay separate until conflict-aware resolution.
+Configure conflict properties (for example, a birth date or registration number)
+for normalized resolution; matching names alone cannot prove identity. Existing
+incorrect merges and legacy descriptions/strength without ownership require a
+source rebuild, not an ownership guess. See [replacement and migration](05-pipelines.md#document-replacement-and-legacy-graphs).
 
 ---
 
@@ -499,9 +518,13 @@ nothing duplicates.
 - Each row becomes one `Chunk` node: a 1M-row table means 1M chunks, and — if
   every row has notes — up to 1M LLM calls. For large tables, ingest the
   direct mapping only, or filter to the rows whose text actually matters.
-- Rows are materialized in memory (`list(rows)`) before processing; for very
-  large tables ingest in slices (e.g. SQL `LIMIT/OFFSET` batches with
-  `finalize=False` until the last slice).
-- Re-running the same file with the same `source` is idempotent-ish: entity
-  ids are deterministic, and the writer MERGEs — you get updated properties
-  and bumped observation counts, not duplicates.
+- Rows are materialized in memory (`list(rows)`) before processing. For large
+  tables, each slice must have its own stable `source` or `document_id`; reusing
+  one ID for successive slices replaces earlier slices. `finalize=False` delays
+  resolution/summarization/embedding only — it does not turn replacement into
+  append. Submit the complete current contents of each identified slice when
+  updating it.
+- Finish `store.create_indexes()` before concurrent ingestion. Uniqueness
+  constraints prevent duplicate identities, but concurrent replacement/property
+  updates are not serialized and a competing writer can receive a backend
+  conflict. No automatic retry is provided.
