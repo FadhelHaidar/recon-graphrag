@@ -18,6 +18,40 @@
   label or `graph_name` filters are applied and trim to `top_k` after the
   filter, matching Memgraph behavior; result shape is unchanged.
 
+## [0.10.1](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.10.1...v0.10.1) (2026-10-26)
+
+
+### Features
+
+* return structured graph evidence from Local, DRIFT and Global search ([f45b4ca](https://github.com/FadhelHaidar/recon-graphrag/commit/f45b4ca104295d1623af982e0e069206676c57f8))
+
+
+### Bug Fixes
+
+* bound graph processing work and prevent report embedding loops ([cf67928](https://github.com/FadhelHaidar/recon-graphrag/commit/cf67928a1f3b3efd0ae2c8de229c15681a5e2b25))
+* correct ingestion provenance, identity and vector freshness ([e4e0f21](https://github.com/FadhelHaidar/recon-graphrag/commit/e4e0f21e5cccad9546b53e5da2b6c427dfabd100))
+* **extraction:** keep chunk-local IDs and homonyms separate until merges are safe (F7) ([a8f7a46](https://github.com/FadhelHaidar/recon-graphrag/commit/a8f7a463ed896b0a2be721089759b182277e542a))
+* **graphdb:** enforce graph-scoped identity constraints and stop blocking the event loop (F8) ([6160f86](https://github.com/FadhelHaidar/recon-graphrag/commit/6160f8658357f966a7114783e4549075e4e4c1ee))
+* **graphdb:** graph-scoped embeddings, hashed doc IDs, neo4j overfetch parity ([aee4ba8](https://github.com/FadhelHaidar/recon-graphrag/commit/aee4ba82500b468143a5a65253bbf1068204dce7))
+* **graphdb:** verify Memgraph vector indexes with SHOW VECTOR INDEX INFO ([8a055bd](https://github.com/FadhelHaidar/recon-graphrag/commit/8a055bd8ac2ffb436e54c0595c9fa142e9000b89))
+* harden graph maintenance and retrieval ([51476ff](https://github.com/FadhelHaidar/recon-graphrag/commit/51476ff920496eb846567c91dd41c8cf6787caaa))
+* keep entity names and provider text out of embedding warnings ([83cc613](https://github.com/FadhelHaidar/recon-graphrag/commit/83cc61316c9c4b9f6d87914e9e6534e18a93f182))
+* **pipelines:** fail_on_embedding_error verifies embedding completion ([774457f](https://github.com/FadhelHaidar/recon-graphrag/commit/774457f5050f734e6f8b189dfeee0227bd40513f))
+* **pipelines:** reject reserved keys before any write in CypherGraphWriter ([49d85c3](https://github.com/FadhelHaidar/recon-graphrag/commit/49d85c31eaa592213cd1e19d4e99e5d872b3cf6d))
+* **pipelines:** replace a document's contribution on re-ingestion (F4) ([5cbf132](https://github.com/FadhelHaidar/recon-graphrag/commit/5cbf1324cadf4b40a50dde3e1cfe2a4a7cd012b9))
+* reject non-positive concurrency before starting a build ([5f9edb6](https://github.com/FadhelHaidar/recon-graphrag/commit/5f9edb683ae4887450a7fc1c88306b6978c43a4c))
+* report confirmed write counts and fail on unresolved references ([5c90cbe](https://github.com/FadhelHaidar/recon-graphrag/commit/5c90cbe751e6bd691cebaab2f50a611802d1a1b3))
+* retry a deadlocked document write before failing ([b8d78a6](https://github.com/FadhelHaidar/recon-graphrag/commit/b8d78a63f09f0117c5757b0444afb525490dbe89))
+* retry the unique-constraint race between concurrent writers ([b2e8b8e](https://github.com/FadhelHaidar/recon-graphrag/commit/b2e8b8e612a6e2bd885dc3bf61b23b0c710aad6d))
+* write one document in one database transaction ([14afa92](https://github.com/FadhelHaidar/recon-graphrag/commit/14afa928ecbca4ae58d0a2347b65206ff11d1ffe))
+
+
+### Documentation
+
+* **audit:** update checkpoints for F1/F2/F3/F6 fix-status and resolved lockfile drift ([8d40554](https://github.com/FadhelHaidar/recon-graphrag/commit/8d4055483d607a4a4afaca98e0e22635ff08a922))
+* describe per-document write transactions and their limits ([b15b268](https://github.com/FadhelHaidar/recon-graphrag/commit/b15b2682251df89cc6b53c5e5348ae80c76750ae))
+* record F6, F11 and F12 fix status after the write-path patches ([5109f47](https://github.com/FadhelHaidar/recon-graphrag/commit/5109f478e983e3bd8aa33e2bf5e5f31afc74c4ef))
+
 ## [0.10.1](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.10.0...v0.10.1) (2026-10-18)
 
 
