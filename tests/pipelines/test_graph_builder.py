@@ -2074,3 +2074,38 @@ async def test_extraction_workers_bound_pending_tasks(
     assert state["max_active"] <= 2
     # One task per chunk would push live tasks past chunk_count.
     assert state["max_tasks"] <= 10
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_stage", ["entities", "relationships"])
+async def test_description_summarization_failure_stops_embedding_and_validation(
+    fake_llm, fake_embedder, fake_writer, failed_stage,
+):
+    from recon_graphrag.extraction.description_summarizer import DescriptionSummarizationError
+
+    store = FakeGraphStore()
+    candidate = {"id": "bad", "descriptions": ["original"]}
+    fetch = MagicMock(return_value=[candidate])
+    persist = MagicMock()
+    setattr(store, f"get_{failed_stage}_needing_summary", fetch)
+    persist_name = "persist_entity_summaries" if failed_stage == "entities" else "persist_relationship_summaries"
+    setattr(store, persist_name, persist)
+    fake_llm.ainvoke.side_effect = RuntimeError("provider unavailable")
+    pipeline = GraphBuilderPipeline(
+        graph_store=cast(GraphStore, store), llm=fake_llm, embedder=fake_embedder,
+        graph_writer=fake_writer, perform_entity_resolution=False,
+        embed_entities=True, embed_chunks=True, track_token_usage=False,
+    )
+    pipeline._backfill_descriptions = AsyncMock()
+    pipeline._embed_entities = AsyncMock()
+    pipeline._embed_chunks = AsyncMock()
+    pipeline._validate_graph_build = AsyncMock()
+
+    with pytest.raises(DescriptionSummarizationError):
+        await pipeline._finalize_graph()
+
+    persist.assert_called_once()
+    assert persist.call_args.args[1][0]["description_summary_status"] == "failed"
+    pipeline._embed_entities.assert_not_awaited()
+    pipeline._embed_chunks.assert_not_awaited()
+    pipeline._validate_graph_build.assert_not_awaited()
