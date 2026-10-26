@@ -259,6 +259,16 @@ How it works:
 | `fail_on_resolution_error` | When `True`, raises resolution errors instead of logging and continuing. Defaults to `False`. |
 | `fail_on_embedding_error` | When `True`, the build fails instead of logging and continuing when the embedding stage cannot complete: after the embedding pass the pipeline re-checks the graph and raises if any entity in the configured graph has a missing or stale embedding (for example, because input/model changed or the provider/vector write failed). Defaults to `False`. |
 
+Description summarization retries parser-invalid output (including blank or empty fenced
+summaries) up to **3 total attempts**, with 1- and 2-second delays and the same
+prompt. Provider and prompt errors are not retried by the summarizer. Each batch
+persists successful summaries and failed statuses together before raising
+`DescriptionSummarizationError` if any item failed; embedding and validation do
+not run after that failure. Failed items retain their previous scalar description.
+Rerunning skips already-successful items and retries failed items. A database
+write failure stops the stage without a second write; batch outcomes are not
+confirmed saved in that case.
+
 ### `GraphBuilderPipeline` entity resolution parameters
 
 | Parameter | Description |

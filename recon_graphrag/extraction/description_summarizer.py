@@ -7,7 +7,7 @@ import hashlib
 import json
 import time
 
-from tqdm.asyncio import tqdm_asyncio
+from tqdm import tqdm
 
 from recon_graphrag.extraction.parser import DescriptionSummaryParser
 from recon_graphrag.extraction.prompts import SchemaPromptBuilder
@@ -94,28 +94,30 @@ class DescriptionSummarizer:
                 return {"summarized": total, "batches": batches}
 
             fingerprints = {item["id"]: fingerprint(item) for item in candidates}
+            summaries, failures = await self._summary_payload(
+                candidates, fingerprints, prompt, label
+            )
             try:
-                summaries = await self._summary_payload(
-                    candidates, fingerprints, prompt, label
-                )
                 await asyncio.to_thread(persist, self.graph_name, summaries)
             except Exception as exc:
-                error_rows = [
-                    {
-                        "id": item["id"],
-                        "description": None,
-                        "descriptions": self._clean_descriptions(item),
-                        "description_summary_status": "failed",
-                        "description_input_fingerprint": fingerprints[item["id"]],
-                        "description_summary_updated": int(time.time() * 1000),
-                        "description_summary_error": str(exc),
-                    }
-                    for item in candidates
-                ]
-                await asyncio.to_thread(persist, self.graph_name, error_rows)
                 raise DescriptionSummarizationError(
-                    f"Failed to summarize {label} descriptions: {exc}"
+                    f"Could not persist {label} summary batch ({len(summaries)} items); "
+                    "check database availability before retrying."
                 ) from exc
+
+            if failures:
+                first_failure = next(
+                    row for row in summaries
+                    if row["description_summary_status"] == "failed"
+                )
+                raise DescriptionSummarizationError(
+                    f"Failed to summarize {label} descriptions: "
+                    f"{len(failures)} failed, {len(summaries) - len(failures)} succeeded; "
+                    f"first failed ID={str(first_failure['id'])[:100]!r}. "
+                    f"{first_failure['description_summary_error']} "
+                    "Batch outcomes persisted; fix the provider/output and rerun "
+                    "to retry failed items."
+                ) from failures[0]
 
             total += len(summaries)
             batches += 1
@@ -126,33 +128,66 @@ class DescriptionSummarizer:
         fingerprints: dict[str, str],
         prompt_builder,
         label: str = "item",
-    ) -> list[dict]:
+    ) -> tuple[list[dict], list[Exception]]:
         semaphore = asyncio.Semaphore(self.concurrency)
 
-        async def _summarize(item: dict) -> dict:
-            async with semaphore:
+        async def _summarize(item: dict) -> tuple[dict, Exception | None]:
+            summary = None
+            failure = None
+            error_message = None
+            try:
+                prompt = prompt_builder(item)
                 stage = (
                     "construction.describe_entities"
                     if label == "entity"
                     else "construction.describe_relationships"
                 )
-                with token_stage(stage):
-                    response = await self.llm.ainvoke(prompt_builder(item))
-                summary = self._parse_summary(response.content)
-                return {
-                    "id": item["id"],
-                    "description": summary,
-                    "descriptions": self._clean_descriptions(item),
-                    "description_summary_status": "success",
-                    "description_input_fingerprint": fingerprints[item["id"]],
-                    "description_summary_updated": int(time.time() * 1000),
-                    "description_summary_error": None,
-                }
+                for attempt in range(3):
+                    async with semaphore:
+                        with token_stage(stage):
+                            response = await self.llm.ainvoke(prompt)
+                    try:
+                        summary = self._parse_summary(response.content)
+                        break
+                    except ValueError:
+                        if attempt == 2:
+                            error_message = "Invalid description summary after 3 attempts (empty output)."
+                            raise
+                        await asyncio.sleep(attempt + 1)
+            except Exception as exc:
+                failure = exc
+                if error_message is None:
+                    error_message = (
+                        f"Description summarization failed ({type(exc).__name__[:100]}); "
+                        "check provider/output and retry."
+                    )
 
-        return await tqdm_asyncio.gather(
-            *[_summarize(item) for item in items],
-            desc=f"Summarizing {label} descriptions",
-            disable=None,
+            progress.update()
+            return {
+                "id": item["id"],
+                "description": summary,
+                "descriptions": self._clean_descriptions(item),
+                "description_summary_status": "failed" if failure else "success",
+                "description_input_fingerprint": fingerprints[item["id"]],
+                "description_summary_updated": int(time.time() * 1000),
+                "description_summary_error": error_message,
+            }, failure
+
+        progress = tqdm(
+            total=len(items), desc=f"Summarizing {label} descriptions", disable=None
+        )
+        tasks = [asyncio.create_task(_summarize(item)) for item in items]
+        try:
+            outcomes = await asyncio.gather(*tasks)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            progress.close()
+        return (
+            [row for row, _ in outcomes],
+            [failure for _, failure in outcomes if failure is not None],
         )
 
     def _build_entity_summary_prompt(self, entity: dict) -> str:
