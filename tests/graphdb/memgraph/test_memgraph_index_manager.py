@@ -327,3 +327,66 @@ def test_create_indexes_fails_closed_on_real_memgraph_vector_index():
     assert "Cannot verify dimensions and similarity" in message
     assert not any("DROP" in query for query, _ in store.calls)
     assert store.vector_indexes == []
+
+
+class VectorInfoStore(ExistingIndexStore):
+    """Store whose Memgraph answers SHOW VECTOR INDEX INFO."""
+
+    def __init__(self, existing=None, vector_info=None):
+        super().__init__(existing)
+        self.vector_info = vector_info or []
+
+    def execute_query(self, query: str, parameters: dict | None = None):
+        if query.strip() == "SHOW VECTOR INDEX INFO":
+            self.calls.append((query.strip(), parameters or {}))
+            return self.vector_info
+        return super().execute_query(query, parameters)
+
+
+def _vector_info(dimension: int = 42, metric: str = "cos"):
+    return [
+        {
+            "index_name": "entity-embeddings",
+            "label": ":__Entity__",
+            "property": "embedding",
+            "dimension": dimension,
+            "metric": metric,
+        },
+        {
+            "index_name": "community-report-embeddings",
+            "label": ":Community",
+            "property": "report_embedding",
+            "dimension": dimension,
+            "metric": metric,
+        },
+    ]
+
+
+def test_create_indexes_reuses_compatible_vector_indexes():
+    store = VectorInfoStore(MEMGRAPH_REPORTED_INDEXES, _vector_info())
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    manager.create_indexes()
+
+    assert store.vector_indexes == []
+    assert not any("DROP" in query for query, _ in store.calls)
+
+
+def test_create_indexes_reports_reported_dimension_mismatch():
+    store = VectorInfoStore(MEMGRAPH_REPORTED_INDEXES, _vector_info(dimension=1536))
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    with pytest.raises(ValueError, match="dimensions=1536, expected 42"):
+        manager.create_indexes()
+
+    assert store.vector_indexes == []
+
+
+def test_create_indexes_reports_reported_similarity_mismatch():
+    store = VectorInfoStore(MEMGRAPH_REPORTED_INDEXES, _vector_info(metric="l2"))
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    with pytest.raises(ValueError, match="similarity='l2', expected 'cos'"):
+        manager.create_indexes()
+
+    assert store.vector_indexes == []

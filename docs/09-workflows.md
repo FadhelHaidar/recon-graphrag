@@ -936,10 +936,12 @@ store.create_indexes()
 - **Index verification.** Neo4j exposes index names and vector configuration in
   `SHOW INDEXES`, so compatible indexes are reused and a dimension or similarity
   mismatch raises `ValueError`. Memgraph's `SHOW INDEX INFO` omits vector index
-  names and dimensions, so an existing vector index cannot be verified and setup
-  fails closed with an actionable message; drop it explicitly before recreating
-  it. Text indexes are fully described by type, label, and properties, so a
-  matching one is reused.
+  names and dimensions; `SHOW VECTOR INDEX INFO` reports them, so vector indexes
+  are verified there too and compatible ones are reused. On a Memgraph release
+  without `SHOW VECTOR INDEX INFO`, an existing vector index cannot be verified
+  and setup fails closed with an actionable message; drop it explicitly before
+  recreating it. Text indexes are fully described by type, label, and
+  properties, so a matching one is reused.
 
 ---
 
