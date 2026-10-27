@@ -18,6 +18,14 @@
   label or `graph_name` filters are applied and trim to `top_k` after the
   filter, matching Memgraph behavior; result shape is unchanged.
 
+## [0.13.0](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.12.1...v0.13.0) (2026-10-27)
+
+
+### Features
+
+* **communities:** add opt-in structured report output ([c1b1585](https://github.com/FadhelHaidar/recon-graphrag/commit/c1b15856be3214c950aa058ee19d3fd476465e66))
+* **communities:** add opt-in structured report output ([3b2dd7a](https://github.com/FadhelHaidar/recon-graphrag/commit/3b2dd7a994d36ed35cb5c0b679aff5c160d9e14d))
+
 ## [0.12.1](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.12.0...v0.12.1) (2026-10-27)
 
 
