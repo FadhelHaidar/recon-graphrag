@@ -239,21 +239,37 @@ async def test_build_reports_completed_when_every_report_succeeds():
 
 
 @pytest.mark.asyncio
-async def test_build_reports_degraded_when_a_report_fails():
+@pytest.mark.parametrize("include_error_details", [False, True])
+@pytest.mark.parametrize("community_count", [1, 2], ids=["all-failed", "mixed"])
+async def test_build_reports_degraded_when_a_report_fails(include_error_details, community_count):
     store = FakeGraphStoreWithCommunities([
-        {"id": "c0", "level": 0, "entity_count": 2},
-        {"id": "c1", "level": 0, "entity_count": 2},
+        {"id": f"c{i}", "level": 0, "entity_count": 2}
+        for i in range(community_count)
     ])
     pipeline = CommunityPipeline(
         graph_store=cast(Any, store), llm=cast(Any, FailingReportLLM()),
         relationship_types=["ACTED_IN"], graph_name="test-graph",
+        include_error_details=include_error_details,
     )
 
     result = await pipeline.build()
 
     assert result["status"] == "degraded"
     warnings = result["maintenance_warnings"]
-    assert warnings == [{"code": "community_report_generation_failed", "level": 0, "failed": 1}]
+    assert warnings == [{
+        "code": "community_report_generation_failed", "level": 0, "failed": 1,
+        "errors": [{
+            "community_id": "c0", "error_type": "RuntimeError",
+            "message": (
+                "provider said: key=sk-secret-value" if include_error_details
+                else "Community report generation or storage failed."
+            ),
+        }],
+    }]
     assert result["level_stats"][0]["failed"] == 1
-    # Still inspectable partial progress, and no sensitive payload leaks.
-    assert "sk-secret-value" not in json.dumps(warnings)
+    assert result["level_stats"][0]["succeeded"] == community_count - 1
+    assert result["reports"] == len(store.reports) == community_count - 1
+    if not include_error_details:
+        assert "sk-secret-value" not in json.dumps(warnings)
+    else:
+        assert "sk-secret-value" in json.dumps(warnings)

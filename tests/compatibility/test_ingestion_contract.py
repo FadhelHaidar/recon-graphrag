@@ -106,6 +106,7 @@ def assert_result(result, store, writer, index, source, chunks, *, llm_rows=None
         "document_id": _hashed_doc_id(source),
         "chunks": chunks,
         "write_stats": writer.results[index],
+        "assembly_review_groups": [],
     }
     if llm_rows is not None:
         extraction["llm_rows"] = llm_rows
@@ -213,6 +214,7 @@ async def test_row_text_extension_without_finalize_preserves_result_shape(schema
     assert result["extraction"] == {
         "document_id": _hashed_doc_id("Row-text"), "chunks": 1, "llm_rows": 1,
         "write_stats": store.writer.results[0],
+        "assembly_review_groups": [],
     }
     assert result["extraction"]["write_stats"] is store.writer.results[0]
     assert store.validation_calls == 0
@@ -293,6 +295,7 @@ async def test_ingestion_default_tracking_preserves_complete_usage_shape(schema,
         extraction = {
             "document_id": _hashed_doc_id(source), "chunks": 1,
             "write_stats": store.writer.results[index],
+            "assembly_review_groups": [],
         }
         if entry_point in {"rows", "row-text"}:
             extraction["llm_rows"] = int(entry_point == "row-text")

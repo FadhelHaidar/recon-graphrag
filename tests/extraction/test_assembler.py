@@ -1,6 +1,8 @@
 """Tests for graph document assembler — core logic and cross-chunk aggregation."""
 
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
+
+import pytest
 
 from recon_graphrag.extraction.assembler import GraphDocumentAssembler
 from recon_graphrag.extraction.chunking import TextChunk
@@ -50,6 +52,87 @@ def test_assembler_deduplicates_entities():
     }
     assert {e.human_readable_id for e in result.entities} == {"Person:Alice", "Person:Bob"}
     assert all(UUID(e.id) for e in result.entities)
+
+
+def test_assembler_retains_complementary_properties_and_observations():
+    chunks = [_chunk("c1", "Alice email"), _chunk("c2", "Alice phone", 1)]
+    first = {
+        "canonical_key": "Person:Alice",
+        "human_readable_id": "alice-first",
+        "name": "Alice",
+        "email": "alice@example.com",
+        "description": "Alice email",
+    }
+    second = {
+        "canonical_key": "Person:Alice",
+        "human_readable_id": "alice-later",
+        "name": "ALICE",
+        "phone": "555-0100",
+        "description": "Alice phone",
+    }
+    extractions = {
+        chunk.id: GraphExtraction(
+            nodes=[ExtractedNode(id=f"p{index}", label="Person", properties=properties)]
+        )
+        for index, (chunk, properties) in enumerate(zip(chunks, [first, second], strict=True))
+    }
+
+    result = GraphDocumentAssembler().assemble(
+        "doc1", "hash", chunks, extractions, {}, "entity-graph"
+    )
+
+    (entity,) = result.entities
+    assert entity.properties == {
+        **first,
+        "phone": "555-0100",
+        "title": "Alice",
+        "description": "Alice email; Alice phone",
+    }
+    assert entity.canonical_key == "Person:Alice"
+    assert entity.human_readable_id == "alice-first"
+    assert entity.type == "Person"
+    assert entity.graph_name == "entity-graph"
+    assert [obs.description for obs in entity.description_observations] == [
+        "Alice email", "Alice phone"
+    ]
+    assert [obs.source.chunk_id for obs in entity.description_observations] == ["c1", "c2"]
+    assert [(link.chunk_id, link.entity_id) for link in result.evidence_links] == [
+        ("c1", entity.id), ("c2", entity.id)
+    ]
+    assert "phone" not in first
+    assert second["human_readable_id"] == "alice-later"
+
+
+@pytest.mark.parametrize(
+    ("first", "incoming", "expected"),
+    [
+        ({}, {"value": "new"}, {"value": "new"}),
+        ({"value": None}, {"value": "new"}, {"value": "new"}),
+        ({}, {"value": None}, {}),
+        ({"value": None}, {"value": None}, {"value": None}),
+        ({"value": "first"}, {}, {"value": "first"}),
+        ({"value": "first"}, {"value": None}, {"value": "first"}),
+        ({"value": "first"}, {"value": "later"}, {"value": "first"}),
+        ({}, {"value": 0}, {"value": 0}),
+        ({"value": None}, {"value": False}, {"value": False}),
+        ({"value": 0}, {"value": 1}, {"value": 0}),
+        ({"value": False}, {"value": True}, {"value": False}),
+    ],
+)
+def test_assembler_property_merge_keeps_first_populated_value(first, incoming, expected):
+    chunk = _chunk("c1", "Alice")
+    nodes = [
+        ExtractedNode(
+            id=f"p{index}", label="Person",
+            properties={"canonical_key": "Person:Alice", **properties},
+        )
+        for index, properties in enumerate([first, incoming])
+    ]
+    result = GraphDocumentAssembler().assemble(
+        "doc1", "hash", [chunk], {chunk.id: GraphExtraction(nodes=nodes)}, {}, "g"
+    )
+    (entity,) = result.entities
+    assert {key: value for key, value in entity.properties.items() if key == "value"} == expected
 
 
 def test_assembler_deduplicates_relationships_and_aggregates_weight():
@@ -755,3 +838,362 @@ def test_chunk_local_ids_keep_endpoints_claims_and_citations_separate():
         assert claim.object_entity_id == shared_id
         assert claim.source.chunk_id == claim.text_unit_id == chunk.id
         assert {(link.chunk_id, link.entity_id) for link in result.evidence_links if link.chunk_id == chunk.id} == {(chunk.id, entity.id), (chunk.id, shared_id)}
+
+
+def test_name_conflicts_split_all_variants_and_preserve_endpoints():
+    chunks = [_chunk("c1", "first"), _chunk("c2", "second", 1)]
+    extractions = {
+        chunk.id: GraphExtraction(
+            nodes=[
+                ExtractedNode("alice", "Person", {
+                    "name": "Alice", "canonical_key": "Person:Alice", "contact": value,
+                }, canonical_key_trusted=False),
+                ExtractedNode("bob", "Person", {"canonical_key": "Person:Bob"}),
+            ],
+            relationships=[ExtractedRelationship("alice", "bob", "KNOWS")],
+        )
+        for chunk, value in zip(chunks, ["one", "two"], strict=True)
+    }
+    claims = {
+        chunk.id: [ExtractedClaim("alice", "KNOWS", "observation", object_entity_id="bob")]
+        for chunk in chunks
+    }
+    assembler = GraphDocumentAssembler()
+    result = assembler.assemble("doc", "hash", chunks, extractions, {}, "g", claims)
+    again = assembler.assemble("doc", "hash", chunks, extractions, {}, "g", claims)
+    assert result == again
+    alice = [e for e in result.entities if e.properties.get("name") == "Alice"]
+    assert len(alice) == 2
+    assert all(e.canonical_key and e.canonical_key.startswith("Person:Alice:provisional:") for e in alice)
+    bob = next(e for e in result.entities if e.canonical_key == "Person:Bob")
+    for chunk, entity, rel, claim in zip(chunks, alice, result.relationships, result.claims, strict=True):
+        assert rel.source_id == claim.entity_id == entity.id
+        assert rel.target_id == claim.object_entity_id == bob.id
+        assert rel.properties["source_canonical_key"] == entity.canonical_key
+        assert any(link.chunk_id == chunk.id and link.entity_id == entity.id for link in result.evidence_links)
+    (review,) = result.assembly_review_groups
+    assert review["decision"] == "blocked"
+    assert set(review["entity_ids"]) == {e.id for e in alice}
+    assert [o["source"]["chunk_id"] for o in review["conflicts"][0]["observations"]] == ["c1", "c2"]
+    assert not any("assembly_review_groups" in e.properties for e in result.entities)
+
+
+def test_trusted_identity_precedes_keys_and_preserves_scalar_conflicts_and_lists():
+    from recon_graphrag.extraction.schema import GraphSchema, NodeType, PropertyType
+
+    schema = GraphSchema([NodeType("Person", properties=[
+        PropertyType("tags", "LIST"), PropertyType("identifier"), PropertyType("contact"),
+    ], identity_property="identifier")], [])
+    chunks = [_chunk("c1", "first"), _chunk("c2", "second", 1), _chunk("c3", "third", 2)]
+    extractions = {
+        chunk.id: GraphExtraction(nodes=[ExtractedNode("alice", "Person", {
+            "canonical_key": "Person:Alice", "name": "Alice", "identifier": identity,
+            "contact": contact, "tags": tags,
+        })], relationships=[ExtractedRelationship("alice", "alice", "SELF")])
+        for chunk, identity, contact, tags in zip(
+            chunks, [0, 0, 1], [False, True, False], [["a"], ["a", "b", "b"], ["c"]], strict=True,
+        )
+    }
+    claims = {chunk.id: [ExtractedClaim("alice", "X", "x", object_entity_id="alice")] for chunk in chunks}
+    result = GraphDocumentAssembler().assemble("doc", "hash", chunks, extractions, {}, "g", claims, schema=schema)
+    assert len(result.entities) == 2
+    first, second = result.entities
+    assert first.canonical_key == "Person:0"
+    assert second.canonical_key == "Person:1"
+    assert first.properties["contact"] is False
+    assert first.properties["tags"] == ["a", "b"]
+    assert all(c.entity_id == c.object_entity_id for c in result.claims)
+    assert [c.entity_id for c in result.claims] == [first.id, first.id, second.id]
+    assert result.relationships[0].source_id == first.id
+    (review,) = result.assembly_review_groups
+    assert review["decision"] == "identity_retained"
+    assert review["conflicts"][0]["property"] == "contact"
+    assert [o["value"] for o in review["conflicts"][0]["observations"]] == [False, True]
+
+
+@pytest.mark.parametrize("empty", [None, "", [], {}])
+def test_empty_observations_do_not_split_name_candidates(empty):
+    chunks = [_chunk("c1", "first"), _chunk("c2", "second", 1)]
+    extractions = {
+        chunk.id: GraphExtraction(nodes=[ExtractedNode("a", "Thing", {
+            "canonical_key": "Thing:A", "value": value,
+        }, canonical_key_trusted=False)])
+        for chunk, value in zip(chunks, [empty, 0], strict=True)
+    }
+    result = GraphDocumentAssembler().assemble("doc", "h", chunks, extractions, {}, "g")
+    assert len(result.entities) == 1
+    assert result.entities[0].properties["value"] == 0
+    assert result.assembly_review_groups == []
+
+
+@pytest.mark.parametrize("other_trusted", [True, False])
+@pytest.mark.parametrize("extra_key", [None, "One:shared", "One:shared:1"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_trusted_cross_label_key_collisions_are_rejected(other_trusted, extra_key, reverse):
+    trusted = ExtractedNode("a", "One", {"canonical_key": "shared"})
+    assembler = GraphDocumentAssembler()
+    chunks = [_chunk("c1", "private source text")]
+    baseline = assembler.assemble(
+        "doc", "h", chunks, {"c1": GraphExtraction(nodes=[trusted])}, {}, "g",
+    )
+    assert baseline.entities[0].canonical_key == "shared"
+    assert baseline.entities[0].id == str(uuid5(
+        NAMESPACE_URL, "recon-graphrag/entity/g/shared",
+    ))
+    nodes = [trusted, ExtractedNode("b", "Two", {"canonical_key": "shared"},
+                                   canonical_key_trusted=other_trusted)]
+    if extra_key:
+        nodes.append(ExtractedNode("c", "One", {"canonical_key": extra_key}))
+    if reverse:
+        nodes.reverse()
+    with pytest.raises(ValueError) as exc:
+        assembler.assemble("doc", "h", chunks, {"c1": GraphExtraction(nodes=nodes)}, {}, "g")
+    assert str(exc.value) == "Cross-label canonical-key collision involving a trusted identity."
+
+
+@pytest.mark.parametrize("extra_identity", [None, "Person:x"])
+def test_schema_identity_cross_label_collision_is_rejected(extra_identity):
+    from recon_graphrag.extraction.schema import GraphSchema, NodeType, PropertyType
+
+    schema = GraphSchema([NodeType("Person", properties=[PropertyType("identifier")],
+                                   identity_property="identifier")], [])
+    nodes = [
+        ExtractedNode("a", "Person", {"identifier": "x"}, canonical_key_trusted=False),
+        ExtractedNode("b", "Organization", {"canonical_key": "Person:x"},
+                      canonical_key_trusted=False),
+    ]
+    if extra_identity:
+        nodes.append(ExtractedNode("c", "Person", {"identifier": extra_identity}))
+    with pytest.raises(ValueError) as exc:
+        GraphDocumentAssembler().assemble(
+            "doc", "h", [_chunk("c1", "text")], {"c1": GraphExtraction(nodes=nodes)},
+            {}, "g", schema=schema,
+        )
+    assert str(exc.value) == "Cross-label canonical-key collision involving a trusted identity."
+
+
+def test_same_label_mixed_trust_preserves_trusted_key():
+    nodes = [
+        ExtractedNode("a", "One", {"canonical_key": "shared"}),
+        ExtractedNode("b", "One", {"canonical_key": "shared"}, canonical_key_trusted=False),
+    ]
+    result = GraphDocumentAssembler().assemble(
+        "doc", "h", [_chunk("c1", "text")], {"c1": GraphExtraction(nodes=nodes)}, {}, "g",
+    )
+    assert [e.canonical_key for e in result.entities] == ["shared", "shared:untrusted"]
+
+
+def test_untrusted_lists_are_not_implicitly_unioned():
+    from recon_graphrag.extraction.schema import GraphSchema, NodeType, PropertyType
+
+    schema = GraphSchema([NodeType("Thing", properties=[PropertyType("tags", "LIST")])], [])
+    chunks = [_chunk("c1", "first"), _chunk("c2", "second", 1)]
+    extractions = {chunk.id: GraphExtraction(nodes=[ExtractedNode("a", "Thing", {
+        "canonical_key": "Thing:A", "tags": tags,
+    }, canonical_key_trusted=False)]) for chunk, tags in zip(chunks, [["a"], ["b"]], strict=True)}
+    result = GraphDocumentAssembler().assemble("doc", "h", chunks, extractions, {}, "g", schema=schema)
+    assert result.entities[0].properties["tags"] == ["a"]
+    assert result.assembly_review_groups[0]["decision"] == "review_required"
+
+
+def test_same_chunk_candidate_variants_resolve_distinct_local_ids():
+    extraction = GraphExtraction(nodes=[
+        ExtractedNode(local, "Thing", {"canonical_key": "Thing:A", "value": value},
+                      canonical_key_trusted=False)
+        for local, value in [("a1", "one"), ("a2", "two")]
+    ], relationships=[ExtractedRelationship("a1", "a2", "RELATED")])
+    result = GraphDocumentAssembler().assemble(
+        "doc", "h", [_chunk("c1", "text")], {"c1": extraction}, {}, "g",
+        {"c1": [ExtractedClaim("a1", "REL", "observed", object_entity_id="a2")]},
+    )
+    first, second = result.entities
+    assert first.id != second.id
+    assert result.relationships[0].source_id == result.claims[0].entity_id == first.id
+    assert result.relationships[0].target_id == result.claims[0].object_entity_id == second.id
+    assert {link.entity_id for link in result.evidence_links} == {first.id, second.id}
+
+
+def test_list_values_without_list_schema_remain_scalar_conflicts():
+    chunks = [_chunk("c1", "one"), _chunk("c2", "two", 1)]
+    extractions = {chunk.id: GraphExtraction(nodes=[ExtractedNode("a", "Thing", {
+        "canonical_key": "Thing:A", "values": value,
+    })]) for chunk, value in zip(chunks, [["a"], ["b"]], strict=True)}
+    result = GraphDocumentAssembler().assemble("doc", "h", chunks, extractions, {}, "g")
+    assert len(result.entities) == 1
+    assert result.entities[0].properties["values"] == ["a"]
+    assert result.assembly_review_groups[0]["decision"] == "identity_retained"
+    assert [item["value"] for item in result.assembly_review_groups[0]["conflicts"][0]["observations"]] == [["a"], ["b"]]
+
+
+@pytest.mark.parametrize("collision", ["label", "trust", "provisional", "generated"])
+def test_generated_keys_avoid_original_and_assigned_keys(collision):
+    from uuid import NAMESPACE_URL, uuid5
+
+    from recon_graphrag.extraction.schema import GraphSchema, NodeType, PropertyType
+
+    schema = GraphSchema([NodeType("Person", properties=[PropertyType("identifier")],
+                                   identity_property="identifier")], [])
+    if collision == "label":
+        nodes = [
+            ExtractedNode("a", "Person", {"canonical_key": "Person:x"}, canonical_key_trusted=False),
+            ExtractedNode("b", "Organization", {"canonical_key": "Person:x"}, canonical_key_trusted=False),
+            ExtractedNode("c", "Person", {"canonical_key": "Person:Person:x"}),
+        ]
+        preserved_key = "Person:Person:x"
+    elif collision == "trust":
+        nodes = [
+            ExtractedNode("a", "Thing", {"canonical_key": "shared"}),
+            ExtractedNode("b", "Thing", {"canonical_key": "shared"}, canonical_key_trusted=False),
+            ExtractedNode("c", "Thing", {"canonical_key": "shared:untrusted"}),
+            ExtractedNode("d", "Thing", {"canonical_key": "shared:untrusted:1"}),
+        ]
+        preserved_key = "shared:untrusted"
+    elif collision == "provisional":
+        provisional_key = f"shared:provisional:{uuid5(NAMESPACE_URL, 'doc:c1:1')}"
+        nodes = [
+            ExtractedNode("a", "Thing", {"canonical_key": provisional_key}),
+            ExtractedNode("b", "Thing", {"canonical_key": "shared", "value": "one"},
+                          canonical_key_trusted=False),
+            ExtractedNode("c", "Thing", {"canonical_key": "shared", "value": "two"},
+                          canonical_key_trusted=False),
+            ExtractedNode("d", "Thing", {"canonical_key": f"{provisional_key}:1"}),
+        ]
+        preserved_key = provisional_key
+    else:
+        nodes = [
+            ExtractedNode("a", "A:B", {"canonical_key": "shared"}, canonical_key_trusted=False),
+            ExtractedNode("b", "Other", {"canonical_key": "shared"}, canonical_key_trusted=False),
+            ExtractedNode("c", "A", {"canonical_key": "B:shared"}, canonical_key_trusted=False),
+            ExtractedNode("d", "C", {"canonical_key": "B:shared"}, canonical_key_trusted=False),
+        ]
+        preserved_key = "ordinary"
+    nodes.append(ExtractedNode("ordinary", "Other", {"canonical_key": "ordinary"}))
+    pairs = list(zip(nodes, nodes[1:] + nodes[:1], strict=True))
+    chunks = [_chunk("c1", "all identities"), _chunk("c2", "repeat first", 1)]
+    extractions = {
+        "c1": GraphExtraction(nodes=nodes, relationships=[
+            ExtractedRelationship(source.id, target.id, "RELATED") for source, target in pairs
+        ]),
+        "c2": GraphExtraction(nodes=[nodes[0]]),
+    }
+    claims = {"c1": [
+        ExtractedClaim(source.id, "REL", "observed", object_entity_id=target.id)
+        for source, target in pairs
+    ]}
+    assembler = GraphDocumentAssembler()
+    result = assembler.assemble("doc", "h", chunks, extractions, {}, "g", claims, schema=schema)
+    assert result == assembler.assemble("doc", "h", chunks, extractions, {}, "g", claims, schema=schema)
+    assert len(result.entities) == len(nodes)
+    assert len({entity.id for entity in result.entities}) == len(nodes)
+    assert len({entity.canonical_key for entity in result.entities}) == len(nodes)
+    by_local_id = {node.id: entity for node, entity in zip(nodes, result.entities, strict=True)}
+    assert by_local_id["ordinary"].canonical_key == "ordinary"
+    assert preserved_key in {entity.canonical_key for entity in result.entities}
+    assert len(result.entities[0].description_observations) == 2
+    for (source, target), relationship, claim in zip(pairs, result.relationships, result.claims, strict=True):
+        assert relationship.source_id == claim.entity_id == by_local_id[source.id].id
+        assert relationship.target_id == claim.object_entity_id == by_local_id[target.id].id
+        assert relationship.properties["source_canonical_key"] == by_local_id[source.id].canonical_key
+        assert relationship.properties["target_canonical_key"] == by_local_id[target.id].canonical_key
+    expected_evidence = {("c1", entity.id) for entity in result.entities}
+    expected_evidence.add(("c2", result.entities[0].id))
+    assert {(link.chunk_id, link.entity_id) for link in result.evidence_links} == expected_evidence
+    if collision == "provisional":
+        assert set(result.assembly_review_groups[0]["entity_ids"]) == {
+            by_local_id["b"].id, by_local_id["c"].id,
+        }
+
+
+@pytest.mark.parametrize(
+    ("description_type", "value", "expected"),
+    [
+        (None, None, ""),
+        (None, "  text  ", "text"),
+        ("INTEGER", 0, "0"),
+        ("BOOLEAN", False, "False"),
+        ("FLOAT", 1.5, "1.5"),
+        ("LIST", ["a", 0, False], "['a', 0, False]"),
+        ("LIST", [], "[]"),
+        ("DATE", "2026-01-01", "2026-01-01"),
+        ("DATETIME", "2026-01-01T12:00:00", "2026-01-01T12:00:00"),
+    ],
+)
+def test_validated_descriptions_become_text_observations(description_type, value, expected):
+    from recon_graphrag.extraction.schema import GraphSchema, NodeType, PropertyType
+    from recon_graphrag.extraction.validator import SchemaValidator
+
+    properties = [PropertyType("identifier"), PropertyType("count", "INTEGER"),
+                  PropertyType("enabled", "BOOLEAN"), PropertyType("tags", "LIST")]
+    if description_type:
+        properties.append(PropertyType("description", description_type))
+    schema = GraphSchema([NodeType("Thing", properties=properties,
+                                   identity_property="identifier")], [])
+    chunks = [_chunk(f"c{i}", "observation", i) for i in range(4)]
+    extractions = {
+        chunk.id: SchemaValidator().validate(GraphExtraction(nodes=[ExtractedNode(
+            "a", "Thing", {"identifier": "same", "description": description,
+                           "count": 0, "enabled": False, "tags": ["a", 1, False]},
+        )]), schema)
+        for chunk, description in zip(chunks, [None, value, value, None], strict=True)
+    }
+    result = GraphDocumentAssembler().assemble(
+        "doc", "h", chunks, extractions, {}, "g", schema=schema,
+    )
+    (entity,) = result.entities
+    assert entity.properties["description"] == expected
+    assert [obs.description for obs in entity.description_observations] == [
+        "", "" if value is None else str(value), "" if value is None else str(value), "",
+    ]
+    assert all(isinstance(obs.description, str) for obs in entity.description_observations)
+    assert entity.properties["count"] == 0
+    assert type(entity.properties["count"]) is int
+    assert entity.properties["enabled"] is False
+    assert entity.properties["tags"] == ["a", 1, False]
+    assert extractions["c1"].nodes[0].properties["description"] == value
+    assert result.assembly_review_groups == []
+
+
+@pytest.mark.parametrize(("identity_type", "identity"), [("INTEGER", 0), ("BOOLEAN", False)])
+def test_validated_falsy_identities_are_trusted_across_chunks(identity_type, identity):
+    from recon_graphrag.extraction.schema import GraphSchema, NodeType, PropertyType, RelationshipType
+    from recon_graphrag.extraction.validator import SchemaValidator
+
+    schema = GraphSchema([NodeType("Thing", properties=[PropertyType("identifier", identity_type)],
+                                   identity_property="identifier")], [RelationshipType("SELF")])
+    chunks = [_chunk("c1", "first"), _chunk("c2", "second", 1)]
+    extractions = {
+        chunk.id: SchemaValidator().validate(GraphExtraction(
+            nodes=[ExtractedNode("a", "Thing", {"identifier": identity}, canonical_key_trusted=False)],
+            relationships=[ExtractedRelationship("a", "a", "SELF")],
+        ), schema) for chunk in chunks
+    }
+    result = GraphDocumentAssembler().assemble("doc", "h", chunks, extractions, {}, "g", schema=schema)
+    assert result == GraphDocumentAssembler().assemble("doc", "h", chunks, extractions, {}, "g", schema=schema)
+    (entity,) = result.entities
+    assert entity.canonical_key == f"Thing:{identity}"
+    assert entity.properties["identifier"] is identity
+    assert len(entity.description_observations) == 2
+    assert result.relationships[0].source_id == result.relationships[0].target_id == entity.id
+    assert {(link.chunk_id, link.entity_id) for link in result.evidence_links} == {
+        (chunk.id, entity.id) for chunk in chunks
+    }
+    assert result.assembly_review_groups == []
+
+
+@pytest.mark.parametrize("properties", [{}, {"identifier": None}, {"identifier": ""}])
+def test_validated_empty_identities_remain_chunk_local(properties):
+    from recon_graphrag.extraction.schema import GraphSchema, NodeType, PropertyType
+    from recon_graphrag.extraction.validator import SchemaValidator
+
+    schema = GraphSchema([NodeType("Thing", properties=[PropertyType("identifier")],
+                                   identity_property="identifier")], [])
+    chunks = [_chunk("c1", "first"), _chunk("c2", "second", 1)]
+    extractions = {
+        chunk.id: SchemaValidator().validate(GraphExtraction(nodes=[
+            ExtractedNode("a", "Thing", properties, canonical_key_trusted=False),
+        ]), schema) for chunk in chunks
+    }
+    result = GraphDocumentAssembler().assemble("doc", "h", chunks, extractions, {}, "g", schema=schema)
+    assert [entity.canonical_key for entity in result.entities] == [
+        "doc:c1:Thing:a", "doc:c2:Thing:a",
+    ]

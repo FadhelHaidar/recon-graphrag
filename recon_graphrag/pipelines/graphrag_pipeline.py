@@ -31,7 +31,7 @@ from recon_graphrag.extraction.description_summarizer import DescriptionSummariz
 from recon_graphrag.extraction.extractor import LLMGraphExtractor
 from recon_graphrag.extraction.parser import _PropertyValidationError
 from recon_graphrag.extraction.prompts import SchemaPromptBuilder
-from recon_graphrag.extraction.schema import GraphSchema
+from recon_graphrag.extraction.schema import GraphSchema, NodeType
 from recon_graphrag.extraction.structured import (
     RowMapping,
     iter_csv,
@@ -60,6 +60,44 @@ from recon_graphrag.utils.tokens import TiktokenTokenCounter, TokenCounter
 logger = logging.getLogger(__name__)
 # Default tiktoken encoding for token-based chunking (not a secret).
 _DEFAULT_CHUNK_ENCODING = "cl100k_base"
+
+
+def _extraction_diagnostic(error: Exception) -> str:
+    # Only fixed labels and numeric status are public; messages, bodies, URLs,
+    # custom class names and response objects can contain source text or secrets.
+    name = type(error).__name__
+    known_types = {
+        "Exception", "RuntimeError", "ValueError", "TypeError", "KeyError",
+        "JSONDecodeError", "TimeoutError", "ConnectionError", "APIError",
+        "APIStatusError", "APIConnectionError", "APITimeoutError",
+        "AuthenticationError", "PermissionDeniedError", "RateLimitError",
+        "BadRequestError", "NotFoundError", "UnprocessableEntityError",
+        "InternalServerError", "OpenAICompatibleProviderError",
+    }
+    name = name if name in known_types else "Exception"
+    # Do not evaluate provider status/response properties or coerce values.
+    status = vars(error).get("status_code")
+    status = status if type(status) is int and 400 <= status <= 599 else None
+    if status in (401, 403) or name in {"AuthenticationError", "PermissionDeniedError"}:
+        hint = "Check provider credentials and model access."
+    elif status == 429 or name == "RateLimitError":
+        hint = "Check provider quota/rate limits; reduce extraction_concurrency or retry later."
+    elif (status is not None and status >= 500) or name == "InternalServerError":
+        hint = "Provider service error; retry later or check provider availability."
+    elif status is not None:
+        hint = "Check provider model, request limits and configuration."
+    elif name in {"TimeoutError", "APITimeoutError", "ConnectionError", "APIConnectionError"}:
+        hint = "Check provider connectivity/timeouts; reduce extraction_concurrency or retry later."
+    elif name == "OpenAICompatibleProviderError":
+        hint = "Provider returned an error payload; check provider availability and configuration."
+    elif name == "JSONDecodeError":
+        hint = "Check extraction schema, prompt templates and structured-output support."
+    elif name in {"ValueError", "TypeError", "KeyError"}:
+        hint = "Check provider response format, extraction schema and prompt compatibility."
+    else:
+        hint = "Check provider configuration and extraction schema/prompt compatibility."
+    status_context = f" status={status}" if status is not None else ""
+    return f"exception={name}{status_context}; {hint}"
 
 
 class GraphBuilderPipeline:
@@ -461,7 +499,18 @@ class GraphBuilderPipeline:
         mapping.validate()
         rows = [dict(row) for row in rows]
         metadata = metadata or {}
-        llm_schema = extraction_schema or mapping.to_schema()
+        mapping_schema = mapping.to_schema()
+        llm_schema = extraction_schema or mapping_schema
+        assembly_node_types = {node.label: node for node in llm_schema.node_types}
+        for direct in mapping_schema.node_types:
+            extracted = assembly_node_types.get(direct.label)
+            properties = {prop.name: prop for prop in extracted.properties} if extracted else {}
+            properties.update({prop.name: prop for prop in direct.properties})
+            assembly_node_types[direct.label] = NodeType(
+                label=direct.label, properties=list(properties.values()),
+                identity_property=direct.identity_property,
+            )
+        assembly_schema = GraphSchema(list(assembly_node_types.values()), [])
 
         with run_scope():
             text = "\n\n".join(row_text(row) for row in rows)
@@ -495,7 +544,9 @@ class GraphBuilderPipeline:
                 chunk_extractions=extractions,
                 metadata=metadata,
                 graph_name=self.graph_name,
-                identity_properties=self._identity_properties(llm_schema),
+                identity_properties=self._identity_properties(assembly_schema),
+                schema=assembly_schema,
+                conflict_properties=self.entity_resolution_conflict_properties,
             )
             write_stats = await asyncio.to_thread(
                 self.graph_writer.write_graph_document, graph_document
@@ -513,6 +564,7 @@ class GraphBuilderPipeline:
                     "chunks": len(chunks),
                     "llm_rows": len(llm_rows),
                     "write_stats": write_stats,
+                    "assembly_review_groups": graph_document.assembly_review_groups,
                 }
             }
             if finalize:
@@ -660,8 +712,10 @@ class GraphBuilderPipeline:
             raise ValueError(
                 f"Validation failed ({context} field={error.path}: {error.reason})"
             ) from None
-        except Exception:
-            raise RuntimeError(f"Extraction failed ({context})") from None
+        except Exception as error:
+            raise RuntimeError(
+                f"Extraction failed ({context}): {_extraction_diagnostic(error)}"
+            ) from None
 
         try:
             validated = self.validator.validate(raw, schema)
@@ -687,8 +741,10 @@ class GraphBuilderPipeline:
                     entity_ids=[node.id for node in validated.nodes],
                     text_unit_id=chunk.id,
                 )
-            except Exception:
-                raise RuntimeError(f"Claims extraction failed ({context})") from None
+            except Exception as error:
+                raise RuntimeError(
+                    f"Claims extraction failed ({context}): {_extraction_diagnostic(error)}"
+                ) from None
         return validated, claims
 
     @staticmethod
@@ -945,6 +1001,8 @@ class GraphBuilderPipeline:
             metadata=metadata,
             graph_name=self.graph_name,
             identity_properties=self._identity_properties(schema),
+            schema=schema,
+            conflict_properties=self.entity_resolution_conflict_properties,
             chunk_claims=chunk_claims if chunk_claims else None,
         )
 
@@ -963,6 +1021,7 @@ class GraphBuilderPipeline:
             "document_id": document_id,
             "chunks": len(chunks),
             "write_stats": write_stats,
+            "assembly_review_groups": graph_document.assembly_review_groups,
         }
 
     async def _backfill_descriptions(self):

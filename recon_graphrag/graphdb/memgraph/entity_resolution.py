@@ -138,6 +138,20 @@ class _MemgraphEntityResolver(BaseEntityResolver):
 
             self._rewire_relationships(canonical_id, other_ids)
 
+            # Claim objects are scalar IDs, not relationships rewired above.
+            self.graph_store.execute_query(
+                """
+                MATCH (c:Claim {graph_name: $graph_name})
+                WHERE c.object_entity_id IN $losing_entity_ids
+                SET c.object_entity_id = $canonical_entity_id
+                """,
+                {
+                    "graph_name": sorted_group[0].graph_name,
+                    "losing_entity_ids": [e.entity_id for e in sorted_group[1:]],
+                    "canonical_entity_id": canonical_entity_id,
+                },
+            )
+
             self.graph_store.execute_query(
                 """
                 MATCH (n)

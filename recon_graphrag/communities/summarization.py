@@ -19,7 +19,7 @@ import hashlib
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from tqdm.asyncio import tqdm_asyncio
 
@@ -68,6 +68,7 @@ class BuildStats:
     llm_calls: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    errors: list[dict[str, str]] = field(default_factory=list)
 
 
 class CommunitySummarizer:
@@ -84,6 +85,7 @@ class CommunitySummarizer:
         token_counter: TokenCounter | None = None,
         max_report_words: int | None = 2000,
         report_prompt: str | None = None,
+        include_error_details: bool = False,
     ):
         self.graph_store = graph_store
         self.llm = llm
@@ -94,6 +96,7 @@ class CommunitySummarizer:
         self.token_counter = token_counter
         self.max_report_words = max_report_words
         self.report_prompt = report_prompt
+        self.include_error_details = include_error_details
         validate_report_prompt_template(report_prompt)
         self._report_parser = ReportParser()
 
@@ -108,7 +111,10 @@ class CommunitySummarizer:
                 report (fingerprint-based resume).
 
         Returns:
-            Tuple of (results list, build stats).
+            Tuple of (results list, build stats). Stats include per-community
+            errors with fixed messages by default. With include_error_details=True,
+            original exception messages/types may expose credentials, provider
+            details, or source content; keep these results private.
         """
         with run_scope():
             before = usage_snapshot(self.llm)
@@ -120,6 +126,23 @@ class CommunitySummarizer:
             start = time.monotonic()
             stats = BuildStats(level=level)
             outcomes: list[dict | None] = [None] * len(communities)
+
+            def _record_error(cid: str, error: Exception, message: str) -> None:
+                name = type(error).__name__
+                # Custom class names and exception messages may contain secrets.
+                known_types = {
+                    "Exception", "RuntimeError", "ValueError", "TypeError", "KeyError",
+                    "TimeoutError", "ConnectionError", "JSONDecodeError",
+                    "ReportValidationError",
+                }
+                stats.errors.append({
+                    "community_id": cid,
+                    "error_type": (
+                        name if self.include_error_details or name in known_types
+                        else "Exception"
+                    ),
+                    "message": str(error) if self.include_error_details else message,
+                })
 
             async def _process_one(comm: dict) -> dict | None:
                 cid = comm["id"]
@@ -160,6 +183,7 @@ class CommunitySummarizer:
                     }
                 except Exception as e:
                     stats.failed += 1
+                    _record_error(cid, e, "Community report generation or storage failed.")
                     with contextlib.suppress(Exception):
                         self.graph_store.mark_community_report_failed(
                             self.graph_name,
@@ -181,6 +205,9 @@ class CommunitySummarizer:
                         outcomes[position] = await _process_one(comm)
                     except Exception as error:  # noqa: BLE001 - reported, not raised
                         stats.failed += 1
+                        _record_error(
+                            comm.get("id", ""), error, "Community report preparation failed."
+                        )
                         logger.error(
                             "unexpected error reporting community: %s", error
                         )

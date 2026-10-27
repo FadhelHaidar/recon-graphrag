@@ -135,11 +135,18 @@ class _Neo4jEntityResolver(BaseEntityResolver):
                     node.human_readable_id = coalesce($canonical_readable_id, node.human_readable_id),
                     node.embedding = null,
                     node.embedding_input_fingerprint = null
+                WITH node
+                // Claim objects are scalar IDs, not relationships rewired by APOC.
+                OPTIONAL MATCH (c:Claim {{graph_name: $canonical_graph_name}})
+                WHERE c.object_entity_id IN $losing_entity_ids
+                WITH node, collect(c) AS claims
+                FOREACH (c IN claims | SET c.object_entity_id = $canonical_entity_id)
                 RETURN elementId(node) AS merged_id
                 """,
                 {
                     "node_ids": node_ids,
                     "canonical_entity_id": canonical_entity_id,
+                    "losing_entity_ids": [e.entity_id for e in sorted_group[1:]],
                     "canonical_uid": build_uid(sorted_group[0].graph_name, canonical_entity_id),
                     "canonical_graph_name": sorted_group[0].graph_name,
                     "canonical_key": canonical_key,

@@ -249,3 +249,12 @@ def test_parse_property_error_retains_original_index_after_skipped_nodes():
             {"id": "private ID", "label": "Thing", "properties": "private value"},
         ]}))
     assert str(error.value) == "nodes[1].properties: expected an object"
+
+
+def test_parser_preserves_default_explicit_key_trust():
+    result = GraphExtractionParser().parse(json.dumps({"nodes": [{
+        "id": "a", "label": "Thing", "canonical_key_trusted": False,
+        "properties": {"canonical_key": "Thing:A"},
+    }]}))
+    # Trust metadata belongs to the SDK, not an LLM-controlled output field.
+    assert result.nodes[0].canonical_key_trusted is True

@@ -117,6 +117,38 @@ async def test_direct_only_makes_zero_llm_calls(mapping, fake_writer):
 
 
 @pytest.mark.asyncio
+async def test_repeated_rows_retain_complementary_entity_properties(fake_writer):
+    mapping = RowMapping(
+        entities=[ColumnEntity(
+            label="Person",
+            identity_column="name",
+            properties={"email": "email", "phone": "phone"},
+        )],
+    )
+    pipeline = _make_pipeline(MagicMock(), fake_writer)
+
+    await pipeline.build_from_rows(
+        [
+            {"name": "Alice", "email": "alice@example.com"},
+            {"name": "Alice", "phone": "555-0100"},
+        ],
+        mapping,
+        metadata={"source": "contacts"},
+        finalize=False,
+    )
+
+    doc = fake_writer.write_graph_document.call_args.args[0]
+    (entity,) = doc.entities
+    assert entity.canonical_key == "Person:Alice"
+    assert entity.properties["email"] == "alice@example.com"
+    assert entity.properties["phone"] == "555-0100"
+    assert "alice@example.com" in entity.properties["description"]
+    assert "555-0100" in entity.properties["description"]
+    assert len(entity.description_observations) == 2
+    assert len(doc.evidence_links) == 2
+
+
+@pytest.mark.asyncio
 async def test_cross_label_same_name_stays_separate(fake_writer):
     mapping = RowMapping(
         entities=[
@@ -421,3 +453,93 @@ async def test_build_from_rows_rejects_reserved_metadata_without_writing(mapping
         )
 
     assert store.queries == []
+
+
+@pytest.mark.asyncio
+async def test_conflicting_name_rows_are_reported_before_write(fake_writer):
+    mapping = RowMapping(entities=[ColumnEntity("Person", "name", {"contact": "contact"})])
+    pipeline = _make_pipeline(MagicMock(), fake_writer)
+    result = await pipeline.build_from_rows(
+        [{"name": "Alice", "contact": "one"}, {"name": "Alice", "contact": "two"}],
+        mapping, metadata={"source": "contacts"}, finalize=False,
+    )
+    doc = fake_writer.write_graph_document.call_args.args[0]
+    assert len(doc.entities) == 2
+    assert {e.properties["contact"] for e in doc.entities} == {"one", "two"}
+    assert result["extraction"]["assembly_review_groups"] == doc.assembly_review_groups
+    assert doc.assembly_review_groups[0]["decision"] == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_structured_custom_identity_retains_conflicts_and_unions_schema_lists(fake_writer):
+    mapping = RowMapping(entities=[ColumnEntity(
+        "Person", "identifier", {"name": "name", "contact": "contact", "tags": "tags"},
+        types={"tags": "LIST"}, identity_property="identifier",
+    )])
+    pipeline = _make_pipeline(MagicMock(), fake_writer)
+    result = await pipeline.build_from_rows([
+        {"identifier": "1", "name": "Alice", "contact": "one", "tags": ["a"]},
+        {"identifier": "1", "name": "Alice", "contact": "two", "tags": ["b"]},
+        {"identifier": "2", "name": "Alice", "contact": "three", "tags": ["c"]},
+    ], mapping, metadata={"source": "contacts"}, finalize=False)
+    doc = fake_writer.write_graph_document.call_args.args[0]
+    assert {e.canonical_key for e in doc.entities} == {"Person:1", "Person:2"}
+    assert doc.entities[0].properties["tags"] == ["a", "b"]
+    assert doc.entities[0].properties["contact"] == "one"
+    assert result["extraction"]["assembly_review_groups"][0]["decision"] == "identity_retained"
+
+
+@pytest.mark.asyncio
+async def test_extraction_override_does_not_replace_direct_assembly_rules(fake_writer):
+    from recon_graphrag.extraction.schema import PropertyType
+    from recon_graphrag.extraction.types import ExtractedNode, GraphExtraction
+
+    mapping = RowMapping(entities=[ColumnEntity(
+        "Person", "identifier", {"name": "name", "tags": "tags"},
+        types={"tags": "LIST"}, identity_property="identifier",
+    )], text_columns=[TextColumn("notes")])
+    override = GraphSchema([
+        NodeType("Person", properties=[PropertyType("tags", "STRING"), PropertyType("external_id")],
+                 identity_property="external_id"),
+        NodeType("Other", properties=[PropertyType("other_id")], identity_property="other_id"),
+    ], [])
+    pipeline = _make_pipeline(MagicMock(), fake_writer)
+    pipeline._extract_chunk = AsyncMock(return_value=(GraphExtraction(nodes=[
+        ExtractedNode("llm-other", "Other", {"other_id": "X"}),
+    ]), []))
+    await pipeline.build_from_rows([
+        {"identifier": "1", "name": "Alice", "tags": ["a"], "notes": "first"},
+        {"identifier": "1", "name": "Alice", "tags": ["b"], "notes": "second"},
+    ], mapping, extraction_schema=override, finalize=False)
+    assert all(call.args[2] is override for call in pipeline._extract_chunk.call_args_list)
+    doc = fake_writer.write_graph_document.call_args.args[0]
+    person = next(e for e in doc.entities if e.type == "Person")
+    assert person.canonical_key == "Person:1"
+    assert person.properties["tags"] == ["a", "b"]
+    assert next(e for e in doc.entities if e.type == "Other").canonical_key == "Other:X"
+
+
+@pytest.mark.asyncio
+async def test_implicit_typed_row_identity_matches_llm_identity(fake_writer):
+    from recon_graphrag.extraction.schema import PropertyType
+    from recon_graphrag.extraction.types import ExtractedNode, GraphExtraction
+
+    mapping = RowMapping([ColumnEntity(
+        "Thing", "key", types={"record_key": "INTEGER"}, identity_property="record_key",
+    )], text_columns=[TextColumn("notes")])
+    pipeline = _make_pipeline(MagicMock(), fake_writer)
+    pipeline._extract_chunk = AsyncMock(return_value=(GraphExtraction(nodes=[
+        ExtractedNode("llm", "Thing", {"record_key": 1}),
+    ]), []))
+    await pipeline.build_from_rows(
+        [{"key": "01", "notes": "same identifier"}], mapping, finalize=False,
+    )
+    schema = pipeline._extract_chunk.call_args.args[2]
+    node_type = schema.get_node_type("Thing")
+    assert node_type is not None
+    assert PropertyType("record_key", "INTEGER") in node_type.properties
+    doc = fake_writer.write_graph_document.call_args.args[0]
+    (entity,) = doc.entities
+    assert entity.canonical_key == "Thing:1"
+    assert entity.properties["record_key"] == 1
+    assert len(entity.description_observations) == 2

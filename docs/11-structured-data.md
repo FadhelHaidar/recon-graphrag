@@ -125,6 +125,13 @@ ColumnEntity(
 - **`identity_column`** — the cell value becomes the entity's `name`. Rows
   where it is empty/None simply don't produce this entity (and skip any
   relationship touching it); no error.
+- **`identity_property`** — defaults to `"name"` (a candidate, not proof of identity).
+  Set a non-name property such as `"record_key"` when `identity_column` contains
+  trusted IDs. The identity cell is also stored under this property; the same
+  trusted ID merges observations and different trusted IDs stay separate in memory.
+  `types` applies to this property even when it is not explicitly column-mapped.
+  The property name must be non-empty and, if explicitly column-mapped, must map
+  from `identity_column` rather than a different column.
 - **`properties`** — maps *columns* to *property names* (rename freely). Empty
   cells omit the property rather than writing nulls.
 - **`types`** — per property name: `STRING` (default), `INTEGER`, `FLOAT`,
@@ -258,6 +265,55 @@ Direct entities use **label-scoped canonical keys**: `"Product:Widget"`, not
 - With `perform_entity_resolution=False`, direct and LLM entities with the
   same name stay separate nodes (still connected via shared chunk and anchor
   edges).
+
+### In-memory conflicts before writing
+
+Repeated name-key rows with compatible/complementary properties still coalesce.
+If populated scalar properties disagree, **all observations in that candidate
+group become separate provisional entities** before writing. This is conservative
+candidate blocking, not similarity scoring or a declaration that they are
+certainly different people/items. Keys are deterministic for identical document,
+chunks, and observation order; row-reorder invariance is not promised. Relationships,
+claims, and chunk evidence use the selected variant endpoints. `None`, `""`, `[]`,
+and `{}` are missing values; `0` and `False` are populated. Names, titles, and
+consolidated descriptions do not by themselves block name candidates; explicitly
+configured `entity_resolution_conflict_properties` can include names/titles.
+
+For confirmed identity (a non-name `identity_property`, or a manually supplied
+explicit canonical key), scalar properties retain the first populated value.
+Cross-label canonical-key collisions involving any confirmed identity raise
+`ValueError` before that document is written, rather than renaming trusted keys
+and changing persistent IDs. Collisions involving only untrusted name candidates
+remain label-disambiguated; generated keys avoid original and already allocated keys.
+Conflicting observations and their sources are preserved separately, not converted
+into scalar-to-list database properties. Only schema-declared `LIST` properties
+are unioned, in first-seen order. Name-only LIST differences are **not** automatically
+unioned or sufficient alone to split candidates: the first list is retained and
+both observations are reported for review. For row builds with an
+`extraction_schema` override, the mapping's property types and identity rule take
+precedence for assembly of direct labels; LLM extraction validation still uses
+the override unchanged.
+
+`GraphDocument.assembly_review_groups` is available to writers **before** the write;
+the same JSON-safe list is returned as
+`result["extraction"]["assembly_review_groups"]` (also for text/page builds). Each
+entry contains `domain_label`, `reason="property_conflict"`, `decision`,
+`entity_ids`, `canonical_keys`, `conflicts`, and empty matching scores (`None`).
+Each conflict contains a `property` and source-bearing `observations` with `value`
+and `source` (document/chunk/page/character references). Decisions are `blocked`
+for split candidates, `identity_retained` for confirmed identity scalar conflicts,
+and `review_required` for name-only LIST differences. Reports round-trip in graph
+JSON artifacts; older artifacts default to an empty report. They are **not persisted
+as database node properties** or an automatic review queue; retain the artifact or
+result if you need the conflicting values after the call. The report does not
+stop the write.
+
+**Downstream limitation:** default normalized database resolution during finalize
+can still merge provisional same-name variants (and different trusted IDs).
+Configure `entity_resolution_conflict_properties` to block conflicting IDs/scalars,
+or use `finalize=False` on row/document builds to inspect first. Disabling
+`perform_entity_resolution` prevents this later stage. This change does not alter
+database resolver policy or repair earlier merges.
 
 Two knobs worth setting for structured-heavy graphs:
 
@@ -503,7 +559,8 @@ relationship observations; other documents' contributions survive. Replays do
 not inflate observation counts. Properties still use the existing update rules;
 this is not historical version storage or a document-wide transaction.
 
-Direct column mappings use trusted label-scoped domain identities. By contrast,
+Direct column mappings use label-scoped candidate keys by default; declare a
+non-name `ColumnEntity.identity_property` for trusted identifiers. By contrast,
 LLM-extracted local IDs such as `p1` are chunk-local references, not domain
 identities: name-only observations stay separate until conflict-aware resolution.
 Configure conflict properties (for example, a birth date or registration number)

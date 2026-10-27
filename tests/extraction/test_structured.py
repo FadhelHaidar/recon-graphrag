@@ -239,3 +239,60 @@ def test_iter_excel(tmp_path):
 
     rows = list(iter_excel(path))
     assert rows == [{"name": "Widget", "price": 9.99}]
+
+
+def test_custom_identity_schema_and_metadata():
+    mapping = RowMapping([ColumnEntity("Thing", "key", identity_property="record_key")])
+    schema = mapping.to_schema()
+    node_type = schema.get_node_type("Thing")
+    assert node_type is not None
+    assert node_type.identity_property == "record_key"
+    assert "record_key" in node_type.property_names
+    _, extractions, _ = rows_to_chunks_and_extractions(
+        [{"key": "1"}], mapping, "doc",
+    )
+    node = next(iter(extractions.values())).nodes[0]
+    assert node.properties["record_key"] == "1"
+    assert node.canonical_key_trusted is True
+
+
+@pytest.mark.parametrize("identity_property", ["", " ", None])
+def test_invalid_identity_property_rejected(identity_property):
+    mapping = RowMapping([ColumnEntity("Thing", "key", identity_property=identity_property)])
+    with pytest.raises(ValueError, match="identity_property must be a non-empty string"):
+        mapping.validate()
+
+
+def test_custom_identity_cannot_be_overwritten_by_other_column():
+    mapping = RowMapping([ColumnEntity(
+        "Thing", "key", {"other": "record_key"}, identity_property="record_key",
+    )])
+    with pytest.raises(ValueError, match="identity_property must map from identity_column"):
+        mapping.validate()
+
+
+@pytest.mark.parametrize("explicit_mapping", [False, True])
+@pytest.mark.parametrize(("ptype", "value", "expected"), [
+    ("INTEGER", "0", 0), ("BOOLEAN", "false", False), ("STRING", " 01 ", "01"),
+])
+def test_custom_identity_honors_declared_type(explicit_mapping, ptype, value, expected):
+    mapping = RowMapping([ColumnEntity(
+        "Thing", "key", {"key": "record_key"} if explicit_mapping else {},
+        types={"record_key": ptype}, identity_property="record_key",
+    )])
+    mapping.validate()
+    node_type = mapping.to_schema().get_node_type("Thing")
+    assert node_type is not None
+    assert next(prop for prop in node_type.properties if prop.name == "record_key").type == ptype
+    _, extractions, _ = rows_to_chunks_and_extractions([{"key": value}], mapping, "doc")
+    node = extractions["doc:row:0"].nodes[0]
+    assert node.properties["record_key"] == expected
+    assert type(node.properties["record_key"]) is type(expected)
+
+
+def test_custom_identity_rejects_invalid_declared_type_value():
+    mapping = RowMapping([ColumnEntity(
+        "Thing", "key", types={"record_key": "INTEGER"}, identity_property="record_key",
+    )])
+    with pytest.raises(ValueError, match="cannot coerce column 'key'.*INTEGER.*row 0"):
+        rows_to_chunks_and_extractions([{"key": "invalid"}], mapping, "doc")

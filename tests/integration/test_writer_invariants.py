@@ -18,8 +18,10 @@ from recon_graphrag.embeddings.entities import EntityEmbedder
 from recon_graphrag.entity_text import entity_embedding_fingerprint
 from recon_graphrag.extraction.assembler import GraphDocumentAssembler
 from recon_graphrag.extraction.chunking import TextChunk
+from recon_graphrag.extraction.structured import ColumnEntity, RowMapping
 from recon_graphrag.extraction.types import ExtractedNode, GraphExtraction
 from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
+from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
 from recon_graphrag.pipelines.writer import CypherGraphWriter
 from tests.integration.factories import get_memgraph_store, get_neo4j_store
 from tests.integration.support import cleanup_graph, require_integration_env
@@ -351,6 +353,75 @@ def test_chunk_local_ids_do_not_bypass_conflict_aware_resolution(case):
     assert len(read_entities(store, graph)) == 4
     assert sorted(row["props"]["name"] for row in read_entities(store, graph)) == [
         "Alex", "Alex", "Alice", "Bob"]
+
+
+async def test_merge_retargets_claim_objects_outside_merge_group_and_not_other_graphs(case):
+    store, graph = case
+    store.execute_query(
+        "CREATE (:__Entity__:Person {graph_name:$g,id:'subject',name:'Reporter'}) "
+        "CREATE (:__Entity__:Person {graph_name:$g,id:'a',name:'Alice'}) "
+        "CREATE (:__Entity__:Person {graph_name:$g,id:'b',name:'ALICE'})",
+        {"g": graph},
+    )
+    for scope in (graph, graph + "-other"):
+        store.execute_query(
+            "UNWIND ['a', 'b', 'unrelated'] AS object_id "
+            "CREATE (c:Claim {graph_name:$scope,id:object_id,object_entity_id:object_id}) "
+            "WITH c MATCH (s:__Entity__ {graph_name:$g,id:'subject'}) "
+            "CREATE (s)-[:SUBJECT_OF]->(c)",
+            {"g": graph, "scope": scope},
+        )
+
+    result = await store.resolve_entities_normalized(graph_name=graph)
+    assert not result["skipped"] and result["merged_groups"] == 1
+    entities = read_entities(store, graph)
+    assert len(entities) == 2
+    canonical = next(row["props"]["id"] for row in entities
+                     if row["props"]["id"] != "subject")
+    for scope in (graph, graph + "-other"):
+        claims = store.execute_query(
+            "MATCH (s:__Entity__ {graph_name:$g,id:'subject'})-[:SUBJECT_OF]->"
+            "(c:Claim {graph_name:$scope}) "
+            "RETURN c.id AS id,c.object_entity_id AS object_id",
+            {"g": graph, "scope": scope},
+        )
+        expected = {"a": canonical, "b": canonical, "unrelated": "unrelated"}
+        if scope != graph:
+            expected = {key: key for key in expected}
+        assert {row["id"]: row["object_id"] for row in claims} == expected
+
+
+async def test_structured_identities_conflicts_and_schema_lists_survive_write(case):
+    store, graph = case
+    pipeline = GraphBuilderPipeline(
+        graph_store=store, graph_name=graph, llm=MagicMock(), embedder=MagicMock(),
+        perform_entity_resolution=False, embed_entities=False,
+        summarize_descriptions=False,
+    )
+    mapping = RowMapping([ColumnEntity(
+        "Person", "key", {"name": "name", "contact": "contact", "tags": "tags"},
+        types={"record_key": "INTEGER", "tags": "LIST"}, identity_property="record_key",
+    )])
+    result = await pipeline.build_from_rows([
+        {"key": "01", "name": "Alice", "contact": "one", "tags": ["a"]},
+        {"key": "1", "name": "Alice", "contact": "two", "tags": ["b"]},
+        {"key": "2", "name": "Alice", "contact": "three", "tags": ["c"]},
+    ], mapping, metadata={"source": "live-identity-regression"}, finalize=False)
+    people = {row["props"]["record_key"]: row["props"] for row in read_entities(store, graph)}
+    assert set(people) == {1, 2}
+    assert people[1]["canonical_key"] == "Person:1"
+    assert people[1]["contact"] == "one"
+    assert people[1]["tags"] == ["a", "b"]
+    assert people[2]["canonical_key"] == "Person:2"
+    assert people[2]["contact"] == "three"
+    assert people[2]["tags"] == ["c"]
+    assert result["extraction"]["assembly_review_groups"][0]["decision"] == "identity_retained"
+    original_ids = {key: person["id"] for key, person in people.items()}
+    await pipeline.build_from_rows([
+        {"key": "1", "name": "Alice", "contact": "one", "tags": ["a"]},
+    ], mapping, metadata={"source": "another-live-document"}, finalize=False)
+    assert {row["props"]["record_key"]: row["props"]["id"]
+            for row in read_entities(store, graph)} == original_ids
 
 
 def test_concurrent_identical_identity_ingestion_and_graph_isolation(case):

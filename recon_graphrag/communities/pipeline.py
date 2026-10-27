@@ -46,6 +46,7 @@ class CommunityPipeline:
         embedder: BaseEmbedder | None = None,
         embed_community_reports: bool = True,
         track_token_usage: bool = True,
+        include_error_details: bool = False,
     ):
         """Initialize the community pipeline.
 
@@ -84,6 +85,9 @@ class CommunityPipeline:
                 after report generation. Requires embedder to be set.
             track_token_usage: Whether to auto-wrap ``llm`` with token-usage
                 tracking (no-op if it's already wrapped).
+            include_error_details: Include original exception messages and types in
+                maintenance warnings. For trusted/private debugging only: messages
+                may contain credentials, provider details, or source content.
         """
         self.graph_store = graph_store
         self.llm = track_usage(llm) if track_token_usage else llm
@@ -105,6 +109,7 @@ class CommunityPipeline:
         self.max_report_words = max_report_words
         self.embedder = embedder
         self.embed_community_reports = embed_community_reports
+        self.include_error_details = include_error_details
 
     async def build(self, level: Optional[int] = None) -> dict:
         """Detect communities, generate reports, and embed them.
@@ -166,6 +171,7 @@ class CommunityPipeline:
                 token_counter=self.token_counter,
                 max_report_words=self.max_report_words,
                 report_prompt=self.report_prompt,
+                include_error_details=self.include_error_details,
             )
 
             for lvl in levels:
@@ -183,6 +189,7 @@ class CommunityPipeline:
                         "code": "community_report_generation_failed",
                         "level": lvl,
                         "failed": stats.failed,
+                        "errors": stats.errors,
                     })
                 total_reports += len(reports)
                 level_stats.append({

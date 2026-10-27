@@ -443,6 +443,33 @@ Blocking database calls in pipeline writes/backfill/validation, description summ
 - Pass `metadata` to link extracted chunks and entities back to any source
   shape: documents, pages, database rows, tickets, API objects, or list items.
 
+#### Extraction failures
+
+Extraction (including gleaning and optional claims) stops the build with a
+`RuntimeError`, for example:
+`Extraction failed (document=<fingerprint> chunk=21): exception=APIStatusError status=429; ...`.
+The document fingerprint and one-based chunk ordinal locate the failure without
+exposing source metadata or text. Diagnostics include a fixed, recognized exception
+type label (unknown custom types become `Exception`) and an HTTP error status only
+when stored as an integer (400–599) on the exception. Provider messages, response bodies,
+URLs and chained tracebacks are deliberately omitted; do not log source text or
+credentials to investigate a failure.
+
+Follow the fixed hint: check credentials/model access for authentication failures,
+quota and `extraction_concurrency` for rate limits, connectivity/timeouts for
+connection failures, and provider availability for server errors. Request errors
+suggest checking model/configuration/limits. `OpenAICompatibleProviderError` means
+the provider returned an error payload, even if the HTTP request succeeded; payload
+contents are not exposed. JSON decoding failures suggest checking schema, prompt
+templates and structured-output support. Other value/type/key errors can originate
+in the provider adapter or extraction code, so check the provider response format
+as well as schema/prompt compatibility. Hints are diagnostic categories, not proof
+of a root cause. This change only surfaces errors; it does not repair a failed
+extraction. Extraction errors are not retried
+automatically. Fix the cause before rerunning; a document's extraction must finish
+before it is written, but other documents in a multi-document build may already
+have been written.
+
 #### Embedding failures and recovery
 
 Entity embedding is best-effort by default: provider or vector-write errors are
@@ -525,6 +552,43 @@ result = await community.build()
 result = await community.build(level=0)
 ```
 
+### Report failures and diagnostics
+
+Report failures do not discard successful reports or stop other communities.
+`build()` returns `status="degraded"` and a per-level entry in
+`maintenance_warnings` when any report fails:
+
+```python
+{
+    "code": "community_report_generation_failed",
+    "level": 0,
+    "failed": 1,
+    "errors": [{
+        "community_id": "community:1",
+        "error_type": "ValueError",
+        "message": "Community report generation or storage failed.",
+    }],
+}
+```
+
+By default, messages are fixed diagnostics and unrecognized exception types are
+reported as `"Exception"`. Resume/preparation failures use the message
+`"Community report preparation failed."`. Healthy builds keep an empty
+`maintenance_warnings` list.
+
+For **trusted/private debugging only**, opt in to original exception types and
+messages:
+
+```python
+community = CommunityPipeline(store, llm, include_error_details=True)
+result = await community.build()
+```
+
+These original messages are **not sanitized**: they may contain credentials,
+provider details, or source content. Keep detailed results private; do not expose
+them to untrusted users. `CommunitySummarizer` accepts the same option, and
+`generate_all()` returns these error records in `BuildStats.errors`.
+
 ### `CommunityPipeline` key parameters
 
 | Parameter | Description |
@@ -546,6 +610,7 @@ result = await community.build(level=0)
 | `max_context_tokens` | Maximum tokens for community context passed to the LLM. Degree-ranked context is greedily packed to fit this budget. Defaults to `8000`. Set to `None` to include all context without budgeting. |
 | `token_counter` | Token counter for context packing. Defaults to `ApproximateTokenCounter` when `max_context_tokens` is set. |
 | `max_report_words` | Soft word limit stated in the report prompt. Defaults to `2000`. Set to `None` to omit the instruction and let only the LLM's `max_tokens` bound report length. |
+| `include_error_details` | Include original exception types/messages in failure diagnostics. Defaults to `False`; enable only for trusted/private debugging. |
 | `embedder` | Embedder used to create report vectors after generation. |
 | `embed_community_reports` | Generate report vectors during `build()`; defaults to `True`. |
 
@@ -630,3 +695,23 @@ workflows guide.
 - Define your domain model in [Schema](03-schema.md).
 - Create required indexes in [Indexing](04-indexing.md).
 - Search the graph in [Search](06-search.md).
+
+### Assembly identity and conflict reports
+
+Before writing, custom non-name schema `NodeType.identity_property` values identify
+entities; different trusted values remain separate in memory, even if explicit
+canonical keys match. Explicit canonical keys otherwise retain their historical
+trusted meaning. A canonical key shared across labels is rejected with `ValueError`
+before that document is written if any occurrence is trusted; trusted keys are
+never renamed to resolve these collisions. Collisions involving only untrusted
+keys remain label-disambiguated. Without either, LLM local IDs remain chunk-local
+observations.
+Confirmed identities union only schema `LIST` properties; conflicting populated
+scalars remain first-wins with source-bearing conflict observations in
+`GraphDocument.assembly_review_groups` and
+`result["extraction"]["assembly_review_groups"]`. These reports are not DB properties.
+For name-only structured candidates, provisional splitting and its limitations are
+documented in [structured ingestion](11-structured-data.md#in-memory-conflicts-before-writing).
+Default normalized database resolution can undo in-memory separation: configure
+conflict properties, disable resolution, or inspect with `finalize=False` on
+row/document builds. No database resolver policy changes are implied.

@@ -60,6 +60,7 @@ class SchemaValidator:
                 id=node.id,
                 label=node.label,
                 properties=properties,
+                canonical_key_trusted=node.canonical_key_trusted,
             )
             valid_nodes.append(clean_node)
             node_by_id[clean_node.id] = clean_node

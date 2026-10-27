@@ -137,6 +137,14 @@
           "kw_only": false,
           "name": "description_template",
           "type": "str | None"
+        },
+        {
+          "name": "identity_property",
+          "type": "str",
+          "default": "'name'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
         }
       ],
       "frozen": true,
@@ -144,7 +152,7 @@
       "methods": {
         "scoped_key": "(self, identity_value: 'str') -> 'str'"
       },
-      "signature": "(label: 'str', identity_column: 'str', properties: 'dict[str, str]' = <factory>, types: 'dict[str, PropertyDataType]' = <factory>, description_template: 'str | None' = None) -> None"
+      "signature": "(label: 'str', identity_column: 'str', properties: 'dict[str, str]' = <factory>, types: 'dict[str, PropertyDataType]' = <factory>, description_template: 'str | None' = None, identity_property: 'str' = 'name') -> None"
     },
     "CommunityDetector": {
       "import_path": "recon_graphrag.communities.neo4j.detection.CommunityDetector",
@@ -158,7 +166,7 @@
       "methods": {
         "build": "(self, level: 'Optional[int]' = None) -> 'dict'"
       },
-      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', relationship_types: 'Optional[list[str]]' = None, max_levels: 'int' = 3, gamma: 'float' = 1.0, theta: 'float' = 0.01, tolerance: 'float' = 0.0001, graph_name: 'str' = 'entity-graph', relationship_weight_property: 'str' = 'weight', random_seed: 'Optional[int]' = 42, report_rubric: 'ReportRubric | None' = None, report_prompt: 'str | None' = None, summarize_concurrency: 'int' = 10, skip_existing: 'bool' = False, max_context_tokens: 'int' = 8000, token_counter: 'TokenCounter | None' = None, max_report_words: 'int | None' = 2000, embedder: 'BaseEmbedder | None' = None, embed_community_reports: 'bool' = True, track_token_usage: 'bool' = True)"
+      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', relationship_types: 'Optional[list[str]]' = None, max_levels: 'int' = 3, gamma: 'float' = 1.0, theta: 'float' = 0.01, tolerance: 'float' = 0.0001, graph_name: 'str' = 'entity-graph', relationship_weight_property: 'str' = 'weight', random_seed: 'Optional[int]' = 42, report_rubric: 'ReportRubric | None' = None, report_prompt: 'str | None' = None, summarize_concurrency: 'int' = 10, skip_existing: 'bool' = False, max_context_tokens: 'int' = 8000, token_counter: 'TokenCounter | None' = None, max_report_words: 'int | None' = 2000, embedder: 'BaseEmbedder | None' = None, embed_community_reports: 'bool' = True, track_token_usage: 'bool' = True, include_error_details: 'bool' = False)"
     },
     "CommunityReportEmbedder": {
       "import_path": "recon_graphrag.embeddings.community_reports.CommunityReportEmbedder",
@@ -173,7 +181,7 @@
         "generate_all": "(self, level: 'int' = 0, skip_existing: 'bool' = False) -> 'tuple[list[dict], BuildStats]'",
         "generate_report": "(self, community_id: 'str', level: 'int' = 0, context: 'CommunityContext | None' = None, input_fingerprint: 'str | None' = None) -> 'CommunityReport'"
       },
-      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', graph_name: 'str' = 'entity-graph', report_rubric: 'ReportRubric | None' = None, concurrency: 'int' = 5, max_context_tokens: 'int | None' = None, token_counter: 'TokenCounter | None' = None, max_report_words: 'int | None' = 2000, report_prompt: 'str | None' = None)"
+      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', graph_name: 'str' = 'entity-graph', report_rubric: 'ReportRubric | None' = None, concurrency: 'int' = 5, max_context_tokens: 'int | None' = None, token_counter: 'TokenCounter | None' = None, max_report_words: 'int | None' = 2000, report_prompt: 'str | None' = None, include_error_details: 'bool' = False)"
     },
     "DriftAction": {
       "fields": [
@@ -1701,12 +1709,20 @@
           "kw_only": false,
           "name": "properties",
           "type": "dict[str, Any]"
+        },
+        {
+          "name": "canonical_key_trusted",
+          "type": "bool",
+          "default": "True",
+          "factory": null,
+          "init": true,
+          "kw_only": false
         }
       ],
       "frozen": false,
       "import_path": "recon_graphrag.extraction.types.ExtractedNode",
       "methods": {},
-      "signature": "(id: 'str', label: 'str', properties: 'dict[str, Any]' = <factory>) -> None"
+      "signature": "(id: 'str', label: 'str', properties: 'dict[str, Any]' = <factory>, canonical_key_trusted: 'bool' = True) -> None"
     },
     "recon_graphrag.extraction.types.ExtractedRelationship": {
       "fields": [
@@ -1797,12 +1813,20 @@
           "kw_only": false,
           "name": "claims",
           "type": "list[ClaimRecord]"
+        },
+        {
+          "name": "assembly_review_groups",
+          "type": "list[dict[str, Any]]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
         }
       ],
       "frozen": false,
       "import_path": "recon_graphrag.extraction.types.GraphDocument",
       "methods": {},
-      "signature": "(document: 'DocumentRecord', chunks: 'list[ChunkRecord]', entities: 'list[EntityRecord]', relationships: 'list[RelationshipRecord]', evidence_links: 'list[EvidenceLink]', claims: 'list[ClaimRecord]' = <factory>) -> None"
+      "signature": "(document: 'DocumentRecord', chunks: 'list[ChunkRecord]', entities: 'list[EntityRecord]', relationships: 'list[RelationshipRecord]', evidence_links: 'list[EvidenceLink]', claims: 'list[ClaimRecord]' = <factory>, assembly_review_groups: 'list[dict[str, Any]]' = <factory>) -> None"
     },
     "recon_graphrag.extraction.types.GraphExtraction": {
       "fields": [
