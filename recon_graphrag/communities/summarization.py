@@ -350,14 +350,19 @@ class CommunitySummarizer:
             report.context_tokens_used = context_tokens_used
             report.context_truncated = context_truncated
             return report
-        except ReportValidationError as e:
+        except (ReportValidationError, json.JSONDecodeError) as e:
             # One repair attempt
             logger.warning(
-                "report validation failed for %s, attempting repair", community_id
+                "report parsing or validation failed for %s, attempting repair", community_id
             )
+            if isinstance(e, ReportValidationError):
+                raw_content, errors = e.raw_content, e.errors
+            else:
+                raw_content = response.content
+                errors = [f"{e.msg}: line {e.lineno} column {e.colno}"]
             repair_prompt = build_repair_prompt(
-                raw_content=e.raw_content,
-                errors=e.errors,
+                raw_content=raw_content,
+                errors=errors,
                 valid_ids=reference_ids,
                 rubric=self.report_rubric,
             )
@@ -374,7 +379,7 @@ class CommunitySummarizer:
                 report.context_tokens_used = context_tokens_used
                 report.context_truncated = context_truncated
                 return report
-            except ReportValidationError as e2:
+            except (ReportValidationError, json.JSONDecodeError) as e2:
                 logger.error("repair failed for %s: %s", community_id, e2)
                 raise e2
 
