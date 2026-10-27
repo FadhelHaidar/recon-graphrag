@@ -281,6 +281,10 @@ configured `entity_resolution_conflict_properties` can include names/titles.
 
 For confirmed identity (a non-name `identity_property`, or a manually supplied
 explicit canonical key), scalar properties retain the first populated value.
+Cross-label canonical-key collisions involving any confirmed identity raise
+`ValueError` before that document is written, rather than renaming trusted keys
+and changing persistent IDs. Collisions involving only untrusted name candidates
+remain label-disambiguated; generated keys avoid original and already allocated keys.
 Conflicting observations and their sources are preserved separately, not converted
 into scalar-to-list database properties. Only schema-declared `LIST` properties
 are unioned, in first-seen order. Name-only LIST differences are **not** automatically

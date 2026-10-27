@@ -2183,3 +2183,29 @@ async def test_description_summarization_failure_stops_embedding_and_validation(
     pipeline._embed_entities.assert_not_awaited()
     pipeline._embed_chunks.assert_not_awaited()
     pipeline._validate_graph_build.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_trusted_cross_label_collision_rejected_before_write(fake_writer, fake_embedder):
+    from recon_graphrag.extraction.types import ExtractedNode, GraphExtraction
+
+    store = FakeGraphStore()
+    pipeline = GraphBuilderPipeline(
+        cast(GraphStore, store), MagicMock(), fake_embedder,
+        graph_writer=fake_writer, perform_entity_resolution=False, embed_entities=False,
+        summarize_descriptions=False,
+    )
+    schema = GraphSchema([NodeType("One"), NodeType("Two")], [])
+    pipeline._extract_chunk = AsyncMock(side_effect=[
+        (GraphExtraction(nodes=[ExtractedNode("a", label, {"canonical_key": "private-key"})]), [])
+        for label in ["One", "Two"]
+    ])
+    with pytest.raises(ValueError) as exc:
+        await pipeline._build_from_pages_envelope(
+            ["private first", "private second"], {}, schema=schema,
+            window_size=1, window_overlap=0, extract_claims=False,
+            extraction_concurrency=1, max_gleanings=0, finalize=False,
+        )
+    assert str(exc.value) == "Cross-label canonical-key collision involving a trusted identity."
+    fake_writer.write_graph_document.assert_not_called()
+    assert store.queries == []

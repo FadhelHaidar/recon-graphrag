@@ -1,6 +1,6 @@
 """Tests for graph document assembler — core logic and cross-chunk aggregation."""
 
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import pytest
 
@@ -926,17 +926,61 @@ def test_empty_observations_do_not_split_name_candidates(empty):
     assert result.assembly_review_groups == []
 
 
-def test_explicit_keys_do_not_collapse_labels_or_identity_trust():
+@pytest.mark.parametrize("other_trusted", [True, False])
+@pytest.mark.parametrize("extra_key", [None, "One:shared", "One:shared:1"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_trusted_cross_label_key_collisions_are_rejected(other_trusted, extra_key, reverse):
+    trusted = ExtractedNode("a", "One", {"canonical_key": "shared"})
+    assembler = GraphDocumentAssembler()
+    chunks = [_chunk("c1", "private source text")]
+    baseline = assembler.assemble(
+        "doc", "h", chunks, {"c1": GraphExtraction(nodes=[trusted])}, {}, "g",
+    )
+    assert baseline.entities[0].canonical_key == "shared"
+    assert baseline.entities[0].id == str(uuid5(
+        NAMESPACE_URL, "recon-graphrag/entity/g/shared",
+    ))
+    nodes = [trusted, ExtractedNode("b", "Two", {"canonical_key": "shared"},
+                                   canonical_key_trusted=other_trusted)]
+    if extra_key:
+        nodes.append(ExtractedNode("c", "One", {"canonical_key": extra_key}))
+    if reverse:
+        nodes.reverse()
+    with pytest.raises(ValueError) as exc:
+        assembler.assemble("doc", "h", chunks, {"c1": GraphExtraction(nodes=nodes)}, {}, "g")
+    assert str(exc.value) == "Cross-label canonical-key collision involving a trusted identity."
+
+
+@pytest.mark.parametrize("extra_identity", [None, "Person:x"])
+def test_schema_identity_cross_label_collision_is_rejected(extra_identity):
+    from recon_graphrag.extraction.schema import GraphSchema, NodeType, PropertyType
+
+    schema = GraphSchema([NodeType("Person", properties=[PropertyType("identifier")],
+                                   identity_property="identifier")], [])
+    nodes = [
+        ExtractedNode("a", "Person", {"identifier": "x"}, canonical_key_trusted=False),
+        ExtractedNode("b", "Organization", {"canonical_key": "Person:x"},
+                      canonical_key_trusted=False),
+    ]
+    if extra_identity:
+        nodes.append(ExtractedNode("c", "Person", {"identifier": extra_identity}))
+    with pytest.raises(ValueError) as exc:
+        GraphDocumentAssembler().assemble(
+            "doc", "h", [_chunk("c1", "text")], {"c1": GraphExtraction(nodes=nodes)},
+            {}, "g", schema=schema,
+        )
+    assert str(exc.value) == "Cross-label canonical-key collision involving a trusted identity."
+
+
+def test_same_label_mixed_trust_preserves_trusted_key():
     nodes = [
         ExtractedNode("a", "One", {"canonical_key": "shared"}),
-        ExtractedNode("b", "Two", {"canonical_key": "shared"}),
-        ExtractedNode("c", "One", {"canonical_key": "shared"}, canonical_key_trusted=False),
+        ExtractedNode("b", "One", {"canonical_key": "shared"}, canonical_key_trusted=False),
     ]
     result = GraphDocumentAssembler().assemble(
         "doc", "h", [_chunk("c1", "text")], {"c1": GraphExtraction(nodes=nodes)}, {}, "g",
     )
-    assert len({e.id for e in result.entities}) == 3
-    assert len(result.entities) == 3
+    assert [e.canonical_key for e in result.entities] == ["shared", "shared:untrusted"]
 
 
 def test_untrusted_lists_are_not_implicitly_unioned():
@@ -991,9 +1035,9 @@ def test_generated_keys_avoid_original_and_assigned_keys(collision):
                                    identity_property="identifier")], [])
     if collision == "label":
         nodes = [
-            ExtractedNode("a", "Person", {"identifier": "x"}),
-            ExtractedNode("b", "Organization", {"canonical_key": "Person:x"}),
-            ExtractedNode("c", "Person", {"identifier": "Person:x"}),
+            ExtractedNode("a", "Person", {"canonical_key": "Person:x"}, canonical_key_trusted=False),
+            ExtractedNode("b", "Organization", {"canonical_key": "Person:x"}, canonical_key_trusted=False),
+            ExtractedNode("c", "Person", {"canonical_key": "Person:Person:x"}),
         ]
         preserved_key = "Person:Person:x"
     elif collision == "trust":
@@ -1017,11 +1061,10 @@ def test_generated_keys_avoid_original_and_assigned_keys(collision):
         preserved_key = provisional_key
     else:
         nodes = [
-            ExtractedNode("a", "A", {"canonical_key": "shared"}),
-            ExtractedNode("b", "B", {"canonical_key": "shared"}),
-            ExtractedNode("c", "A", {"canonical_key": "shared"}, canonical_key_trusted=False),
-            ExtractedNode("d", "A", {"canonical_key": "shared:untrusted"}),
-            ExtractedNode("e", "C", {"canonical_key": "shared:untrusted"}),
+            ExtractedNode("a", "A:B", {"canonical_key": "shared"}, canonical_key_trusted=False),
+            ExtractedNode("b", "Other", {"canonical_key": "shared"}, canonical_key_trusted=False),
+            ExtractedNode("c", "A", {"canonical_key": "B:shared"}, canonical_key_trusted=False),
+            ExtractedNode("d", "C", {"canonical_key": "B:shared"}, canonical_key_trusted=False),
         ]
         preserved_key = "ordinary"
     nodes.append(ExtractedNode("ordinary", "Other", {"canonical_key": "ordinary"}))

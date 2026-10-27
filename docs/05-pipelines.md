@@ -636,7 +636,11 @@ workflows guide.
 Before writing, custom non-name schema `NodeType.identity_property` values identify
 entities; different trusted values remain separate in memory, even if explicit
 canonical keys match. Explicit canonical keys otherwise retain their historical
-trusted meaning. Without either, LLM local IDs remain chunk-local observations.
+trusted meaning. A canonical key shared across labels is rejected with `ValueError`
+before that document is written if any occurrence is trusted; trusted keys are
+never renamed to resolve these collisions. Collisions involving only untrusted
+keys remain label-disambiguated. Without either, LLM local IDs remain chunk-local
+observations.
 Confirmed identities union only schema `LIST` properties; conflicting populated
 scalars remain first-wins with source-bearing conflict observations in
 `GraphDocument.assembly_review_groups` and

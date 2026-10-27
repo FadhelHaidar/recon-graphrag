@@ -77,6 +77,10 @@ def _plan_entity_keys(
             labels_by_key.setdefault(key, set()).add(node.label)
             trust_by_key.setdefault(key, set()).add(trusted)
 
+    if any(len(labels) > 1 and True in trust_by_key[key]
+           for key, labels in labels_by_key.items()):
+        raise ValueError("Cross-label canonical-key collision involving a trusted identity.")
+
     reserved_keys = set(labels_by_key)
     assigned_keys: set[str] = set()
     transformed_keys: dict[tuple, str] = {}
