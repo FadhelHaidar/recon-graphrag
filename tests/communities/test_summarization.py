@@ -8,7 +8,7 @@ from typing import Any, cast
 import pytest
 
 from recon_graphrag.llm.base import LLMResponse
-from recon_graphrag.communities.summarization import CommunitySummarizer
+from recon_graphrag.communities.summarization import BuildStats, CommunitySummarizer
 
 
 class FakeReportGraphStore:
@@ -115,10 +115,13 @@ class CapturingValidReportLLM(FakeValidReportLLM):
 
 
 @pytest.mark.asyncio
-async def test_report_generation_failure_is_marked_not_stored():
+@pytest.mark.parametrize("include_error_details", [False, True])
+async def test_report_generation_failure_is_marked_not_stored(include_error_details):
     store = FakeReportGraphStore()
     llm = FakeReportLLM()
-    summarizer = CommunitySummarizer(store, llm=llm)
+    summarizer = CommunitySummarizer(
+        cast(Any, store), llm=cast(Any, llm), include_error_details=include_error_details
+    )
 
     results, stats = await summarizer.generate_all(level=0)
 
@@ -128,6 +131,13 @@ async def test_report_generation_failure_is_marked_not_stored():
     assert store.stored_reports == []
     assert len(store.failed_reports) == 1
     assert store.failed_reports[0][:3] == ("entity-graph", "community:1", 0)
+    assert stats.errors == [{
+        "community_id": "community:1", "error_type": "ReportValidationError",
+        "message": (
+            store.failed_reports[0][3] if include_error_details
+            else "Community report generation or storage failed."
+        ),
+    }]
 
 
 @pytest.mark.asyncio
@@ -139,6 +149,7 @@ async def test_report_generation_stores_input_fingerprint():
     results, stats = await summarizer.generate_all(level=0)
 
     assert stats.succeeded == 1
+    assert stats.errors == []
     assert results
     _, report = store.stored_reports[0]
     assert report.version.input_fingerprint
@@ -258,3 +269,55 @@ async def test_communities_bounded_workers_bound_pending_tasks():
     assert llm.max_tasks <= 8
     # Report order stays the deterministic community order.
     assert [r["id"] for r in results] == [f"community:{i}" for i in range(count)]
+
+
+def test_build_stats_error_lists_are_isolated():
+    first = BuildStats()
+    second = BuildStats()
+    first.errors.append({"community_id": "c0", "error_type": "ValueError", "message": "bad"})
+    assert second.errors == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_error_details", [False, True])
+@pytest.mark.parametrize("phase", ["generation", "storage", "resume"])
+async def test_report_errors_preserve_original_only_when_opted_in(
+    monkeypatch, include_error_details, phase
+):
+    store = FakeReportGraphStore()
+    summarizer = CommunitySummarizer(
+        cast(Any, store), cast(Any, FakeValidReportLLM()),
+        include_error_details=include_error_details,
+    )
+    # Even a custom exception class name can contain sensitive data.
+    error = type("SensitiveProviderName", (Exception,), {})("private provider detail")
+
+    def fail(*args, **kwargs):
+        raise error
+
+    async def fail_async(*args, **kwargs):
+        raise error
+
+    if phase == "generation":
+        monkeypatch.setattr(summarizer, "generate_report", fail_async)
+    elif phase == "storage":
+        monkeypatch.setattr(store, "store_community_report", fail)
+        # Secondary persistence failures must not replace the original exception.
+        monkeypatch.setattr(store, "mark_community_report_failed", fail)
+    else:
+        monkeypatch.setattr(store, "get_community_ranked_context", fail)
+
+    results, stats = await summarizer.generate_all(skip_existing=phase == "resume")
+
+    assert results == []
+    assert stats.attempted == stats.failed == 1
+    assert stats.succeeded == 0
+    safe_message = (
+        "Community report preparation failed." if phase == "resume"
+        else "Community report generation or storage failed."
+    )
+    assert stats.errors == [{
+        "community_id": "community:1",
+        "error_type": "SensitiveProviderName" if include_error_details else "Exception",
+        "message": str(error) if include_error_details else safe_message,
+    }]

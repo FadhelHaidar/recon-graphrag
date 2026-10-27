@@ -552,6 +552,43 @@ result = await community.build()
 result = await community.build(level=0)
 ```
 
+### Report failures and diagnostics
+
+Report failures do not discard successful reports or stop other communities.
+`build()` returns `status="degraded"` and a per-level entry in
+`maintenance_warnings` when any report fails:
+
+```python
+{
+    "code": "community_report_generation_failed",
+    "level": 0,
+    "failed": 1,
+    "errors": [{
+        "community_id": "community:1",
+        "error_type": "ValueError",
+        "message": "Community report generation or storage failed.",
+    }],
+}
+```
+
+By default, messages are fixed diagnostics and unrecognized exception types are
+reported as `"Exception"`. Resume/preparation failures use the message
+`"Community report preparation failed."`. Healthy builds keep an empty
+`maintenance_warnings` list.
+
+For **trusted/private debugging only**, opt in to original exception types and
+messages:
+
+```python
+community = CommunityPipeline(store, llm, include_error_details=True)
+result = await community.build()
+```
+
+These original messages are **not sanitized**: they may contain credentials,
+provider details, or source content. Keep detailed results private; do not expose
+them to untrusted users. `CommunitySummarizer` accepts the same option, and
+`generate_all()` returns these error records in `BuildStats.errors`.
+
 ### `CommunityPipeline` key parameters
 
 | Parameter | Description |
@@ -573,6 +610,7 @@ result = await community.build(level=0)
 | `max_context_tokens` | Maximum tokens for community context passed to the LLM. Degree-ranked context is greedily packed to fit this budget. Defaults to `8000`. Set to `None` to include all context without budgeting. |
 | `token_counter` | Token counter for context packing. Defaults to `ApproximateTokenCounter` when `max_context_tokens` is set. |
 | `max_report_words` | Soft word limit stated in the report prompt. Defaults to `2000`. Set to `None` to omit the instruction and let only the LLM's `max_tokens` bound report length. |
+| `include_error_details` | Include original exception types/messages in failure diagnostics. Defaults to `False`; enable only for trusted/private debugging. |
 | `embedder` | Embedder used to create report vectors after generation. |
 | `embed_community_reports` | Generate report vectors during `build()`; defaults to `True`. |
 
