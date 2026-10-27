@@ -443,6 +443,33 @@ Blocking database calls in pipeline writes/backfill/validation, description summ
 - Pass `metadata` to link extracted chunks and entities back to any source
   shape: documents, pages, database rows, tickets, API objects, or list items.
 
+#### Extraction failures
+
+Extraction (including gleaning and optional claims) stops the build with a
+`RuntimeError`, for example:
+`Extraction failed (document=<fingerprint> chunk=21): exception=APIStatusError status=429; ...`.
+The document fingerprint and one-based chunk ordinal locate the failure without
+exposing source metadata or text. Diagnostics include a fixed, recognized exception
+type label (unknown custom types become `Exception`) and an HTTP error status only
+when stored as an integer (400–599) on the exception. Provider messages, response bodies,
+URLs and chained tracebacks are deliberately omitted; do not log source text or
+credentials to investigate a failure.
+
+Follow the fixed hint: check credentials/model access for authentication failures,
+quota and `extraction_concurrency` for rate limits, connectivity/timeouts for
+connection failures, and provider availability for server errors. Request errors
+suggest checking model/configuration/limits. `OpenAICompatibleProviderError` means
+the provider returned an error payload, even if the HTTP request succeeded; payload
+contents are not exposed. JSON decoding failures suggest checking schema, prompt
+templates and structured-output support. Other value/type/key errors can originate
+in the provider adapter or extraction code, so check the provider response format
+as well as schema/prompt compatibility. Hints are diagnostic categories, not proof
+of a root cause. This change only surfaces errors; it does not repair a failed
+extraction. Extraction errors are not retried
+automatically. Fix the cause before rerunning; a document's extraction must finish
+before it is written, but other documents in a multi-document build may already
+have been written.
+
 #### Embedding failures and recovery
 
 Entity embedding is best-effort by default: provider or vector-write errors are
