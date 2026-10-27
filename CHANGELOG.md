@@ -18,6 +18,14 @@
   label or `graph_name` filters are applied and trim to `top_k` after the
   filter, matching Memgraph behavior; result shape is unchanged.
 
+## [0.12.1](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.12.0...v0.12.1) (2026-10-27)
+
+
+### Bug Fixes
+
+* repair malformed community report JSON ([d247ef1](https://github.com/FadhelHaidar/recon-graphrag/commit/d247ef174f11d840f06d976f8fcd3d29775a6e98))
+* repair malformed community report JSON ([35fdb8d](https://github.com/FadhelHaidar/recon-graphrag/commit/35fdb8d96f3bd3f3ad38e3e1d70a18b1274822b4))
+
 ## [0.12.0](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.11.1...v0.12.0) (2026-10-27)
 
 
