@@ -630,3 +630,19 @@ workflows guide.
 - Define your domain model in [Schema](03-schema.md).
 - Create required indexes in [Indexing](04-indexing.md).
 - Search the graph in [Search](06-search.md).
+
+### Assembly identity and conflict reports
+
+Before writing, custom non-name schema `NodeType.identity_property` values identify
+entities; different trusted values remain separate in memory, even if explicit
+canonical keys match. Explicit canonical keys otherwise retain their historical
+trusted meaning. Without either, LLM local IDs remain chunk-local observations.
+Confirmed identities union only schema `LIST` properties; conflicting populated
+scalars remain first-wins with source-bearing conflict observations in
+`GraphDocument.assembly_review_groups` and
+`result["extraction"]["assembly_review_groups"]`. These reports are not DB properties.
+For name-only structured candidates, provisional splitting and its limitations are
+documented in [structured ingestion](11-structured-data.md#in-memory-conflicts-before-writing).
+Default normalized database resolution can undo in-memory separation: configure
+conflict properties, disable resolution, or inspect with `finalize=False` on
+row/document builds. No database resolver policy changes are implied.

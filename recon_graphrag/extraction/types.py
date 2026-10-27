@@ -17,6 +17,8 @@ class ExtractedNode:
     id: str
     label: str
     properties: dict[str, Any] = field(default_factory=dict)
+    # Structured name keys are candidates, not authoritative identifiers.
+    canonical_key_trusted: bool = True
 
 
 @dataclass
@@ -104,3 +106,4 @@ class GraphDocument:
     relationships: list[RelationshipRecord]
     evidence_links: list[EvidenceLink]
     claims: list[ClaimRecord] = field(default_factory=list)
+    assembly_review_groups: list[dict[str, Any]] = field(default_factory=list)

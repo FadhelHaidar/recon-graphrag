@@ -81,3 +81,20 @@ def test_graph_document_json_round_trip(tmp_path):
     loaded = load_graph_document_json(path)
 
     assert loaded == graph_document
+
+
+def test_assembly_review_groups_round_trip_and_legacy_default(tmp_path):
+    document = _sample_graph_document()
+    document.assembly_review_groups = [{
+        "reason": "property_conflict", "decision": "blocked", "entity_ids": ["alice"],
+        "conflicts": [{"property": "contact", "observations": [
+            {"value": "one", "source": {"document_id": "doc-1", "chunk_id": "chunk-1"}},
+            {"value": "two", "source": {"document_id": "doc-1", "chunk_id": "chunk-2"}},
+        ]}],
+    }]
+    path = tmp_path / "review.json"
+    save_graph_document_json(document, path)
+    assert load_graph_document_json(path) == document
+    payload = graph_document_to_dict(document)
+    del payload["assembly_review_groups"]
+    assert graph_document_from_dict(payload).assembly_review_groups == []

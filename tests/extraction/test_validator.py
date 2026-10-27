@@ -407,3 +407,11 @@ def test_validator_integer_relationship_weight_still_rejects_supplied_float(requ
     schema = _property_schema(PropertyType("weight", "INTEGER", required=required), "relationships")
     with pytest.raises(ValueError, match=r"relationships\[0\].properties.weight: expected INTEGER"):
         SchemaValidator().validate(_property_extraction({"weight": weight}, "relationships"), schema)
+
+
+def test_validator_preserves_sdk_identity_trust_metadata():
+    schema = GraphSchema([NodeType("Thing")], [])
+    result = SchemaValidator().validate(GraphExtraction(nodes=[
+        ExtractedNode("a", "Thing", {"name": "A"}, canonical_key_trusted=False),
+    ]), schema)
+    assert result.nodes[0].canonical_key_trusted is False

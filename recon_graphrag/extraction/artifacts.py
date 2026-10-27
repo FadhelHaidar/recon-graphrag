@@ -26,6 +26,7 @@ def graph_document_from_dict(payload: dict[str, Any]) -> GraphDocument:
     """Load a GraphDocument from a dictionary produced by graph_document_to_dict."""
     return GraphDocument(
         document=DocumentRecord(**payload["document"]),
+        assembly_review_groups=payload.get("assembly_review_groups", []),
         chunks=[ChunkRecord(**row) for row in payload.get("chunks", [])],
         entities=[EntityRecord(**row) for row in payload.get("entities", [])],
         relationships=[

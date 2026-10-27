@@ -38,7 +38,9 @@ class ColumnEntity:
     """Map row columns to one entity per row.
 
     ``identity_column``'s value becomes the entity name; the canonical key is
-    label-scoped (``f"{label}:{value}"``). ``properties`` maps columns to
+    label-scoped (``f"{label}:{value}"``). A non-name ``identity_property``
+    declares a trusted identifier and also stores the cell under that property.
+    ``properties`` maps columns to
     property names; ``types`` maps property names to PropertyDataType (default
     STRING). ``description_template`` is ``str.format``-ed over the full row;
     when None, a compact "prop: value" summary of the mapped columns is used.
@@ -49,6 +51,7 @@ class ColumnEntity:
     properties: dict[str, str] = field(default_factory=dict)
     types: dict[str, PropertyDataType] = field(default_factory=dict)
     description_template: str | None = None
+    identity_property: str = "name"
 
     def scoped_key(self, identity_value: str) -> str:
         return f"{self.label}:{identity_value}"
@@ -94,6 +97,15 @@ class RowMapping:
         if duplicates:
             raise ValueError(f"Duplicate ColumnEntity labels: {sorted(duplicates)}")
 
+        for entity in self.entities:
+            if not isinstance(entity.identity_property, str) or not entity.identity_property.strip():
+                raise ValueError("ColumnEntity.identity_property must be a non-empty string")
+            if entity.identity_property != "name" and any(
+                prop == entity.identity_property and column != entity.identity_column
+                for column, prop in entity.properties.items()
+            ):
+                raise ValueError("ColumnEntity.identity_property must map from identity_column")
+
         known = set(labels)
         for rel in self.relationships:
             for endpoint in (rel.source_label, rel.target_label):
@@ -114,10 +126,14 @@ class RowMapping:
         node_types = [
             NodeType(
                 label=entity.label,
+                identity_property=entity.identity_property,
                 properties=[
                     PropertyType(name=prop, type=entity.types.get(prop, "STRING"))
                     for prop in entity.properties.values()
-                ],
+                ] + ([PropertyType(name=entity.identity_property,
+                                  type=entity.types.get(entity.identity_property, "STRING"))] if
+                     entity.identity_property != "name" and
+                     entity.identity_property not in entity.properties.values() else []),
             )
             for entity in self.entities
         ]
@@ -253,6 +269,13 @@ def rows_to_chunks_and_extractions(
             keys_by_label[entity.label] = (scoped, identity)
 
             properties: dict[str, Any] = {"name": identity, "canonical_key": scoped}
+            if entity.identity_property != "name":
+                properties[entity.identity_property] = coerce(
+                    row[entity.identity_column],
+                    entity.types.get(entity.identity_property, "STRING"),
+                    column=entity.identity_column,
+                    row_index=index,
+                )
             for column, prop_name in entity.properties.items():
                 coerced = coerce(
                     row.get(column),
@@ -265,7 +288,10 @@ def rows_to_chunks_and_extractions(
             properties["description"] = _entity_description(entity, identity, properties, row)
 
             nodes.append(
-                ExtractedNode(id=scoped, label=entity.label, properties=properties)
+                ExtractedNode(
+                    id=scoped, label=entity.label, properties=properties,
+                    canonical_key_trusted=entity.identity_property != "name",
+                )
             )
 
         relationships: list[ExtractedRelationship] = []

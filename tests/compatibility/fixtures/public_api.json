@@ -137,6 +137,14 @@
           "kw_only": false,
           "name": "description_template",
           "type": "str | None"
+        },
+        {
+          "name": "identity_property",
+          "type": "str",
+          "default": "'name'",
+          "factory": null,
+          "init": true,
+          "kw_only": false
         }
       ],
       "frozen": true,
@@ -144,7 +152,7 @@
       "methods": {
         "scoped_key": "(self, identity_value: 'str') -> 'str'"
       },
-      "signature": "(label: 'str', identity_column: 'str', properties: 'dict[str, str]' = <factory>, types: 'dict[str, PropertyDataType]' = <factory>, description_template: 'str | None' = None) -> None"
+      "signature": "(label: 'str', identity_column: 'str', properties: 'dict[str, str]' = <factory>, types: 'dict[str, PropertyDataType]' = <factory>, description_template: 'str | None' = None, identity_property: 'str' = 'name') -> None"
     },
     "CommunityDetector": {
       "import_path": "recon_graphrag.communities.neo4j.detection.CommunityDetector",
@@ -1701,12 +1709,20 @@
           "kw_only": false,
           "name": "properties",
           "type": "dict[str, Any]"
+        },
+        {
+          "name": "canonical_key_trusted",
+          "type": "bool",
+          "default": "True",
+          "factory": null,
+          "init": true,
+          "kw_only": false
         }
       ],
       "frozen": false,
       "import_path": "recon_graphrag.extraction.types.ExtractedNode",
       "methods": {},
-      "signature": "(id: 'str', label: 'str', properties: 'dict[str, Any]' = <factory>) -> None"
+      "signature": "(id: 'str', label: 'str', properties: 'dict[str, Any]' = <factory>, canonical_key_trusted: 'bool' = True) -> None"
     },
     "recon_graphrag.extraction.types.ExtractedRelationship": {
       "fields": [
@@ -1797,12 +1813,20 @@
           "kw_only": false,
           "name": "claims",
           "type": "list[ClaimRecord]"
+        },
+        {
+          "name": "assembly_review_groups",
+          "type": "list[dict[str, Any]]",
+          "default": "<required>",
+          "factory": "builtins.list",
+          "init": true,
+          "kw_only": false
         }
       ],
       "frozen": false,
       "import_path": "recon_graphrag.extraction.types.GraphDocument",
       "methods": {},
-      "signature": "(document: 'DocumentRecord', chunks: 'list[ChunkRecord]', entities: 'list[EntityRecord]', relationships: 'list[RelationshipRecord]', evidence_links: 'list[EvidenceLink]', claims: 'list[ClaimRecord]' = <factory>) -> None"
+      "signature": "(document: 'DocumentRecord', chunks: 'list[ChunkRecord]', entities: 'list[EntityRecord]', relationships: 'list[RelationshipRecord]', evidence_links: 'list[EvidenceLink]', claims: 'list[ClaimRecord]' = <factory>, assembly_review_groups: 'list[dict[str, Any]]' = <factory>) -> None"
     },
     "recon_graphrag.extraction.types.GraphExtraction": {
       "fields": [

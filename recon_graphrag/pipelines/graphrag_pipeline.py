@@ -31,7 +31,7 @@ from recon_graphrag.extraction.description_summarizer import DescriptionSummariz
 from recon_graphrag.extraction.extractor import LLMGraphExtractor
 from recon_graphrag.extraction.parser import _PropertyValidationError
 from recon_graphrag.extraction.prompts import SchemaPromptBuilder
-from recon_graphrag.extraction.schema import GraphSchema
+from recon_graphrag.extraction.schema import GraphSchema, NodeType
 from recon_graphrag.extraction.structured import (
     RowMapping,
     iter_csv,
@@ -461,7 +461,18 @@ class GraphBuilderPipeline:
         mapping.validate()
         rows = [dict(row) for row in rows]
         metadata = metadata or {}
-        llm_schema = extraction_schema or mapping.to_schema()
+        mapping_schema = mapping.to_schema()
+        llm_schema = extraction_schema or mapping_schema
+        assembly_node_types = {node.label: node for node in llm_schema.node_types}
+        for direct in mapping_schema.node_types:
+            extracted = assembly_node_types.get(direct.label)
+            properties = {prop.name: prop for prop in extracted.properties} if extracted else {}
+            properties.update({prop.name: prop for prop in direct.properties})
+            assembly_node_types[direct.label] = NodeType(
+                label=direct.label, properties=list(properties.values()),
+                identity_property=direct.identity_property,
+            )
+        assembly_schema = GraphSchema(list(assembly_node_types.values()), [])
 
         with run_scope():
             text = "\n\n".join(row_text(row) for row in rows)
@@ -495,7 +506,9 @@ class GraphBuilderPipeline:
                 chunk_extractions=extractions,
                 metadata=metadata,
                 graph_name=self.graph_name,
-                identity_properties=self._identity_properties(llm_schema),
+                identity_properties=self._identity_properties(assembly_schema),
+                schema=assembly_schema,
+                conflict_properties=self.entity_resolution_conflict_properties,
             )
             write_stats = await asyncio.to_thread(
                 self.graph_writer.write_graph_document, graph_document
@@ -513,6 +526,7 @@ class GraphBuilderPipeline:
                     "chunks": len(chunks),
                     "llm_rows": len(llm_rows),
                     "write_stats": write_stats,
+                    "assembly_review_groups": graph_document.assembly_review_groups,
                 }
             }
             if finalize:
@@ -945,6 +959,8 @@ class GraphBuilderPipeline:
             metadata=metadata,
             graph_name=self.graph_name,
             identity_properties=self._identity_properties(schema),
+            schema=schema,
+            conflict_properties=self.entity_resolution_conflict_properties,
             chunk_claims=chunk_claims if chunk_claims else None,
         )
 
@@ -963,6 +979,7 @@ class GraphBuilderPipeline:
             "document_id": document_id,
             "chunks": len(chunks),
             "write_stats": write_stats,
+            "assembly_review_groups": graph_document.assembly_review_groups,
         }
 
     async def _backfill_descriptions(self):

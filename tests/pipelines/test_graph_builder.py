@@ -2077,6 +2077,80 @@ async def test_extraction_workers_bound_pending_tasks(
 
 
 @pytest.mark.asyncio
+async def test_text_assembly_reports_conflicts_before_write(fake_writer, fake_embedder):
+    schema = GraphSchema([NodeType("Thing", properties=[
+        PropertyType("identifier"), PropertyType("value"), PropertyType("tags", "LIST"),
+    ], identity_property="identifier")], [])
+    pipeline = GraphBuilderPipeline(
+        cast(GraphStore, FakeGraphStore()), MagicMock(), fake_embedder,
+        graph_writer=fake_writer, perform_entity_resolution=False, embed_entities=False,
+        summarize_descriptions=False,
+    )
+    from recon_graphrag.extraction.types import ExtractedNode, GraphExtraction
+    pipeline._extract_chunk = AsyncMock(side_effect=[
+        (GraphExtraction(nodes=[ExtractedNode("a", "Thing", {
+            "identifier": "1", "value": value, "tags": [tag],
+        })]), []) for value, tag in [("one", "a"), ("two", "b")]
+    ])
+    result = await pipeline._build_from_pages_envelope(
+        ["first", "second"], {}, schema=schema, window_size=1, window_overlap=0,
+        extract_claims=False,
+        extraction_concurrency=1, max_gleanings=0, finalize=False,
+    )
+    doc = fake_writer.write_graph_document.call_args.args[0]
+    assert len(doc.entities) == 1
+    assert doc.entities[0].properties["tags"] == ["a", "b"]
+    assert result["extraction"]["assembly_review_groups"] == doc.assembly_review_groups
+    assert doc.assembly_review_groups[0]["decision"] == "identity_retained"
+
+
+@pytest.mark.parametrize(
+    ("identity_type", "identity", "description_type", "description", "expected"),
+    [
+        ("INTEGER", 0, None, None, ""),
+        ("INTEGER", 0, "INTEGER", 0, "0"),
+        ("BOOLEAN", False, "BOOLEAN", False, "False"),
+        ("BOOLEAN", False, "LIST", ["a", 0, False], "['a', 0, False]"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_text_pipeline_retains_falsy_identity_and_normalizes_description(
+    fake_llm, fake_embedder, fake_writer,
+    identity_type, identity, description_type, description, expected,
+):
+    import json
+
+    properties = [PropertyType("identifier", identity_type)]
+    if description_type:
+        properties.append(PropertyType("description", description_type))
+    schema = GraphSchema([NodeType("Thing", properties=properties,
+                                   identity_property="identifier")], [RelationshipType("SELF")])
+    fake_llm.ainvoke.return_value = MagicMock(content=json.dumps({
+        "nodes": [{"id": "a", "label": "Thing", "properties": {
+            "identifier": identity, "description": description,
+        }}],
+        "relationships": [{"source_id": "a", "target_id": "a", "type": "SELF"}],
+    }), usage=None)
+    pipeline = GraphBuilderPipeline(
+        cast(GraphStore, FakeGraphStore()), fake_llm, fake_embedder,
+        graph_writer=fake_writer, perform_entity_resolution=False, embed_entities=False,
+        summarize_descriptions=False,
+    )
+    await pipeline._build_from_pages_envelope(
+        ["first", "second"], {}, schema=schema, window_size=1, window_overlap=0,
+        extract_claims=False, extraction_concurrency=1, max_gleanings=0, finalize=False,
+    )
+    doc = fake_writer.write_graph_document.call_args.args[0]
+    (entity,) = doc.entities
+    assert entity.canonical_key == f"Thing:{identity}"
+    assert entity.properties["identifier"] is identity
+    assert entity.properties["description"] == expected
+    assert [obs.description for obs in entity.description_observations] == [expected, expected]
+    assert doc.relationships[0].source_id == doc.relationships[0].target_id == entity.id
+    assert doc.assembly_review_groups == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failed_stage", ["entities", "relationships"])
 async def test_description_summarization_failure_stops_embedding_and_validation(
     fake_llm, fake_embedder, fake_writer, failed_stage,
