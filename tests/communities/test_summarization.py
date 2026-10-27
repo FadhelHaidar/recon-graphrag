@@ -471,3 +471,115 @@ async def test_generate_all_continues_after_json_repair_failure(include_error_de
             else "Community report generation or storage failed."
         ),
     }]
+
+
+class StructuredReportLLM:
+    supports_structured_output = True
+
+    def __init__(self, responses):
+        self.responses = iter(responses)
+        self.kwargs = []
+
+    async def ainvoke(self, prompt, **kwargs):
+        self.kwargs.append(kwargs)
+        response = next(self.responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("structured", [False, True])
+@pytest.mark.parametrize("wrapped", [False, True])
+async def test_generate_report_request_format_on_initial_and_repair(structured, wrapped):
+    from recon_graphrag.communities.reports import COMMUNITY_REPORT_RESPONSE_FORMAT
+    from recon_graphrag.observability import track_usage
+
+    valid = await FakeValidReportLLM().ainvoke("")
+    llm = StructuredReportLLM([LLMResponse("not json"), valid])
+    summarizer = CommunitySummarizer(
+        cast(Any, FakeReportGraphStore()),
+        track_usage(cast(Any, llm)) if wrapped else cast(Any, llm),
+        max_context_tokens=200,
+        report_structured_output=structured,
+    )
+    report = await summarizer.generate_report("community:1", input_fingerprint="input-v1")
+    expected = {"response_format": COMMUNITY_REPORT_RESPONSE_FORMAT} if structured else {}
+    assert llm.kwargs == [expected, expected]
+    assert report.title == "Alice and Acme"
+    assert report.version.input_fingerprint == "input-v1"
+    assert report.context_tokens_used is not None
+    assert report.findings[0].references[0].target_id == "person:alice"
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_report_structured_output_rejects_unsupported_adapter(wrapped):
+    from recon_graphrag.llm.factory import AnthropicLLM, OllamaLLM
+    from recon_graphrag.observability import track_usage
+
+    for adapter in (AnthropicLLM, OllamaLLM):
+        llm = object.__new__(adapter)
+        with pytest.raises(ValueError, match="does not support report structured output"):
+            CommunitySummarizer(
+                cast(Any, FakeReportGraphStore()),
+                track_usage(cast(Any, llm)) if wrapped else cast(Any, llm),
+                report_structured_output=True,
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["length", "max_tokens", "refusal", "content_filter"])
+@pytest.mark.parametrize("repair", [False, True])
+@pytest.mark.parametrize("valid_json", [False, True])
+async def test_generate_report_rejects_incomplete_output_before_parsing(reason, repair, valid_json):
+    from recon_graphrag.observability import track_usage
+
+    valid = (await FakeValidReportLLM().ainvoke("")).content
+    response = LLMResponse(valid if valid_json else "sensitive provider text", finish_reason=reason)
+    responses = [LLMResponse("not json")] if repair else []
+    llm = StructuredReportLLM(responses + [response])
+    summarizer = CommunitySummarizer(
+        cast(Any, FakeReportGraphStore()), track_usage(cast(Any, llm)), report_structured_output=True,
+    )
+    with pytest.raises(ValueError, match="Community report") as error:
+        await summarizer.generate_report("community:1")
+    assert "sensitive" not in str(error.value)
+    assert "No further JSON repair will be attempted" in str(error.value)
+    assert len(llm.kwargs) == (2 if repair else 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", [None, "stop", "end_turn", "unknown"])
+async def test_generate_report_finished_or_unknown_status_preserves_legacy(reason):
+    valid = (await FakeValidReportLLM().ainvoke("")).content
+    llm = StructuredReportLLM([LLMResponse(valid, finish_reason=reason)])
+    summarizer = CommunitySummarizer(cast(Any, FakeReportGraphStore()), cast(Any, llm))
+    assert (await summarizer.generate_report("community:1")).title == "Alice and Acme"
+    assert llm.kwargs == [{}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repair", [False, True])
+@pytest.mark.parametrize("message", ["HTTP 400 schema unsupported", "HTTP 401 authentication failed", "network failed"])
+async def test_structured_report_provider_errors_are_not_retried(repair, message):
+    error = RuntimeError(message)
+    responses = [LLMResponse("not json")] if repair else []
+    llm = StructuredReportLLM(responses + [error])
+    summarizer = CommunitySummarizer(
+        cast(Any, FakeReportGraphStore()), cast(Any, llm), report_structured_output=True,
+    )
+    with pytest.raises(RuntimeError) as caught:
+        await summarizer.generate_report("community:1")
+    assert caught.value is error
+    assert len(llm.kwargs) == (2 if repair else 1)
+
+
+@pytest.mark.asyncio
+async def test_structured_report_repair_remains_bounded():
+    llm = StructuredReportLLM([LLMResponse("not json"), LLMResponse("still not json")])
+    summarizer = CommunitySummarizer(
+        cast(Any, FakeReportGraphStore()), cast(Any, llm), report_structured_output=True,
+    )
+    with pytest.raises(json.JSONDecodeError):
+        await summarizer.generate_report("community:1")
+    assert len(llm.kwargs) == 2

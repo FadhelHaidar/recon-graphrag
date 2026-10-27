@@ -14,6 +14,53 @@ from recon_graphrag.models.artifacts import (
 from recon_graphrag.utils.templates import format_template, has_placeholder
 
 
+# Keep reference IDs in the prompt; enumerating them here can exceed provider limits.
+COMMUNITY_REPORT_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "community_report",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["title", "summary", "rating", "rating_explanation", "findings"],
+            "properties": {
+                "title": {"type": "string"},
+                "summary": {"type": "string"},
+                "rating": {"type": ["number", "null"]},
+                "rating_explanation": {"type": ["string", "null"]},
+                "findings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["description", "references"],
+                        "properties": {
+                            "description": {"type": "string"},
+                            "references": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "required": ["target_id", "target_type"],
+                                    "properties": {
+                                        "target_id": {"type": "string"},
+                                        "target_type": {
+                                            "type": "string",
+                                            "enum": ["entity", "relationship", "claim"],
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
+
+
 # Report prompt builder
 DEFAULT_REPORT_PROMPT = """\
 You are generating a structured community report for a knowledge graph.

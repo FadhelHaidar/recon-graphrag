@@ -166,7 +166,7 @@
       "methods": {
         "build": "(self, level: 'Optional[int]' = None) -> 'dict'"
       },
-      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', relationship_types: 'Optional[list[str]]' = None, max_levels: 'int' = 3, gamma: 'float' = 1.0, theta: 'float' = 0.01, tolerance: 'float' = 0.0001, graph_name: 'str' = 'entity-graph', relationship_weight_property: 'str' = 'weight', random_seed: 'Optional[int]' = 42, report_rubric: 'ReportRubric | None' = None, report_prompt: 'str | None' = None, summarize_concurrency: 'int' = 10, skip_existing: 'bool' = False, max_context_tokens: 'int' = 8000, token_counter: 'TokenCounter | None' = None, max_report_words: 'int | None' = 2000, embedder: 'BaseEmbedder | None' = None, embed_community_reports: 'bool' = True, track_token_usage: 'bool' = True, include_error_details: 'bool' = False)"
+      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', relationship_types: 'Optional[list[str]]' = None, max_levels: 'int' = 3, gamma: 'float' = 1.0, theta: 'float' = 0.01, tolerance: 'float' = 0.0001, graph_name: 'str' = 'entity-graph', relationship_weight_property: 'str' = 'weight', random_seed: 'Optional[int]' = 42, report_rubric: 'ReportRubric | None' = None, report_prompt: 'str | None' = None, summarize_concurrency: 'int' = 10, skip_existing: 'bool' = False, max_context_tokens: 'int' = 8000, token_counter: 'TokenCounter | None' = None, max_report_words: 'int | None' = 2000, embedder: 'BaseEmbedder | None' = None, embed_community_reports: 'bool' = True, track_token_usage: 'bool' = True, include_error_details: 'bool' = False, report_structured_output: 'bool' = False)"
     },
     "CommunityReportEmbedder": {
       "import_path": "recon_graphrag.embeddings.community_reports.CommunityReportEmbedder",
@@ -181,7 +181,7 @@
         "generate_all": "(self, level: 'int' = 0, skip_existing: 'bool' = False) -> 'tuple[list[dict], BuildStats]'",
         "generate_report": "(self, community_id: 'str', level: 'int' = 0, context: 'CommunityContext | None' = None, input_fingerprint: 'str | None' = None) -> 'CommunityReport'"
       },
-      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', graph_name: 'str' = 'entity-graph', report_rubric: 'ReportRubric | None' = None, concurrency: 'int' = 5, max_context_tokens: 'int | None' = None, token_counter: 'TokenCounter | None' = None, max_report_words: 'int | None' = 2000, report_prompt: 'str | None' = None, include_error_details: 'bool' = False)"
+      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', graph_name: 'str' = 'entity-graph', report_rubric: 'ReportRubric | None' = None, concurrency: 'int' = 5, max_context_tokens: 'int | None' = None, token_counter: 'TokenCounter | None' = None, max_report_words: 'int | None' = 2000, report_prompt: 'str | None' = None, include_error_details: 'bool' = False, report_structured_output: 'bool' = False)"
     },
     "DriftAction": {
       "fields": [
@@ -666,12 +666,20 @@
           "kw_only": false,
           "name": "usage",
           "type": "Optional[LLMUsage]"
+        },
+        {
+          "default": "None",
+          "factory": null,
+          "init": true,
+          "kw_only": false,
+          "name": "finish_reason",
+          "type": "Optional[str]"
         }
       ],
       "frozen": false,
       "import_path": "recon_graphrag.llm.base.LLMResponse",
       "methods": {},
-      "signature": "(content: 'str', usage: 'Optional[LLMUsage]' = None) -> None"
+      "signature": "(content: 'str', usage: 'Optional[LLMUsage]' = None, finish_reason: 'Optional[str]' = None) -> None"
     },
     "LLMUsage": {
       "fields": [

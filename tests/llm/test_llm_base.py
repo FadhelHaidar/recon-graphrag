@@ -30,3 +30,17 @@ def test_llm_response_usage():
 
     assert response.content == "ok"
     assert response.usage.total_tokens == 3
+
+
+def test_llm_response_finish_reason_is_additive_and_serializable():
+    from dataclasses import asdict
+
+    usage = LLMUsage(1, 2, 3)
+    legacy = LLMResponse("ok", usage)
+    assert legacy.usage is usage
+    assert legacy.finish_reason is None
+    response = LLMResponse("ok", usage, "stop")
+    assert asdict(response) == {
+        "content": "ok", "usage": {"request_tokens": 1, "response_tokens": 2, "total_tokens": 3},
+        "finish_reason": "stop",
+    }

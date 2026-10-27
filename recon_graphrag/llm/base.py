@@ -22,10 +22,15 @@ class LLMUsage:
 
 @dataclass
 class LLMResponse:
-    """Response returned by an LLM invocation."""
+    """Response returned by an LLM invocation.
+
+    ``finish_reason`` is optional provider completion metadata; missing or
+    unknown values do not imply failure. Refusals use the fixed status "refusal".
+    """
 
     content: str
     usage: Optional[LLMUsage] = None
+    finish_reason: Optional[str] = None
 
 
 @runtime_checkable
