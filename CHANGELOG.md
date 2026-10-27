@@ -18,6 +18,22 @@
   label or `graph_name` filters are applied and trim to `top_k` after the
   filter, matching Memgraph behavior; result shape is unchanged.
 
+## [0.12.0](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.11.1...v0.12.0) (2026-10-27)
+
+
+### Features
+
+* **communities:** surface report errors with opt-in private details ([df6b049](https://github.com/FadhelHaidar/recon-graphrag/commit/df6b049d9c0e1163493e993cefafbad5398aa179))
+
+
+### Bug Fixes
+
+* **extraction:** preserve assembly identities and report property conflicts ([58cb364](https://github.com/FadhelHaidar/recon-graphrag/commit/58cb364f1bf084fc8a4267231ac53bcab3a70998))
+* **extraction:** reject cross-label trusted identity collisions ([6e3fcba](https://github.com/FadhelHaidar/recon-graphrag/commit/6e3fcbad2445fa78f17167f12400e062057ada63))
+* **graphdb:** retarget claim object ids during entity merges ([6b0f62d](https://github.com/FadhelHaidar/recon-graphrag/commit/6b0f62dda6afd7a56a959fb9960155f1996190b0))
+* harden graph builder integrity and surface pipeline diagnostics ([80df7e3](https://github.com/FadhelHaidar/recon-graphrag/commit/80df7e3705e21ceb2a438882376a7563475a7e1c))
+* **pipelines:** surface safe extraction and provider diagnostics ([b8633f1](https://github.com/FadhelHaidar/recon-graphrag/commit/b8633f114d8327c508220f0d288b4f6aee99306a))
+
 ## [0.11.1](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.11.0...v0.11.1) (2026-10-26)
 
 
