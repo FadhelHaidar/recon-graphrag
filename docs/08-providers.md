@@ -255,3 +255,19 @@ See [Testing](10-testing.md) for run commands and required environment variables
 - Follow the full setup in [Quick Start](02-quickstart.md).
 - Configure indexes in [Indexing](04-indexing.md).
 - Learn about search modes in [Search](06-search.md).
+
+## Completion metadata
+
+`LLMResponse(content, usage=None, finish_reason=None)` adds optional completion
+metadata after the existing positional fields. Existing custom LLM constructors
+remain valid. Dataclass serialization now includes `finish_reason` (default
+`None`). OpenAI-compatible adapters preserve the first choice's `finish_reason`;
+a nonempty message refusal becomes the fixed status `"refusal"`, not raw refusal
+text. Anthropic's `stop_reason` and Ollama's `done_reason` are preserved when
+available. Usage tracking forwards request keywords and returns the original
+response, including this metadata. Unknown/missing completion reasons do not
+imply failure. Community reports recognize `length`/`max_tokens` as output-limit
+failures and `refusal`/`content_filter` as safety failures before parsing; other
+SDK consumers continue to use response content as before. See
+[Strict report output and completion limits](05-pipelines.md#strict-report-output-and-completion-limits)
+for explicit structured-output opt-in and model limitations.

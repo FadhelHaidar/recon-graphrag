@@ -273,3 +273,43 @@ async def test_build_reports_degraded_when_a_report_fails(include_error_details,
         assert "sk-secret-value" not in json.dumps(warnings)
     else:
         assert "sk-secret-value" in json.dumps(warnings)
+
+
+@pytest.mark.asyncio
+async def test_build_forwards_report_structured_output_with_usage_wrapper():
+    from recon_graphrag.communities.reports import COMMUNITY_REPORT_RESPONSE_FORMAT
+    from recon_graphrag.llm.base import LLMResponse
+
+    class LLM:
+        supports_structured_output = True
+
+        def __init__(self):
+            self.kwargs = []
+
+        async def ainvoke(self, prompt, **kwargs):
+            self.kwargs.append(kwargs)
+            return LLMResponse(json.dumps({
+                "title": "Report", "summary": "Summary", "rating": None,
+                "rating_explanation": None, "findings": [{
+                    "description": "Finding", "references": [
+                        {"target_id": "person:alice", "target_type": "entity"},
+                    ],
+                }],
+            }))
+
+    store = FakeGraphStoreWithCommunities([{"id": "community:1", "level": 0}])
+    llm = LLM()
+    result = await CommunityPipeline(
+        cast(Any, store), cast(Any, llm), report_structured_output=True,
+    ).build()
+    assert result["reports"] == 1
+    assert llm.kwargs == [{"response_format": COMMUNITY_REPORT_RESPONSE_FORMAT}]
+    assert result["token_usage"]["totals"]["calls"] == 1
+
+
+def test_pipeline_rejects_unsupported_report_adapter_before_build():
+    class LLM:
+        supports_structured_output = False
+
+    with pytest.raises(ValueError, match="does not support report structured output"):
+        CommunityPipeline(cast(Any, FakeGraphStore()), cast(Any, LLM()), report_structured_output=True)

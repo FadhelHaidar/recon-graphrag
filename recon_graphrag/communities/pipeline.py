@@ -47,6 +47,7 @@ class CommunityPipeline:
         embed_community_reports: bool = True,
         track_token_usage: bool = True,
         include_error_details: bool = False,
+        report_structured_output: bool = False,
     ):
         """Initialize the community pipeline.
 
@@ -88,7 +89,12 @@ class CommunityPipeline:
             include_error_details: Include original exception messages and types in
                 maintenance warnings. For trusted/private debugging only: messages
                 may contain credentials, provider details, or source content.
+            report_structured_output: Opt in to strict OpenAI-style JSON schema for
+                report requests. The selected model must support this format.
         """
+        if report_structured_output and getattr(llm, "supports_structured_output", None) is False:
+            raise ValueError("This LLM adapter does not support report structured output.")
+        self.report_structured_output = report_structured_output
         self.graph_store = graph_store
         self.llm = track_usage(llm) if track_token_usage else llm
         self.relationship_types = relationship_types
@@ -172,6 +178,7 @@ class CommunityPipeline:
                 max_report_words=self.max_report_words,
                 report_prompt=self.report_prompt,
                 include_error_details=self.include_error_details,
+                report_structured_output=self.report_structured_output,
             )
 
             for lvl in levels:

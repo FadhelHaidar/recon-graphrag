@@ -33,6 +33,7 @@ from recon_graphrag.communities.context import (
     render_community_context,
 )
 from recon_graphrag.communities.reports import (
+    COMMUNITY_REPORT_RESPONSE_FORMAT,
     ReportParser,
     ReportRubric,
     ReportValidationError,
@@ -86,7 +87,11 @@ class CommunitySummarizer:
         max_report_words: int | None = 2000,
         report_prompt: str | None = None,
         include_error_details: bool = False,
+        report_structured_output: bool = False,
     ):
+        if report_structured_output and getattr(llm, "supports_structured_output", None) is False:
+            raise ValueError("This LLM adapter does not support report structured output.")
+        self.report_structured_output = report_structured_output
         self.graph_store = graph_store
         self.llm = llm
         self.graph_name = graph_name
@@ -336,9 +341,14 @@ class CommunitySummarizer:
             prompt_template=self.report_prompt,
         )
 
+        request_kwargs = (
+            {"response_format": COMMUNITY_REPORT_RESPONSE_FORMAT}
+            if self.report_structured_output else {}
+        )
         # First attempt
         with token_stage("community.report"):
-            response: LLMResponse = await self.llm.ainvoke(prompt)
+            response: LLMResponse = await self.llm.ainvoke(prompt, **request_kwargs)
+        _check_report_completion(response)
         try:
             report = self._report_parser.parse(
                 response.content,
@@ -367,7 +377,8 @@ class CommunitySummarizer:
                 rubric=self.report_rubric,
             )
             with token_stage("community.report_repair"):
-                repair_response = await self.llm.ainvoke(repair_prompt)
+                repair_response = await self.llm.ainvoke(repair_prompt, **request_kwargs)
+            _check_report_completion(repair_response)
             try:
                 report = self._report_parser.parse(
                     repair_response.content,
@@ -559,3 +570,17 @@ class CommunitySummarizer:
                     context = enrich_context_with_claims(context, claim_rows)
 
         return context
+
+
+def _check_report_completion(response: LLMResponse) -> None:
+    reason = getattr(response, "finish_reason", None)
+    if reason in ("length", "max_tokens"):
+        raise ValueError(
+            "Community report output token limit reached. Increase the provider output "
+            "token limit or reduce the requested report length. No further JSON repair will be attempted."
+        )
+    if reason in ("refusal", "content_filter"):
+        raise ValueError(
+            "Community report was refused or content-filtered by the provider; "
+            "No further JSON repair will be attempted."
+        )

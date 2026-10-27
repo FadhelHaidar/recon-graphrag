@@ -609,6 +609,7 @@ them to untrusted users. `CommunitySummarizer` accepts the same option, and
 | `relationship_weight_property` | Name of the numeric relationship property to use as the Leiden edge weight, for example `"weight"`. Defaults to `"weight"`. Set to `None` to run Neo4j unweighted; Memgraph always uses `"weight"`. |
 | `random_seed` | Random seed for deterministic Neo4j community detection. |
 | `report_rubric` | Optional rating rubric for structured reports. |
+| `report_structured_output` | Explicit opt-in to strict OpenAI-style JSON schema for initial and repair report requests. Defaults to `False`; requires selected model support. |
 | `report_prompt` | Optional custom report prompt string. A simple instruction (e.g. `"You are a security analyst. Identify risks in this community."`) gets the standard structured body (community context, reference allowlist, rubric, JSON format) appended. A full template must include all placeholders in `recon_graphrag.communities.reports.REQUIRED_REPORT_PLACEHOLDERS`; a partial template raises `ValueError` at construction. |
 | `summarize_concurrency` | Maximum number of community reports to generate in parallel. Bounds concurrent reports, not total reports: every selected community is still processed and every report returned. Defaults to `1`. Increase for faster community builds when the LLM provider supports high throughput. |
 | `skip_existing` | Skip community reports whose input fingerprint has not changed. |
@@ -631,6 +632,45 @@ count = await CommunityReportEmbedder(
     store, embedder, "entity-graph"
 ).embed_reports()
 ```
+
+### Strict report output and completion limits
+
+For a model/deployment that supports OpenAI-style strict JSON schema, opt in:
+
+```python
+community = CommunityPipeline(
+    store, llm,
+    report_structured_output=True,
+    max_context_tokens=8000,
+    max_report_words=1000,
+)
+```
+
+`CommunitySummarizer` accepts the same `report_structured_output=False` option.
+The default sends no additional request keywords, preserving custom LLMs that
+accept only a prompt. Opting in sends `response_format` with `json_schema` and
+`strict=True` on both the initial request and the single JSON repair request.
+Adapters explicitly declaring no structured-output support (currently Anthropic
+and Ollama) are rejected at construction. An OpenAI-compatible adapter's
+`supports_structured_output=True` does **not** guarantee that its selected model,
+deployment, or routing provider supports strict schema. Verify that support
+before enabling this option. Provider errors propagate without a schema fallback
+or automatic retry. Local parsing and reference-ID filtering still apply; the
+schema does not enumerate the community's reference IDs. Async worker concurrency
+and finest-to-coarsest level ordering are unchanged.
+
+These are separate budgets: `max_context_tokens` packs **input context** (not the
+entire prompt), `max_report_words` is a **soft prompt instruction**, and the LLM
+provider's output-token setting (for example `max_tokens` or
+`max_completion_tokens`, depending on the model) limits generated output. Neither
+pipeline option increases that provider output limit. Strict schema does not
+prevent truncation. For initial and repair responses, known output-limit,
+refusal, or content-filter statuses cause fixed safe diagnostic errors before
+JSON parsing, even if the returned text happens to be valid JSON. No additional
+repair is attempted for these statuses. Unknown or missing statuses retain
+legacy parsing/repair behavior. `generate_report()` raises these diagnostics;
+`build()` still records per-community failures and uses generic maintenance
+warnings unless trusted `include_error_details=True` is enabled.
 
 ### Choosing `relationship_types`
 

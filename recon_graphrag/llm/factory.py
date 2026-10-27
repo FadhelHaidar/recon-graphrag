@@ -258,7 +258,10 @@ def _openai_chat_response_to_llm_response(response: Any) -> LLMResponse:
             response_tokens=response.usage.completion_tokens,
             total_tokens=response.usage.total_tokens,
         )
-    return LLMResponse(content=content, usage=usage)
+    finish_reason = getattr(choices[0], "finish_reason", None)
+    if getattr(message, "refusal", None):
+        finish_reason = "refusal"
+    return LLMResponse(content=content, usage=usage, finish_reason=finish_reason)
 
 
 
@@ -306,7 +309,10 @@ def _ollama_chat_response_to_llm_response(response: Any) -> LLMResponse:
         if request_tokens is not None or response_tokens is not None
         else None
     )
-    return LLMResponse(content=content, usage=usage)
+    return LLMResponse(
+        content=content, usage=usage,
+        finish_reason=_response_value(response, "done_reason"),
+    )
 
 
 def _anthropic_response_to_llm_response(response: Any) -> LLMResponse:
@@ -322,7 +328,10 @@ def _anthropic_response_to_llm_response(response: Any) -> LLMResponse:
             response_tokens=response.usage.output_tokens,
             total_tokens=response.usage.input_tokens + response.usage.output_tokens,
         )
-    return LLMResponse(content=content, usage=usage)
+    return LLMResponse(
+        content=content, usage=usage,
+        finish_reason=getattr(response, "stop_reason", None),
+    )
 
 
 def _response_value(response: Any, key: str) -> Any:

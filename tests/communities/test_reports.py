@@ -291,3 +291,41 @@ class TestCustomReportPrompt:
     def test_placeholder_like_data_is_not_expanded(self):
         prompt = self._build(context="Entity note: {min_rating} appears literally.")
         assert "Entity note: {min_rating} appears literally." in prompt
+
+
+def test_community_report_response_format_is_strict_schema():
+    from recon_graphrag.communities.reports import COMMUNITY_REPORT_RESPONSE_FORMAT
+
+    response_format = COMMUNITY_REPORT_RESPONSE_FORMAT
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["strict"] is True
+    schema = response_format["json_schema"]["schema"]
+    assert schema["properties"]["title"] == {"type": "string"}
+    assert schema["properties"]["summary"] == {"type": "string"}
+    assert schema["properties"]["rating"] == {"type": ["number", "null"]}
+    assert schema["properties"]["rating_explanation"] == {"type": ["string", "null"]}
+    finding = schema["properties"]["findings"]["items"]
+    assert set(finding["properties"]) == {"description", "references"}
+    reference = finding["properties"]["references"]["items"]
+    assert reference["properties"]["target_id"] == {"type": "string"}
+    assert reference["properties"]["target_type"] == {
+        "type": "string", "enum": ["entity", "relationship", "claim"],
+    }
+    for obj in (schema, finding, reference):
+        assert obj["type"] == "object"
+        assert obj["additionalProperties"] is False
+        assert set(obj["required"]) == set(obj["properties"])
+
+
+def test_report_parser_preserves_legacy_finding_rank_and_filters_references():
+    report = ReportParser().parse(json.dumps({
+        "title": "Legacy", "summary": "Summary", "findings": [{
+            "description": "Finding", "rank": 2.5,
+            "references": [
+                {"target_id": "valid", "target_type": "entity"},
+                {"target_id": "invalid", "target_type": "entity"},
+            ],
+        }],
+    }), "community:1", 0, valid_ids={"valid"})
+    assert report.findings[0].rank == 2.5
+    assert [ref.target_id for ref in report.findings[0].references] == ["valid"]
