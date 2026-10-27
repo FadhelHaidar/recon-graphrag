@@ -62,6 +62,40 @@ logger = logging.getLogger(__name__)
 _DEFAULT_CHUNK_ENCODING = "cl100k_base"
 
 
+def _extraction_diagnostic(error: Exception) -> str:
+    # Only fixed labels and numeric status are public; messages, bodies, URLs,
+    # custom class names and response objects can contain source text or secrets.
+    name = type(error).__name__
+    known_types = {
+        "Exception", "RuntimeError", "ValueError", "TypeError", "KeyError",
+        "JSONDecodeError", "TimeoutError", "ConnectionError", "APIError",
+        "APIStatusError", "APIConnectionError", "APITimeoutError",
+        "AuthenticationError", "PermissionDeniedError", "RateLimitError",
+        "BadRequestError", "NotFoundError", "UnprocessableEntityError",
+        "InternalServerError",
+    }
+    name = name if name in known_types else "Exception"
+    # Do not evaluate provider status/response properties or coerce values.
+    status = vars(error).get("status_code")
+    status = status if type(status) is int and 400 <= status <= 599 else None
+    if status in (401, 403) or name in {"AuthenticationError", "PermissionDeniedError"}:
+        hint = "Check provider credentials and model access."
+    elif status == 429 or name == "RateLimitError":
+        hint = "Check provider quota/rate limits; reduce extraction_concurrency or retry later."
+    elif (status is not None and status >= 500) or name == "InternalServerError":
+        hint = "Provider service error; retry later or check provider availability."
+    elif status is not None:
+        hint = "Check provider model, request limits and configuration."
+    elif name in {"TimeoutError", "APITimeoutError", "ConnectionError", "APIConnectionError"}:
+        hint = "Check provider connectivity/timeouts; reduce extraction_concurrency or retry later."
+    elif name in {"ValueError", "TypeError", "KeyError", "JSONDecodeError"}:
+        hint = "Check extraction schema, prompt templates and structured-output support."
+    else:
+        hint = "Check provider configuration and extraction schema/prompt compatibility."
+    status_context = f" status={status}" if status is not None else ""
+    return f"exception={name}{status_context}; {hint}"
+
+
 class GraphBuilderPipeline:
     """Build a knowledge graph from text (LLM extraction) or structured rows.
 
@@ -660,8 +694,10 @@ class GraphBuilderPipeline:
             raise ValueError(
                 f"Validation failed ({context} field={error.path}: {error.reason})"
             ) from None
-        except Exception:
-            raise RuntimeError(f"Extraction failed ({context})") from None
+        except Exception as error:
+            raise RuntimeError(
+                f"Extraction failed ({context}): {_extraction_diagnostic(error)}"
+            ) from None
 
         try:
             validated = self.validator.validate(raw, schema)
@@ -687,8 +723,10 @@ class GraphBuilderPipeline:
                     entity_ids=[node.id for node in validated.nodes],
                     text_unit_id=chunk.id,
                 )
-            except Exception:
-                raise RuntimeError(f"Claims extraction failed ({context})") from None
+            except Exception as error:
+                raise RuntimeError(
+                    f"Claims extraction failed ({context}): {_extraction_diagnostic(error)}"
+                ) from None
         return validated, claims
 
     @staticmethod
