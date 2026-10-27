@@ -9,6 +9,7 @@ import pytest
 
 from recon_graphrag.llm.base import LLMResponse
 from recon_graphrag.communities.summarization import BuildStats, CommunitySummarizer
+from recon_graphrag.communities.reports import ReportRubric, ReportValidationError
 
 
 class FakeReportGraphStore:
@@ -102,6 +103,23 @@ class FakeValidReportLLM:
                 }
             )
         )
+
+
+class ScriptedReportLLM:
+    def __init__(self, responses: list[str | Exception]):
+        self.responses = responses
+        self.prompts: list[str] = []
+
+    @property
+    def calls(self):
+        return len(self.prompts)
+
+    async def ainvoke(self, prompt):
+        self.prompts.append(prompt)
+        response = self.responses[self.calls - 1]
+        if isinstance(response, Exception):
+            raise response
+        return LLMResponse(content=response)
 
 
 class CapturingValidReportLLM(FakeValidReportLLM):
@@ -320,4 +338,136 @@ async def test_report_errors_preserve_original_only_when_opted_in(
         "community_id": "community:1",
         "error_type": "SensitiveProviderName" if include_error_details else "Exception",
         "message": str(error) if include_error_details else safe_message,
+    }]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("malformed", [
+    '{"title" "Missing colon"}',
+    '{title: "Unquoted key"}',
+    'Provider preamble\n```json\n{"title" "Missing colon"}\n```\nTrailing text',
+])
+async def test_generate_report_repairs_malformed_json(malformed):
+    valid = (await FakeValidReportLLM().ainvoke("")).content
+    llm = ScriptedReportLLM([malformed, valid])
+    summarizer = CommunitySummarizer(
+        cast(Any, FakeReportGraphStore()), cast(Any, llm),
+        report_rubric=ReportRubric(min_rating=2.0, max_rating=8.0),
+        max_context_tokens=1000,
+    )
+    with pytest.raises(json.JSONDecodeError) as parse_error:
+        summarizer._report_parser.parse(malformed, "community:1", 0)
+
+    report = await summarizer.generate_report("community:1", input_fingerprint="input-v1")
+
+    assert llm.calls == 2
+    prompt = llm.prompts[1]
+    assert malformed in prompt
+    assert parse_error.value.msg in prompt
+    assert f"line {parse_error.value.lineno}" in prompt
+    assert f"column {parse_error.value.colno}" in prompt
+    assert "person:alice" in prompt
+    assert "org:acme" in prompt
+    assert '"rating": 2.0-8.0 or null' in prompt
+    assert report.title == "Alice and Acme"
+    assert report.community_id == "community:1"
+    assert report.level == 0
+    assert report.version.input_fingerprint == "input-v1"
+    assert report.context_tokens_used is not None
+    assert report.context_truncated is False
+    assert report.findings[0].references[0].target_id == "person:alice"
+
+
+@pytest.mark.asyncio
+async def test_generate_report_valid_json_needs_no_repair():
+    valid = (await FakeValidReportLLM().ainvoke("")).content
+    llm = ScriptedReportLLM([valid])
+    summarizer = CommunitySummarizer(cast(Any, FakeReportGraphStore()), cast(Any, llm))
+
+    report = await summarizer.generate_report("community:1")
+
+    assert report.version.input_fingerprint
+    assert llm.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repaired, error_type", [
+    ('{"title" "Still malformed"}', json.JSONDecodeError),
+    ('{"title": "No findings"}', ReportValidationError),
+])
+async def test_generate_report_stops_after_one_json_repair(repaired, error_type):
+    llm = ScriptedReportLLM(['{title: "Malformed"}', repaired])
+    summarizer = CommunitySummarizer(cast(Any, FakeReportGraphStore()), cast(Any, llm))
+
+    with pytest.raises(error_type) as error:
+        await summarizer.generate_report("community:1")
+
+    assert llm.calls == 2
+    if isinstance(error.value, json.JSONDecodeError):
+        assert error.value.doc == repaired
+    else:
+        assert error.value.raw_content == repaired
+
+
+@pytest.mark.asyncio
+async def test_generate_report_still_repairs_validation_errors():
+    valid = (await FakeValidReportLLM().ainvoke("")).content
+    invalid = '{"title": "No findings"}'
+    llm = ScriptedReportLLM([invalid, valid])
+    summarizer = CommunitySummarizer(cast(Any, FakeReportGraphStore()), cast(Any, llm))
+
+    report = await summarizer.generate_report("community:1")
+
+    assert report.title == "Alice and Acme"
+    assert llm.calls == 2
+    assert invalid in llm.prompts[1]
+    assert "Missing or empty 'summary'." in llm.prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_generate_report_does_not_repair_provider_errors():
+    error = ConnectionError("Provider unavailable")
+    llm = ScriptedReportLLM([error])
+    summarizer = CommunitySummarizer(cast(Any, FakeReportGraphStore()), cast(Any, llm))
+
+    with pytest.raises(ConnectionError) as caught:
+        await summarizer.generate_report("community:1")
+
+    assert caught.value is error
+    assert llm.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_error_details", [False, True])
+async def test_generate_all_continues_after_json_repair_failure(include_error_details):
+    valid = (await FakeValidReportLLM().ainvoke("")).content
+    malformed = '{title: "Malformed"}'
+    final_malformed = '{"title" "Still malformed"}'
+    llm = ScriptedReportLLM([malformed, valid, malformed, final_malformed, valid])
+    store = MultiCommunityStore(3)
+    summarizer = CommunitySummarizer(
+        cast(Any, store), cast(Any, llm), concurrency=1,
+        include_error_details=include_error_details,
+    )
+
+    results, stats = await summarizer.generate_all()
+
+    assert llm.calls == 5
+    assert [result["id"] for result in results] == ["community:0", "community:2"]
+    assert stats.attempted == 3
+    assert stats.succeeded == 2
+    assert stats.failed == 1
+    assert len(store.stored_reports) == 2
+    assert len(store.failed_reports) == 1
+    assert store.failed_reports[0][:3] == ("entity-graph", "community:1", 0)
+    with pytest.raises(json.JSONDecodeError) as final_error:
+        json.loads(final_malformed)
+    assert store.failed_reports[0][3] == str(final_error.value)
+    assert stats.errors == [{
+        "community_id": "community:1",
+        "error_type": "JSONDecodeError",
+        "message": (
+            str(final_error.value) if include_error_details
+            else "Community report generation or storage failed."
+        ),
     }]

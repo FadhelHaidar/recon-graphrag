@@ -554,6 +554,11 @@ result = await community.build(level=0)
 
 ### Report failures and diagnostics
 
+If a report response has malformed JSON or fails report validation, generation
+attempts one repair with one additional LLM call. If the repaired response still
+fails, the report is recorded as failed; repair does not guarantee success.
+Provider/authentication/network errors do not trigger this repair.
+
 Report failures do not discard successful reports or stop other communities.
 `build()` returns `status="degraded"` and a per-level entry in
 `maintenance_warnings` when any report fails:
