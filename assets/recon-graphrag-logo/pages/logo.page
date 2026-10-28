@@ -1,0 +1,888 @@
+pageType: content
+background:
+  type: gradient
+  gradientType: linear
+  stops:
+  - position: 0
+    color: '#050505'
+  - position: 0.58
+    color: '#0B0B0B'
+  - position: 1
+    color: '#050505'
+  angle: 35
+elements:
+- elementId: ambient-top
+  elementType: shape
+  bounds:
+  - 90
+  - 20
+  - 844
+  - 700
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFD60A70'
+    - position: 0.55
+      color: '#FFD60A55'
+    - position: 1
+      color: '#05050500'
+- elementId: ambient-bottom
+  elementType: shape
+  bounds:
+  - 250
+  - 570
+  - 650
+  - 360
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFFFFF12'
+    - position: 1
+      color: '#05050500'
+- elementId: frame
+  elementType: shape
+  bounds:
+  - 42
+  - 42
+  - 940
+  - 940
+  shapeName: roundRect
+  adjustments:
+  - 12000
+  fill:
+    type: solid
+    color: '#05050500'
+  border:
+    style: solid
+    width: 1.2
+    color: '#4A4A4A80'
+- elementId: logo-field
+  elementType: shape
+  bounds:
+  - 129.2
+  - 52.2
+  - 765.6
+  - 765.6
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFD60A1F'
+    - position: 0.52
+      color: '#FFD60A08'
+    - position: 1
+      color: '#FFD60A00'
+- elementId: logo-arc-a
+  elementType: line
+  bounds:
+  - 182
+  - 105
+  - 660
+  - 660
+  viewBox:
+  - 400
+  - 400
+  points: 310,48 350,80 372,130 375,180
+  curve: smooth
+  border:
+    style: solid
+    width: 3
+    color: '#FFD60A'
+  opacity: 0.42
+- elementId: logo-arc-b
+  elementType: line
+  bounds:
+  - 182
+  - 105
+  - 660
+  - 660
+  viewBox:
+  - 400
+  - 400
+  points: 375,180 368,238 338,292
+  curve: smooth
+  border:
+    style: solid
+    width: 3
+    color: '#FFD60A'
+  opacity: 0.18
+- elementId: logo-arc-c
+  elementType: line
+  bounds:
+  - 182
+  - 105
+  - 660
+  - 660
+  viewBox:
+  - 400
+  - 400
+  points: 82,370 38,330 18,275
+  curve: smooth
+  border:
+    style: solid
+    width: 3
+    color: '#FFFFFF'
+  opacity: 0.3
+- elementId: logo-edge-0
+  elementType: line
+  bounds:
+  - 182
+  - 105
+  - 660
+  - 660
+  viewBox:
+  - 400
+  - 400
+  points: 90,70 40,150 30,220
+  curve: sharp
+  border:
+    style: solid
+    width: 3
+    color: '#3A3A3A'
+  opacity: 0.85
+- elementId: logo-edge-1
+  elementType: line
+  bounds:
+  - 182
+  - 105
+  - 660
+  - 660
+  viewBox:
+  - 400
+  - 400
+  points: 90,215 55,215 30,220
+  curve: sharp
+  border:
+    style: solid
+    width: 3
+    color: '#3A3A3A'
+  opacity: 0.85
+- elementId: logo-edge-2
+  elementType: line
+  bounds:
+  - 182
+  - 105
+  - 660
+  - 660
+  viewBox:
+  - 400
+  - 400
+  points: 90,355 55,330 35,300
+  curve: sharp
+  border:
+    style: solid
+    width: 3
+    color: '#3A3A3A'
+  opacity: 0.85
+- elementId: logo-edge-3
+  elementType: line
+  bounds:
+  - 182
+  - 105
+  - 660
+  - 660
+  viewBox:
+  - 400
+  - 400
+  points: 250,70 285,45 310,30
+  curve: sharp
+  border:
+    style: solid
+    width: 3
+    color: '#3A3A3A'
+  opacity: 0.85
+- elementId: logo-edge-4
+  elementType: line
+  bounds:
+  - 182
+  - 105
+  - 660
+  - 660
+  viewBox:
+  - 400
+  - 400
+  points: 315,125 340,110 360,95
+  curve: sharp
+  border:
+    style: solid
+    width: 3
+    color: '#3A3A3A'
+  opacity: 0.85
+- elementId: logo-edge-5
+  elementType: line
+  bounds:
+  - 182
+  - 105
+  - 660
+  - 660
+  viewBox:
+  - 400
+  - 400
+  points: 285,215 325,240 350,275
+  curve: sharp
+  border:
+    style: solid
+    width: 3
+    color: '#3A3A3A'
+  opacity: 0.85
+- elementId: logo-edge-6
+  elementType: line
+  bounds:
+  - 182
+  - 105
+  - 660
+  - 660
+  viewBox:
+  - 400
+  - 400
+  points: 320,355 285,368 250,375
+  curve: sharp
+  border:
+    style: solid
+    width: 3
+    color: '#3A3A3A'
+  opacity: 0.85
+- elementId: logo-edge-7
+  elementType: line
+  bounds:
+  - 182
+  - 105
+  - 660
+  - 660
+  viewBox:
+  - 400
+  - 400
+  points: 30,220 22,260 35,300
+  curve: sharp
+  border:
+    style: solid
+    width: 3
+    color: '#3A3A3A'
+  opacity: 0.85
+- elementId: logo-edge-8
+  elementType: line
+  bounds:
+  - 182
+  - 105
+  - 660
+  - 660
+  viewBox:
+  - 400
+  - 400
+  points: 310,30 340,55 360,95
+  curve: sharp
+  border:
+    style: solid
+    width: 3
+    color: '#3A3A3A'
+  opacity: 0.85
+- elementId: logo-r-stem-glow
+  elementType: line
+  bounds:
+  - 182
+  - 105
+  - 660
+  - 660
+  viewBox:
+  - 400
+  - 400
+  points: 90,70 90,355
+  curve: round
+  border:
+    style: solid
+    width: 35
+    color: '#FFD60A'
+  opacity: 0.1
+  shadow:
+    blur: 18
+    color: '#FFD60A55'
+    offset:
+    - 0
+    - 0
+- elementId: logo-r-bowl-glow
+  elementType: line
+  bounds:
+  - 182
+  - 105
+  - 660
+  - 660
+  viewBox:
+  - 400
+  - 400
+  points: 90,70 250,70 315,125 285,215 90,215
+  curve: smooth
+  border:
+    style: solid
+    width: 37
+    color: '#FFD60A'
+  opacity: 0.1
+  shadow:
+    blur: 18
+    color: '#FFD60A55'
+    offset:
+    - 0
+    - 0
+- elementId: logo-r-leg-glow
+  elementType: line
+  bounds:
+  - 182
+  - 105
+  - 660
+  - 660
+  viewBox:
+  - 400
+  - 400
+  points: 190,215 320,355
+  curve: round
+  border:
+    style: solid
+    width: 35
+    color: '#FFFFFF'
+  opacity: 0.09
+- elementId: logo-r-stem
+  elementType: line
+  bounds:
+  - 182
+  - 105
+  - 660
+  - 660
+  viewBox:
+  - 400
+  - 400
+  points: 90,70 90,355
+  curve: round
+  border:
+    style: solid
+    width: 25
+    color: '#FFFFFF'
+- elementId: logo-r-bowl
+  elementType: line
+  bounds:
+  - 182
+  - 105
+  - 660
+  - 660
+  viewBox:
+  - 400
+  - 400
+  points: 90,70 250,70 315,125 285,215 90,215
+  curve: smooth
+  border:
+    style: solid
+    width: 25
+    color: '#FFD60A'
+- elementId: logo-r-leg
+  elementType: line
+  bounds:
+  - 182
+  - 105
+  - 660
+  - 660
+  viewBox:
+  - 400
+  - 400
+  points: 190,215 320,355
+  curve: round
+  border:
+    style: solid
+    width: 25
+    color: '#FFFFFF'
+- elementId: logo-node-p0
+  elementType: shape
+  bounds:
+  - 238.1
+  - 342.6
+  - 19.8
+  - 19.8
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#3A3A3A'
+- elementId: logo-node-p1
+  elementType: shape
+  bounds:
+  - 218.3
+  - 454.8
+  - 26.4
+  - 26.4
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFD60A'
+- elementId: logo-node-p2
+  elementType: shape
+  bounds:
+  - 228.2
+  - 588.45
+  - 23.1
+  - 23.1
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#3A3A3A'
+- elementId: logo-node-p3
+  elementType: shape
+  bounds:
+  - 680.3
+  - 141.3
+  - 26.4
+  - 26.4
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFFFFF'
+- elementId: logo-node-p4
+  elementType: shape
+  bounds:
+  - 766.1
+  - 251.85
+  - 19.8
+  - 19.8
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#3A3A3A'
+- elementId: logo-node-p5
+  elementType: shape
+  bounds:
+  - 746.3
+  - 545.55
+  - 26.4
+  - 26.4
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFD60A'
+- elementId: logo-node-p6
+  elementType: shape
+  bounds:
+  - 584.6
+  - 713.85
+  - 19.8
+  - 19.8
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#3A3A3A'
+- elementId: logo-halo-0
+  elementType: shape
+  bounds:
+  - 286.94
+  - 176.94
+  - 87.12
+  - 87.12
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFFFFF38'
+    - position: 1
+      color: '#FFFFFF00'
+- elementId: logo-node-0
+  elementType: shape
+  bounds:
+  - 310.7
+  - 200.7
+  - 39.6
+  - 39.6
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#0B0B0B'
+  border:
+    style: solid
+    width: 3
+    color: '#FFFFFF'
+- elementId: logo-core-0
+  elementType: shape
+  bounds:
+  - 324.16
+  - 214.16
+  - 12.67
+  - 12.67
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFFFFF'
+- elementId: logo-halo-1
+  elementType: shape
+  bounds:
+  - 550.94
+  - 176.94
+  - 87.12
+  - 87.12
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFD60A38'
+    - position: 1
+      color: '#FFD60A00'
+- elementId: logo-node-1
+  elementType: shape
+  bounds:
+  - 574.7
+  - 200.7
+  - 39.6
+  - 39.6
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#0B0B0B'
+  border:
+    style: solid
+    width: 3
+    color: '#FFD60A'
+- elementId: logo-core-1
+  elementType: shape
+  bounds:
+  - 588.16
+  - 214.16
+  - 12.67
+  - 12.67
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFD60A'
+- elementId: logo-halo-2
+  elementType: shape
+  bounds:
+  - 654.56
+  - 264.06
+  - 94.38
+  - 94.38
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFD60A38'
+    - position: 1
+      color: '#FFD60A00'
+- elementId: logo-node-2
+  elementType: shape
+  bounds:
+  - 680.3
+  - 289.8
+  - 42.9
+  - 42.9
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#0B0B0B'
+  border:
+    style: solid
+    width: 3
+    color: '#FFD60A'
+- elementId: logo-core-2
+  elementType: shape
+  bounds:
+  - 694.89
+  - 304.39
+  - 13.73
+  - 13.73
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFD60A'
+- elementId: logo-halo-3
+  elementType: shape
+  bounds:
+  - 608.69
+  - 416.19
+  - 87.12
+  - 87.12
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFD60A38'
+    - position: 1
+      color: '#FFD60A00'
+- elementId: logo-node-3
+  elementType: shape
+  bounds:
+  - 632.45
+  - 439.95
+  - 39.6
+  - 39.6
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#0B0B0B'
+  border:
+    style: solid
+    width: 3
+    color: '#FFD60A'
+- elementId: logo-core-3
+  elementType: shape
+  bounds:
+  - 645.91
+  - 453.41
+  - 12.67
+  - 12.67
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFD60A'
+- elementId: logo-halo-4
+  elementType: shape
+  bounds:
+  - 286.94
+  - 416.19
+  - 87.12
+  - 87.12
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFD60A38'
+    - position: 1
+      color: '#FFD60A00'
+- elementId: logo-node-4
+  elementType: shape
+  bounds:
+  - 310.7
+  - 439.95
+  - 39.6
+  - 39.6
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#0B0B0B'
+  border:
+    style: solid
+    width: 3
+    color: '#FFD60A'
+- elementId: logo-core-4
+  elementType: shape
+  bounds:
+  - 324.16
+  - 453.41
+  - 12.67
+  - 12.67
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFD60A'
+- elementId: logo-halo-5
+  elementType: shape
+  bounds:
+  - 286.94
+  - 647.19
+  - 87.12
+  - 87.12
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFFFFF38'
+    - position: 1
+      color: '#FFFFFF00'
+- elementId: logo-node-5
+  elementType: shape
+  bounds:
+  - 310.7
+  - 670.95
+  - 39.6
+  - 39.6
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#0B0B0B'
+  border:
+    style: solid
+    width: 3
+    color: '#FFFFFF'
+- elementId: logo-core-5
+  elementType: shape
+  bounds:
+  - 324.16
+  - 684.41
+  - 12.67
+  - 12.67
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFFFFF'
+- elementId: logo-halo-6
+  elementType: shape
+  bounds:
+  - 455.57
+  - 419.82
+  - 79.86
+  - 79.86
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFFFFF38'
+    - position: 1
+      color: '#FFFFFF00'
+- elementId: logo-node-6
+  elementType: shape
+  bounds:
+  - 477.35
+  - 441.6
+  - 36.3
+  - 36.3
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#0B0B0B'
+  border:
+    style: solid
+    width: 3
+    color: '#FFFFFF'
+- elementId: logo-core-6
+  elementType: shape
+  bounds:
+  - 489.69
+  - 453.94
+  - 11.62
+  - 11.62
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFFFFF'
+- elementId: logo-halo-7
+  elementType: shape
+  bounds:
+  - 659.18
+  - 639.93
+  - 101.64
+  - 101.64
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFFFFF38'
+    - position: 1
+      color: '#FFFFFF00'
+- elementId: logo-node-7
+  elementType: shape
+  bounds:
+  - 686.9
+  - 667.65
+  - 46.2
+  - 46.2
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#0B0B0B'
+  border:
+    style: solid
+    width: 3
+    color: '#FFFFFF'
+- elementId: logo-core-7
+  elementType: shape
+  bounds:
+  - 702.61
+  - 683.36
+  - 14.78
+  - 14.78
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFFFFF'
+- elementId: logo-halo-8
+  elementType: shape
+  bounds:
+  - 771.71
+  - 372.96
+  - 58.08
+  - 58.08
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFD60A38'
+    - position: 1
+      color: '#FFD60A00'
+- elementId: logo-node-8
+  elementType: shape
+  bounds:
+  - 787.55
+  - 388.8
+  - 26.4
+  - 26.4
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#0B0B0B'
+  border:
+    style: solid
+    width: 3
+    color: '#FFD60A'
+- elementId: logo-core-8
+  elementType: shape
+  bounds:
+  - 796.53
+  - 397.78
+  - 8.45
+  - 8.45
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFD60A'
+- elementId: wordmark
+  elementType: text
+  bounds:
+  - 112
+  - 786
+  - 800
+  - 76
+  content:
+    text: recon-graphrag
+    fontSize: 58
+    color: '#FFFFFF'
+    fontFamily: Space Grotesk
+    bold: true
+    letterSpacing: -2
+    wrap: false
+    align:
+    - center
+    - middle
+- elementId: descriptor
+  elementType: text
+  bounds:
+  - 252
+  - 866
+  - 520
+  - 30
+  content:
+    text: CONNECTED RETRIEVAL
+    fontSize: 16
+    color: '#FFD60A'
+    fontFamily: IBM Plex Mono
+    bold: false
+    letterSpacing: 4.5
+    wrap: false
+    align:
+    - center
+    - middle

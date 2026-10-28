@@ -155,6 +155,16 @@ To trigger a **major** version bump, indicate a breaking change using one of the
 
 Release Please uses these signals to determine that the next release should be a major version.
 
+### Release automation
+
+After your PR merges, Release Please opens (or updates) a release PR that bumps
+the version in `pyproject.toml` and `uv.lock`, updates `CHANGELOG.md`, and
+proposes the next `v` tag. That release PR **auto-merges** once its checks
+pass, and the merge publishes the tag, creates the GitHub Release, and
+attaches the built wheel and sdist. Nothing publishes to PyPI. Maintainers do
+not need to merge the release PR manually; if auto-merge is unavailable,
+merge it like any other PR.
+
 ## Pull request process
 
 1. Open your pull request against the `main` branch.
