@@ -1,5 +1,7 @@
 # Recon-GraphRAG
 
+![Recon-GraphRAG: Build the graph. Retrieve with context.](assets/recon-graphrag-repository-banner.png)
+
 [![CI](https://github.com/FadhelHaidar/recon-graphrag/actions/workflows/ci.yml/badge.svg)](https://github.com/FadhelHaidar/recon-graphrag/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -195,17 +197,17 @@ For a step-by-step walkthrough, see [docs/02-quickstart.md](docs/02-quickstart.m
 
 | Document | Description |
 | --- | --- |
-| [docs/installation.md](docs/01-installation.md) | Full installation guide, Docker setup, extras, and troubleshooting |
-| [docs/quickstart.md](docs/02-quickstart.md) | Step-by-step quick start |
-| [docs/schema.md](docs/03-schema.md) | Defining schemas with `GraphSchema` and `build_schema()`, or auto-analyzing one with `analyze_schema()` |
-| [docs/indexing.md](docs/04-indexing.md) | Creating and managing Neo4j and Memgraph indexes |
-| [docs/pipelines.md](docs/05-pipelines.md) | `GraphBuilderPipeline` and `CommunityPipeline` architecture |
-| [docs/search.md](docs/06-search.md) | Local, global, and DRIFT search modes, citations, and source metadata |
-| [docs/example.md](docs/07-example.md) | Movie industry example walkthrough |
-| [docs/providers.md](docs/08-providers.md) | LLM and embedder providers |
-| [docs/workflows.md](docs/09-workflows.md) | Composable building blocks below the high-level pipelines |
-| [docs/testing.md](docs/10-testing.md) | Running tests and integration test flags |
-| [docs/structured-data.md](docs/11-structured-data.md) | Ingesting CSV/Excel/SQL rows: `RowMapping`, direct mapping, free-text columns, merging |
+| [docs/01-installation.md](docs/01-installation.md) | Full installation guide, Docker setup, extras, and troubleshooting |
+| [docs/02-quickstart.md](docs/02-quickstart.md) | Step-by-step quick start |
+| [docs/03-schema.md](docs/03-schema.md) | Defining schemas with `GraphSchema` and `build_schema()`, or auto-analyzing one with `analyze_schema()` |
+| [docs/04-indexing.md](docs/04-indexing.md) | Creating and managing Neo4j and Memgraph indexes |
+| [docs/05-pipelines.md](docs/05-pipelines.md) | `GraphBuilderPipeline` and `CommunityPipeline` architecture |
+| [docs/06-search.md](docs/06-search.md) | Local, global, and DRIFT search modes, citations, and source metadata |
+| [docs/07-example.md](docs/07-example.md) | Movie industry example walkthrough |
+| [docs/08-providers.md](docs/08-providers.md) | LLM and embedder providers |
+| [docs/09-workflows.md](docs/09-workflows.md) | Composable building blocks below the high-level pipelines |
+| [docs/10-testing.md](docs/10-testing.md) | Running tests and integration test flags |
+| [docs/11-structured-data.md](docs/11-structured-data.md) | Ingesting CSV/Excel/SQL rows: `RowMapping`, direct mapping, free-text columns, merging |
 
 ## Example
 

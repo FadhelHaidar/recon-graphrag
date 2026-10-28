@@ -1,0 +1,1166 @@
+pageType: content
+background:
+  type: gradient
+  gradientType: linear
+  stops:
+  - position: 0
+    color: '#050505'
+  - position: 0.58
+    color: '#0B0B0B'
+  - position: 1
+    color: '#050505'
+  angle: 0
+elements:
+- elementId: glow-left
+  elementType: shape
+  bounds:
+  - 0
+  - 0
+  - 560
+  - 600
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFD60A4D'
+    - position: 0.5
+      color: '#FFD60A26'
+    - position: 1
+      color: '#05050500'
+- elementId: glow-right
+  elementType: shape
+  bounds:
+  - 830
+  - 90
+  - 450
+  - 550
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFFFFF14'
+    - position: 1
+      color: '#05050500'
+- elementId: far-edge-0
+  elementType: line
+  bounds:
+  - 1060
+  - 92
+  - 130
+  - 68
+  viewBox:
+  - 130
+  - 68
+  points: 0,0 130,68
+  curve: sharp
+  border:
+    style: solid
+    width: 1.2
+    color: '#3A3A3A55'
+- elementId: far-edge-1
+  elementType: line
+  bounds:
+  - 1130
+  - 160
+  - 60
+  - 125
+  viewBox:
+  - 60
+  - 125
+  points: 60,0 0,125
+  curve: sharp
+  border:
+    style: solid
+    width: 1.2
+    color: '#3A3A3A55'
+- elementId: far-edge-2
+  elementType: line
+  bounds:
+  - 1130
+  - 285
+  - 100
+  - 75
+  viewBox:
+  - 100
+  - 75
+  points: 0,0 100,75
+  curve: sharp
+  border:
+    style: solid
+    width: 1.2
+    color: '#3A3A3A55'
+- elementId: far-edge-3
+  elementType: line
+  bounds:
+  - 990
+  - 92
+  - 70
+  - 128
+  viewBox:
+  - 70
+  - 128
+  points: 70,0 0,128
+  curve: sharp
+  border:
+    style: solid
+    width: 1.2
+    color: '#3A3A3A55'
+- elementId: far-edge-4
+  elementType: line
+  bounds:
+  - 990
+  - 220
+  - 140
+  - 65
+  viewBox:
+  - 140
+  - 65
+  points: 0,0 140,65
+  curve: sharp
+  border:
+    style: solid
+    width: 1.2
+    color: '#3A3A3A55'
+- elementId: far-node-0
+  elementType: shape
+  bounds:
+  - 1055
+  - 87
+  - 10
+  - 10
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFD60A55'
+- elementId: far-node-1
+  elementType: shape
+  bounds:
+  - 1183
+  - 153
+  - 14
+  - 14
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFFFFF55'
+- elementId: far-node-2
+  elementType: shape
+  bounds:
+  - 1125
+  - 280
+  - 10
+  - 10
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFD60A44'
+- elementId: far-node-3
+  elementType: shape
+  bounds:
+  - 1224
+  - 354
+  - 12
+  - 12
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFFFFF44'
+- elementId: far-node-4
+  elementType: shape
+  bounds:
+  - 986
+  - 216
+  - 8
+  - 8
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFD60A44'
+- elementId: banner-icon-field
+  elementType: shape
+  bounds:
+  - 58.64
+  - 118.64
+  - 338.72
+  - 338.72
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFD60A1F'
+    - position: 0.52
+      color: '#FFD60A08'
+    - position: 1
+      color: '#FFD60A00'
+- elementId: banner-icon-arc-a
+  elementType: line
+  bounds:
+  - 82
+  - 142
+  - 292
+  - 292
+  viewBox:
+  - 400
+  - 400
+  points: 310,48 350,80 372,130 375,180
+  curve: smooth
+  border:
+    style: solid
+    width: 1.7
+    color: '#FFD60A'
+  opacity: 0.42
+- elementId: banner-icon-arc-b
+  elementType: line
+  bounds:
+  - 82
+  - 142
+  - 292
+  - 292
+  viewBox:
+  - 400
+  - 400
+  points: 375,180 368,238 338,292
+  curve: smooth
+  border:
+    style: solid
+    width: 1.7
+    color: '#FFD60A'
+  opacity: 0.18
+- elementId: banner-icon-arc-c
+  elementType: line
+  bounds:
+  - 82
+  - 142
+  - 292
+  - 292
+  viewBox:
+  - 400
+  - 400
+  points: 82,370 38,330 18,275
+  curve: smooth
+  border:
+    style: solid
+    width: 1.7
+    color: '#FFFFFF'
+  opacity: 0.3
+- elementId: banner-icon-edge-0
+  elementType: line
+  bounds:
+  - 82
+  - 142
+  - 292
+  - 292
+  viewBox:
+  - 400
+  - 400
+  points: 90,70 40,150 30,220
+  curve: sharp
+  border:
+    style: solid
+    width: 1.7
+    color: '#3A3A3A'
+  opacity: 0.85
+- elementId: banner-icon-edge-1
+  elementType: line
+  bounds:
+  - 82
+  - 142
+  - 292
+  - 292
+  viewBox:
+  - 400
+  - 400
+  points: 90,215 55,215 30,220
+  curve: sharp
+  border:
+    style: solid
+    width: 1.7
+    color: '#3A3A3A'
+  opacity: 0.85
+- elementId: banner-icon-edge-2
+  elementType: line
+  bounds:
+  - 82
+  - 142
+  - 292
+  - 292
+  viewBox:
+  - 400
+  - 400
+  points: 90,355 55,330 35,300
+  curve: sharp
+  border:
+    style: solid
+    width: 1.7
+    color: '#3A3A3A'
+  opacity: 0.85
+- elementId: banner-icon-edge-3
+  elementType: line
+  bounds:
+  - 82
+  - 142
+  - 292
+  - 292
+  viewBox:
+  - 400
+  - 400
+  points: 250,70 285,45 310,30
+  curve: sharp
+  border:
+    style: solid
+    width: 1.7
+    color: '#3A3A3A'
+  opacity: 0.85
+- elementId: banner-icon-edge-4
+  elementType: line
+  bounds:
+  - 82
+  - 142
+  - 292
+  - 292
+  viewBox:
+  - 400
+  - 400
+  points: 315,125 340,110 360,95
+  curve: sharp
+  border:
+    style: solid
+    width: 1.7
+    color: '#3A3A3A'
+  opacity: 0.85
+- elementId: banner-icon-edge-5
+  elementType: line
+  bounds:
+  - 82
+  - 142
+  - 292
+  - 292
+  viewBox:
+  - 400
+  - 400
+  points: 285,215 325,240 350,275
+  curve: sharp
+  border:
+    style: solid
+    width: 1.7
+    color: '#3A3A3A'
+  opacity: 0.85
+- elementId: banner-icon-edge-6
+  elementType: line
+  bounds:
+  - 82
+  - 142
+  - 292
+  - 292
+  viewBox:
+  - 400
+  - 400
+  points: 320,355 285,368 250,375
+  curve: sharp
+  border:
+    style: solid
+    width: 1.7
+    color: '#3A3A3A'
+  opacity: 0.85
+- elementId: banner-icon-edge-7
+  elementType: line
+  bounds:
+  - 82
+  - 142
+  - 292
+  - 292
+  viewBox:
+  - 400
+  - 400
+  points: 30,220 22,260 35,300
+  curve: sharp
+  border:
+    style: solid
+    width: 1.7
+    color: '#3A3A3A'
+  opacity: 0.85
+- elementId: banner-icon-edge-8
+  elementType: line
+  bounds:
+  - 82
+  - 142
+  - 292
+  - 292
+  viewBox:
+  - 400
+  - 400
+  points: 310,30 340,55 360,95
+  curve: sharp
+  border:
+    style: solid
+    width: 1.7
+    color: '#3A3A3A'
+  opacity: 0.85
+- elementId: banner-icon-r-stem-glow
+  elementType: line
+  bounds:
+  - 82
+  - 142
+  - 292
+  - 292
+  viewBox:
+  - 400
+  - 400
+  points: 90,70 90,355
+  curve: round
+  border:
+    style: solid
+    width: 23
+    color: '#FFD60A'
+  opacity: 0.1
+  shadow:
+    blur: 10
+    color: '#FFD60A55'
+    offset:
+    - 0
+    - 0
+- elementId: banner-icon-r-bowl-glow
+  elementType: line
+  bounds:
+  - 82
+  - 142
+  - 292
+  - 292
+  viewBox:
+  - 400
+  - 400
+  points: 90,70 250,70 315,125 285,215 90,215
+  curve: smooth
+  border:
+    style: solid
+    width: 25
+    color: '#FFD60A'
+  opacity: 0.1
+  shadow:
+    blur: 10
+    color: '#FFD60A55'
+    offset:
+    - 0
+    - 0
+- elementId: banner-icon-r-leg-glow
+  elementType: line
+  bounds:
+  - 82
+  - 142
+  - 292
+  - 292
+  viewBox:
+  - 400
+  - 400
+  points: 190,215 320,355
+  curve: round
+  border:
+    style: solid
+    width: 23
+    color: '#FFFFFF'
+  opacity: 0.09
+- elementId: banner-icon-r-stem
+  elementType: line
+  bounds:
+  - 82
+  - 142
+  - 292
+  - 292
+  viewBox:
+  - 400
+  - 400
+  points: 90,70 90,355
+  curve: round
+  border:
+    style: solid
+    width: 13
+    color: '#FFFFFF'
+- elementId: banner-icon-r-bowl
+  elementType: line
+  bounds:
+  - 82
+  - 142
+  - 292
+  - 292
+  viewBox:
+  - 400
+  - 400
+  points: 90,70 250,70 315,125 285,215 90,215
+  curve: smooth
+  border:
+    style: solid
+    width: 13
+    color: '#FFD60A'
+- elementId: banner-icon-r-leg
+  elementType: line
+  bounds:
+  - 82
+  - 142
+  - 292
+  - 292
+  viewBox:
+  - 400
+  - 400
+  points: 190,215 320,355
+  curve: round
+  border:
+    style: solid
+    width: 13
+    color: '#FFFFFF'
+- elementId: banner-icon-node-p0
+  elementType: shape
+  bounds:
+  - 106.82
+  - 247.12
+  - 8.76
+  - 8.76
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#3A3A3A'
+- elementId: banner-icon-node-p1
+  elementType: shape
+  bounds:
+  - 98.06
+  - 296.76
+  - 11.68
+  - 11.68
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFD60A'
+- elementId: banner-icon-node-p2
+  elementType: shape
+  bounds:
+  - 102.44
+  - 355.89
+  - 10.22
+  - 10.22
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#3A3A3A'
+- elementId: banner-icon-node-p3
+  elementType: shape
+  bounds:
+  - 302.46
+  - 158.06
+  - 11.68
+  - 11.68
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFFFFF'
+- elementId: banner-icon-node-p4
+  elementType: shape
+  bounds:
+  - 340.42
+  - 206.97
+  - 8.76
+  - 8.76
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#3A3A3A'
+- elementId: banner-icon-node-p5
+  elementType: shape
+  bounds:
+  - 331.66
+  - 336.91
+  - 11.68
+  - 11.68
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFD60A'
+- elementId: banner-icon-node-p6
+  elementType: shape
+  bounds:
+  - 260.12
+  - 411.37
+  - 8.76
+  - 8.76
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#3A3A3A'
+- elementId: banner-icon-halo-0
+  elementType: shape
+  bounds:
+  - 128.43
+  - 173.83
+  - 38.54
+  - 38.54
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFFFFF38'
+    - position: 1
+      color: '#FFFFFF00'
+- elementId: banner-icon-node-0
+  elementType: shape
+  bounds:
+  - 138.94
+  - 184.34
+  - 17.52
+  - 17.52
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#0B0B0B'
+  border:
+    style: solid
+    width: 1.7
+    color: '#FFFFFF'
+- elementId: banner-icon-core-0
+  elementType: shape
+  bounds:
+  - 144.9
+  - 190.3
+  - 5.61
+  - 5.61
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFFFFF'
+- elementId: banner-icon-halo-1
+  elementType: shape
+  bounds:
+  - 245.23
+  - 173.83
+  - 38.54
+  - 38.54
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFD60A38'
+    - position: 1
+      color: '#FFD60A00'
+- elementId: banner-icon-node-1
+  elementType: shape
+  bounds:
+  - 255.74
+  - 184.34
+  - 17.52
+  - 17.52
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#0B0B0B'
+  border:
+    style: solid
+    width: 1.7
+    color: '#FFD60A'
+- elementId: banner-icon-core-1
+  elementType: shape
+  bounds:
+  - 261.7
+  - 190.3
+  - 5.61
+  - 5.61
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFD60A'
+- elementId: banner-icon-halo-2
+  elementType: shape
+  bounds:
+  - 291.07
+  - 212.37
+  - 41.76
+  - 41.76
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFD60A38'
+    - position: 1
+      color: '#FFD60A00'
+- elementId: banner-icon-node-2
+  elementType: shape
+  bounds:
+  - 302.46
+  - 223.76
+  - 18.98
+  - 18.98
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#0B0B0B'
+  border:
+    style: solid
+    width: 1.7
+    color: '#FFD60A'
+- elementId: banner-icon-core-2
+  elementType: shape
+  bounds:
+  - 308.91
+  - 230.21
+  - 6.07
+  - 6.07
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFD60A'
+- elementId: banner-icon-halo-3
+  elementType: shape
+  bounds:
+  - 270.78
+  - 279.68
+  - 38.54
+  - 38.54
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFD60A38'
+    - position: 1
+      color: '#FFD60A00'
+- elementId: banner-icon-node-3
+  elementType: shape
+  bounds:
+  - 281.29
+  - 290.19
+  - 17.52
+  - 17.52
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#0B0B0B'
+  border:
+    style: solid
+    width: 1.7
+    color: '#FFD60A'
+- elementId: banner-icon-core-3
+  elementType: shape
+  bounds:
+  - 287.25
+  - 296.15
+  - 5.61
+  - 5.61
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFD60A'
+- elementId: banner-icon-halo-4
+  elementType: shape
+  bounds:
+  - 128.43
+  - 279.68
+  - 38.54
+  - 38.54
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFD60A38'
+    - position: 1
+      color: '#FFD60A00'
+- elementId: banner-icon-node-4
+  elementType: shape
+  bounds:
+  - 138.94
+  - 290.19
+  - 17.52
+  - 17.52
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#0B0B0B'
+  border:
+    style: solid
+    width: 1.7
+    color: '#FFD60A'
+- elementId: banner-icon-core-4
+  elementType: shape
+  bounds:
+  - 144.9
+  - 296.15
+  - 5.61
+  - 5.61
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFD60A'
+- elementId: banner-icon-halo-5
+  elementType: shape
+  bounds:
+  - 128.43
+  - 381.88
+  - 38.54
+  - 38.54
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFFFFF38'
+    - position: 1
+      color: '#FFFFFF00'
+- elementId: banner-icon-node-5
+  elementType: shape
+  bounds:
+  - 138.94
+  - 392.39
+  - 17.52
+  - 17.52
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#0B0B0B'
+  border:
+    style: solid
+    width: 1.7
+    color: '#FFFFFF'
+- elementId: banner-icon-core-5
+  elementType: shape
+  bounds:
+  - 144.9
+  - 398.35
+  - 5.61
+  - 5.61
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFFFFF'
+- elementId: banner-icon-halo-6
+  elementType: shape
+  bounds:
+  - 203.03
+  - 281.28
+  - 35.33
+  - 35.33
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFFFFF38'
+    - position: 1
+      color: '#FFFFFF00'
+- elementId: banner-icon-node-6
+  elementType: shape
+  bounds:
+  - 212.67
+  - 290.92
+  - 16.06
+  - 16.06
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#0B0B0B'
+  border:
+    style: solid
+    width: 1.7
+    color: '#FFFFFF'
+- elementId: banner-icon-core-6
+  elementType: shape
+  bounds:
+  - 218.13
+  - 296.38
+  - 5.14
+  - 5.14
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFFFFF'
+- elementId: banner-icon-halo-7
+  elementType: shape
+  bounds:
+  - 293.12
+  - 378.67
+  - 44.97
+  - 44.97
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFFFFF38'
+    - position: 1
+      color: '#FFFFFF00'
+- elementId: banner-icon-node-7
+  elementType: shape
+  bounds:
+  - 305.38
+  - 390.93
+  - 20.44
+  - 20.44
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#0B0B0B'
+  border:
+    style: solid
+    width: 1.7
+    color: '#FFFFFF'
+- elementId: banner-icon-core-7
+  elementType: shape
+  bounds:
+  - 312.33
+  - 397.88
+  - 6.54
+  - 6.54
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFFFFF'
+- elementId: banner-icon-halo-8
+  elementType: shape
+  bounds:
+  - 342.9
+  - 260.55
+  - 25.7
+  - 25.7
+  shapeName: ellipse
+  fill:
+    type: gradient
+    gradientType: radial
+    stops:
+    - position: 0
+      color: '#FFD60A38'
+    - position: 1
+      color: '#FFD60A00'
+- elementId: banner-icon-node-8
+  elementType: shape
+  bounds:
+  - 349.91
+  - 267.56
+  - 11.68
+  - 11.68
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#0B0B0B'
+  border:
+    style: solid
+    width: 1.7
+    color: '#FFD60A'
+- elementId: banner-icon-core-8
+  elementType: shape
+  bounds:
+  - 353.88
+  - 271.53
+  - 3.74
+  - 3.74
+  shapeName: ellipse
+  fill:
+    type: solid
+    color: '#FFD60A'
+- elementId: eyebrow
+  elementType: text
+  bounds:
+  - 424
+  - 126
+  - 680
+  - 28
+  content:
+    text: DOMAIN-AGNOSTIC GRAPHRAG SDK
+    fontSize: 16
+    color: '#FFD60A'
+    fontFamily: IBM Plex Mono
+    bold: true
+    letterSpacing: 2.4
+    wrap: false
+    align:
+    - left
+    - middle
+- elementId: title
+  elementType: text
+  bounds:
+  - 416
+  - 174
+  - 800
+  - 102
+  content:
+    text: recon-graphrag
+    fontSize: 76
+    color: '#FFFFFF'
+    fontFamily: Space Grotesk
+    bold: true
+    letterSpacing: -3
+    wrap: false
+    align:
+    - left
+    - middle
+- elementId: tagline
+  elementType: text
+  bounds:
+  - 424
+  - 292
+  - 720
+  - 46
+  content:
+    text: Build the graph. Retrieve with context.
+    fontSize: 27
+    color: '#D4D4D4'
+    fontFamily: Space Grotesk
+    bold: false
+    letterSpacing: -0.3
+    wrap: false
+    align:
+    - left
+    - middle
+- elementId: chip-local
+  elementType: shape
+  bounds:
+  - 424
+  - 410
+  - 112
+  - 40
+  shapeName: roundRect
+  adjustments:
+  - 50000
+  fill:
+    type: solid
+    color: '#161616CC'
+  border:
+    style: solid
+    width: 1
+    color: '#525252'
+- elementId: chip-text-local
+  elementType: text
+  bounds:
+  - 424
+  - 411
+  - 112
+  - 36
+  content:
+    text: LOCAL
+    fontSize: 14
+    color: '#FFFFFF'
+    fontFamily: IBM Plex Mono
+    bold: true
+    letterSpacing: 1.4
+    wrap: false
+    align:
+    - center
+    - middle
+- elementId: chip-global
+  elementType: shape
+  bounds:
+  - 550
+  - 410
+  - 128
+  - 40
+  shapeName: roundRect
+  adjustments:
+  - 50000
+  fill:
+    type: solid
+    color: '#161616CC'
+  border:
+    style: solid
+    width: 1
+    color: '#525252'
+- elementId: chip-text-global
+  elementType: text
+  bounds:
+  - 550
+  - 411
+  - 128
+  - 36
+  content:
+    text: GLOBAL
+    fontSize: 14
+    color: '#FFFFFF'
+    fontFamily: IBM Plex Mono
+    bold: true
+    letterSpacing: 1.4
+    wrap: false
+    align:
+    - center
+    - middle
+- elementId: chip-drift
+  elementType: shape
+  bounds:
+  - 692
+  - 410
+  - 112
+  - 40
+  shapeName: roundRect
+  adjustments:
+  - 50000
+  fill:
+    type: solid
+    color: '#161616CC'
+  border:
+    style: solid
+    width: 1
+    color: '#525252'
+- elementId: chip-text-drift
+  elementType: text
+  bounds:
+  - 692
+  - 411
+  - 112
+  - 36
+  content:
+    text: DRIFT
+    fontSize: 14
+    color: '#FFFFFF'
+    fontFamily: IBM Plex Mono
+    bold: true
+    letterSpacing: 1.4
+    wrap: false
+    align:
+    - center
+    - middle
+- elementId: signal-rule
+  elementType: shape
+  bounds:
+  - 424
+  - 492
+  - 688
+  - 2
+  shapeName: rect
+  fill:
+    type: gradient
+    gradientType: linear
+    stops:
+    - position: 0
+      color: '#FFD60A99'
+    - position: 0.55
+      color: '#FFD60A22'
+    - position: 1
+      color: '#FFD60A00'
+    angle: 0
+- elementId: proof
+  elementType: text
+  bounds:
+  - 424
+  - 510
+  - 740
+  - 30
+  content:
+    text: Neo4j + Memgraph   ·   Hierarchical communities   ·   Cited answers
+    fontSize: 16
+    color: '#A3A3A3'
+    fontFamily: IBM Plex Mono
+    bold: false
+    letterSpacing: 0
+    wrap: false
+    align:
+    - left
+    - middle

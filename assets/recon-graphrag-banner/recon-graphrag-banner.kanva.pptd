@@ -1,0 +1,22 @@
+version: v2
+title: recon-graphrag — GitHub repository banner
+size:
+- 1280
+- 640
+customFonts:
+- family: Space Grotesk
+  src: https://fonts.googleapis.com/css2?family=Space+Grotesk
+- family: IBM Plex Mono
+  src: https://fonts.googleapis.com/css2?family=IBM+Plex+Mono
+theme:
+  colors:
+    ink: '#050505'
+    midnight: '#0B0B0B'
+    panel: '#141414'
+    yellow: '#FFD60A'
+    white: '#FFFFFF'
+    steel: '#A3A3A3'
+    edge: '#3A3A3A'
+    dim: '#242424'
+pages:
+- pages/banner.page
