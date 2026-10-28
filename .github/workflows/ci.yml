@@ -29,7 +29,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --extra dev --group dev
+        run: uv sync --frozen --extra dev --group dev
 
       - name: Run mandatory tests
         run: uv run pytest -m "not integration"
@@ -53,15 +53,13 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --extra dev --group dev
+        run: uv sync --frozen --extra dev --group dev
 
       - name: Build package
         run: uv build
 
       - name: Validate package
-        run: |
-          pip install twine
-          twine check dist/*
+        run: uvx --from twine==6.2.0 twine check dist/*
 
   release-please:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -70,11 +68,6 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-
-    outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      upload_url: ${{ steps.release.outputs.upload_url }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
 
     steps:
       - name: Create or update release PR
@@ -85,37 +78,47 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  publish-artifacts:
-    needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+      - name: Enable auto-merge on the release PR
+        if: >-
+          steps.release.outputs.pr != ''
+          && steps.release.outputs.release_created != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_PR: ${{ fromJSON(steps.release.outputs.pr).number }}
+        run: gh pr merge --repo "$GH_REPO" --auto --squash "$RELEASE_PR"
 
-    steps:
-      - name: Check out repository
+      - name: Check out release tag
+        if: steps.release.outputs.release_created == 'true'
         uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.tag_name }}
 
       - name: Set up Python
+        if: steps.release.outputs.release_created == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install uv
+        if: steps.release.outputs.release_created == 'true'
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
 
       - name: Build package
+        if: steps.release.outputs.release_created == 'true'
         run: uv build
 
       - name: Validate package
-        run: |
-          pip install twine
-          twine check dist/*
+        if: steps.release.outputs.release_created == 'true'
+        run: uvx --from twine==6.2.0 twine check dist/*
 
       - name: Attach artifacts to GitHub Release
+        if: steps.release.outputs.release_created == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload ${{ needs.release-please.outputs.tag_name }} dist/* --clobber
+        run: >-
+          gh release upload
+          "${{ steps.release.outputs.tag_name }}"
+          dist/* --clobber
