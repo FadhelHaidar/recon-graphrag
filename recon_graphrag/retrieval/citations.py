@@ -227,16 +227,26 @@ def resolve_reference_citations(
             relationship_keys.append(target_id)
 
     # Overlapping chunks are materialized once, after all references resolved.
+    entity_chunk_ids = _entity_chunk_ids(graph_store, graph_name, entity_ids)
+    claim_chunk_ids = _claim_chunk_ids(graph_store, graph_name, claim_ids)
+    relationship_chunk_ids = _relationship_chunk_ids(
+        graph_store, graph_name, relationship_keys
+    )
     chunk_ids = list(dict.fromkeys(
-        _entity_chunk_ids(graph_store, graph_name, entity_ids)
-        + _claim_chunk_ids(graph_store, graph_name, claim_ids)
-        + _relationship_chunk_ids(graph_store, graph_name, relationship_keys)
+        entity_chunk_ids + claim_chunk_ids + relationship_chunk_ids
     ))
     citations = resolve_chunk_citations(graph_store, graph_name, chunk_ids)
-    # Backends may return chunk rows in storage order; category order (entities,
-    # then claims, then relationships) has to survive that.
-    chunk_order = {chunk_id: index for index, chunk_id in enumerate(chunk_ids)}
-    citations.sort(key=lambda citation: chunk_order.get(citation.chunk_id, len(chunk_order)))
+    # Metadata rows arrive in backend order, which is the order release returned
+    # within a category. Only category precedence (entities, then claims, then
+    # relationships) is ours to fix, so sort by category and leave each
+    # category's row order alone.
+    chunk_category: dict[str, int] = {}
+    for category, category_chunk_ids in enumerate(
+        (entity_chunk_ids, claim_chunk_ids, relationship_chunk_ids)
+    ):
+        for chunk_id in category_chunk_ids:
+            chunk_category.setdefault(chunk_id, category)
+    citations.sort(key=lambda citation: chunk_category.get(citation.chunk_id, 3))
 
     seen: set[tuple[str, str, int | None, int | None]] = set()
     deduped: list[Citation] = []

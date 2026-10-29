@@ -58,6 +58,18 @@ class RecordingStore:
         ]
 
 
+class StorageOrderStore(RecordingStore):
+    """Materializes metadata in a fixed storage order, ignoring input order."""
+
+    STORAGE = ["c-rel", "c-claim", "c-bob", "c-alice", "c-shared"]
+
+    def resolve_chunk_citations(self, graph_name: str, chunk_ids: list[str]) -> list[dict]:
+        wanted = set(chunk_ids)
+        return super().resolve_chunk_citations(
+            graph_name, [chunk_id for chunk_id in self.STORAGE if chunk_id in wanted]
+        )
+
+
 CHUNKS = {
     "person:alice": ["c-shared", "c-alice"],
     "person:bob": ["c-bob"],
@@ -130,3 +142,34 @@ def test_batched_resolution_matches_per_type_resolution():
 
     assert batched == per_type
     assert len(per_type_store.materializations) == 3
+
+
+def test_storage_row_order_is_kept_inside_a_category():
+    """Release returned metadata row order within a category; batching must too."""
+    refs = [
+        {"target_id": "person:alice", "target_type": "entity"},
+        {"target_id": "person:bob", "target_type": "entity"},
+        {"target_id": "claim:1", "target_type": "claim"},
+        {"target_id": "person:alice:KNOWS:person:bob", "target_type": "relationship"},
+    ]
+
+    batched = resolve_reference_citations(cast(Any, StorageOrderStore(CHUNKS)), "graph", refs)
+
+    per_type_store = StorageOrderStore(CHUNKS)
+    per_type = _dedupe(
+        resolve_entity_citations(cast(Any, per_type_store), ["person:alice", "person:bob"], "graph")
+        + resolve_claim_citations(cast(Any, per_type_store), "graph", ["claim:1"])
+        + resolve_relationship_citations(
+            cast(Any, per_type_store), "graph", ["person:alice:KNOWS:person:bob"]
+        )
+    )
+
+    assert batched == per_type
+    # Storage order decides within a category; category precedence still wins.
+    assert [c.chunk_id for c in batched] == [
+        "c-bob",
+        "c-alice",
+        "c-shared",
+        "c-claim",
+        "c-rel",
+    ]

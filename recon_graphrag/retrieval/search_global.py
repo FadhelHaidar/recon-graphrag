@@ -398,7 +398,7 @@ class GlobalSearchRetriever:
             )
 
             logger.debug(
-                "global phase=evidence ms=%d ms=%s",
+                "global phase=evidence ms=%d enabled=%s",
                 int((time.monotonic() - phase_start) * 1000),
                 include_graph_evidence,
             )
