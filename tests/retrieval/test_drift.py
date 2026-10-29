@@ -301,6 +301,17 @@ class TestDriftFallback:
         assert result.metadata.get("drift_fallback_reason") == "no_report_results"
 
     @pytest.mark.asyncio
+    async def test_fallback_embeds_the_query_once(self):
+        store = EmptyReportsGraphStore()
+        embedder = FakeEmbedder()
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, FakeLLM()), cast(Any, embedder))
+
+        await retriever.search("query", top_k=2)
+
+        # The primer already embedded the query; the fallback reuses that vector.
+        assert embedder.queries == ["query"]
+
+    @pytest.mark.asyncio
     async def test_fallback_synthesize_false(self):
         store = NoReportSearchStore()
         retriever = DriftSearchRetriever(cast(Any, store), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()))
