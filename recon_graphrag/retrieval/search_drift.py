@@ -310,6 +310,7 @@ class DriftSearchRetriever:
             )
 
             # --- Phase 1: Primer ---
+            phase_start = time.monotonic()
             primer_result = await self._primer_phase(
                 query,
                 state,
@@ -322,6 +323,11 @@ class DriftSearchRetriever:
             )
 
             if primer_result.get("fallback"):
+                logger.debug(
+                    "drift phase=primer ms=%d fallback=%s",
+                    int((time.monotonic() - phase_start) * 1000),
+                    primer_result.get("fallback_reason", "missing_report_embeddings"),
+                )
                 result = await self._fallback_search(
                     query=query,
                     state=state,
@@ -333,23 +339,29 @@ class DriftSearchRetriever:
                     synthesize_response=synthesize_response,
                     reason=primer_result.get("fallback_reason", "missing_report_embeddings"),
                     call_lock=call_lock,
+                    query_vector=primer_result.get("query_vector"),
                     include_graph_evidence=include_graph_evidence,
                 )
                 self._add_citation_warnings(result, state)
                 return result
 
             # --- Phase 2: Traversal ---
+            phase_start = time.monotonic()
             await self._traversal_phase(
                 query, state, config, top_k, effective_search_ratio,
                 query_params, ranker, alpha, conversation_history,
                 synthesize_citation_metadata, synthesis_metadata_keys, call_lock,
                 synthesize_response, include_graph_evidence,
             )
+            logger.debug(
+                "drift phase=traversal ms=%d actions=%d llm_calls=%d",
+                int((time.monotonic() - phase_start) * 1000),
+                len(state.actions),
+                state.total_llm_calls,
+            )
 
             # --- Phase 3: Reduction ---
-            elapsed_ms = int((time.monotonic() - start) * 1000)
-            state.phase_tokens["elapsed_ms"] = elapsed_ms
-
+            phase_start = time.monotonic()
             result = await self._reduction_phase(
                 query=query,
                 state=state,
@@ -357,6 +369,18 @@ class DriftSearchRetriever:
                 conversation_history=conversation_history,
                 call_lock=call_lock,
                 include_graph_evidence=include_graph_evidence,
+            )
+            # Total wall time covers reduction, citations and graph evidence.
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            result.metadata.setdefault("drift_trace", {}).setdefault(
+                "phase_tokens", {}
+            )["elapsed_ms"] = elapsed_ms
+            logger.debug(
+                "drift phase=reduce ms=%d total ms=%d actions=%d llm_calls=%d",
+                int((time.monotonic() - phase_start) * 1000),
+                elapsed_ms,
+                len(state.actions),
+                state.total_llm_calls,
             )
             self._add_citation_warnings(result, state)
             return result
@@ -381,14 +405,24 @@ class DriftSearchRetriever:
     ) -> dict:
         """Embed query, search community reports, parse primer JSON."""
         if query_vector is None:
+            phase_start = time.monotonic()
             try:
                 query_vector = await self.embedder.async_embed_query(query)
             except Exception as e:
                 state.failures.append(f"query embedding failed: {e}")
                 return {"fallback": True, "fallback_reason": "query_embedding_failed"}
+            logger.debug(
+                "drift phase=embed ms=%d",
+                int((time.monotonic() - phase_start) * 1000),
+            )
 
+        # None is valid: `all`/None means an unrestricted level selector.
         if resolved_level is None:
-            return {"fallback": True, "fallback_reason": "no_community_level"}
+            return {
+                "fallback": True,
+                "fallback_reason": "no_community_level",
+                "query_vector": query_vector,
+            }
 
         try:
             reports = self.graph_store.vector_search_community_reports(
@@ -399,17 +433,35 @@ class DriftSearchRetriever:
             )
         except Exception as e:
             state.failures.append(f"report vector search failed: {e}")
-            return {"fallback": True, "fallback_reason": "missing_report_embeddings"}
+            return {
+                "fallback": True,
+                "fallback_reason": "missing_report_embeddings",
+                "query_vector": query_vector,
+            }
 
         if not reports:
-            return {"fallback": True, "fallback_reason": "no_report_results"}
+            return {
+                "fallback": True,
+                "fallback_reason": "no_report_results",
+                "query_vector": query_vector,
+            }
 
         if config.use_hyde:
+            phase_start = time.monotonic()
             reports = await self._hyde_rerank(
                 query, reports, query_vector, state, config, call_lock, resolved_level, primer_top_k,
             )
+            logger.debug(
+                "drift phase=hyde ms=%d reports=%d",
+                int((time.monotonic() - phase_start) * 1000),
+                len(reports),
+            )
             if not reports:
-                return {"fallback": True, "fallback_reason": "hyde_rerank_failed"}
+                return {
+                    "fallback": True,
+                    "fallback_reason": "hyde_rerank_failed",
+                    "query_vector": query_vector,
+                }
 
         state.primer_reports = reports
 
@@ -437,7 +489,11 @@ class DriftSearchRetriever:
                 )
             except Exception as e:
                 state.failures.append(f"primer LLM failed: {e}")
-                return {"fallback": True, "fallback_reason": "primer_llm_failed"}
+                return {
+                    "fallback": True,
+                    "fallback_reason": "primer_llm_failed",
+                    "query_vector": query_vector,
+                }
 
         primer_action = DriftAction(
             id="primer",
@@ -454,7 +510,7 @@ class DriftSearchRetriever:
         )
         state.actions.append(primer_action)
 
-        return {"fallback": False}
+        return {"fallback": False, "query_vector": query_vector}
 
     async def _hyde_rerank(
         self,
@@ -1068,10 +1124,13 @@ class DriftSearchRetriever:
         reason: str,
         call_lock: asyncio.Lock,
         include_graph_evidence: bool = False,
+        query_vector: list[float] | None = None,
     ) -> SearchResult:
         """Fall back to local-style retrieval when report embeddings missing."""
         logger.warning("DRIFT falling back to local-style retrieval: %s", reason)
-        fallback_vector = await self.embedder.async_embed_query(query)
+        fallback_vector = query_vector
+        if fallback_vector is None:
+            fallback_vector = await self.embedder.async_embed_query(query)
         retriever_result = await self._retriever.search(
             query_text=query,
             query_vector=fallback_vector,
