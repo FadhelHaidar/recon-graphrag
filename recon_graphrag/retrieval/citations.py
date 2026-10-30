@@ -40,6 +40,19 @@ def resolve_entity_citations(
     Returns:
         Deduplicated list of Citation objects.
     """
+    return resolve_chunk_citations(
+        graph_store,
+        graph_name,
+        _entity_chunk_ids(graph_store, graph_name, entity_ids),
+    )
+
+
+def _entity_chunk_ids(
+    graph_store: GraphStore,
+    graph_name: str,
+    entity_ids: list[str],
+) -> list[str]:
+    """Entity references to source chunk ids."""
     if not entity_ids:
         return []
 
@@ -53,8 +66,7 @@ def resolve_entity_citations(
         """,
         {"entity_ids": entity_ids, "graph_name": graph_name},
     )
-    chunk_ids = [r["chunk_id"] for r in rows if r.get("chunk_id")]
-    return resolve_chunk_citations(graph_store, graph_name, chunk_ids)
+    return [r["chunk_id"] for r in rows if r.get("chunk_id")]
 
 
 def resolve_chunk_citations(
@@ -114,6 +126,19 @@ def resolve_claim_citations(
     Returns:
         Deduplicated list of Citation objects.
     """
+    return resolve_chunk_citations(
+        graph_store,
+        graph_name,
+        _claim_chunk_ids(graph_store, graph_name, claim_ids),
+    )
+
+
+def _claim_chunk_ids(
+    graph_store: GraphStore,
+    graph_name: str,
+    claim_ids: list[str],
+) -> list[str]:
+    """Claim ids to source chunk ids."""
     if not claim_ids:
         return []
 
@@ -127,8 +152,7 @@ def resolve_claim_citations(
         query,
         {"graph_name": graph_name, "claim_ids": claim_ids},
     )
-    chunk_ids = [r["chunk_id"] for r in rows if r.get("chunk_id")]
-    return resolve_chunk_citations(graph_store, graph_name, chunk_ids)
+    return [r["chunk_id"] for r in rows if r.get("chunk_id")]
 
 
 def resolve_relationship_citations(
@@ -137,6 +161,19 @@ def resolve_relationship_citations(
     relationship_keys: list[str],
 ) -> list[Citation]:
     """Resolve relationship keys to citations via source_chunk_ids."""
+    return resolve_chunk_citations(
+        graph_store,
+        graph_name,
+        _relationship_chunk_ids(graph_store, graph_name, relationship_keys),
+    )
+
+
+def _relationship_chunk_ids(
+    graph_store: GraphStore,
+    graph_name: str,
+    relationship_keys: list[str],
+) -> list[str]:
+    """Relationship references to source chunk ids."""
     if not relationship_keys:
         return []
 
@@ -159,8 +196,7 @@ def resolve_relationship_citations(
         query,
         {"graph_name": graph_name, "relationship_keys": relationship_keys},
     )
-    chunk_ids = [r["chunk_id"] for r in rows if r.get("chunk_id")]
-    return resolve_chunk_citations(graph_store, graph_name, chunk_ids)
+    return [r["chunk_id"] for r in rows if r.get("chunk_id")]
 
 
 def resolve_reference_citations(
@@ -172,13 +208,17 @@ def resolve_reference_citations(
     entity_ids: list[str] = []
     claim_ids: list[str] = []
     relationship_keys: list[str] = []
+    # Duplicate references would only repeat the same lookups; first-seen order
+    # decides the citation order.
+    seen_refs: set[tuple[str, str]] = set()
     for ref in references:
         if not isinstance(ref, dict):
             continue
         target_id = str(ref.get("target_id", "")).strip()
         target_type = str(ref.get("target_type", "")).strip()
-        if not target_id:
+        if not target_id or (target_type, target_id) in seen_refs:
             continue
+        seen_refs.add((target_type, target_id))
         if target_type == "entity":
             entity_ids.append(target_id)
         elif target_type == "claim":
@@ -186,12 +226,27 @@ def resolve_reference_citations(
         elif target_type == "relationship":
             relationship_keys.append(target_id)
 
-    citations: list[Citation] = []
-    citations.extend(resolve_entity_citations(graph_store, entity_ids, graph_name))
-    citations.extend(resolve_claim_citations(graph_store, graph_name, claim_ids))
-    citations.extend(
-        resolve_relationship_citations(graph_store, graph_name, relationship_keys)
+    # Overlapping chunks are materialized once, after all references resolved.
+    entity_chunk_ids = _entity_chunk_ids(graph_store, graph_name, entity_ids)
+    claim_chunk_ids = _claim_chunk_ids(graph_store, graph_name, claim_ids)
+    relationship_chunk_ids = _relationship_chunk_ids(
+        graph_store, graph_name, relationship_keys
     )
+    chunk_ids = list(dict.fromkeys(
+        entity_chunk_ids + claim_chunk_ids + relationship_chunk_ids
+    ))
+    citations = resolve_chunk_citations(graph_store, graph_name, chunk_ids)
+    # Metadata rows arrive in backend order, which is the order release returned
+    # within a category. Only category precedence (entities, then claims, then
+    # relationships) is ours to fix, so sort by category and leave each
+    # category's row order alone.
+    chunk_category: dict[str, int] = {}
+    for category, category_chunk_ids in enumerate(
+        (entity_chunk_ids, claim_chunk_ids, relationship_chunk_ids)
+    ):
+        for chunk_id in category_chunk_ids:
+            chunk_category.setdefault(chunk_id, category)
+    citations.sort(key=lambda citation: chunk_category.get(citation.chunk_id, 3))
 
     seen: set[tuple[str, str, int | None, int | None]] = set()
     deduped: list[Citation] = []

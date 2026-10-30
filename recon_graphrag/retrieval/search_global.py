@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random as _random
 import re
 import time
@@ -31,6 +32,8 @@ from recon_graphrag.utils.tokens import (
     ApproximateTokenCounter,
     TokenCounter,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # Prompts
@@ -234,6 +237,7 @@ class GlobalSearchRetriever:
             )
 
             if resolved_level is None:
+                diag.elapsed_ms = int((time.monotonic() - start) * 1000)
                 metadata = {}
                 token_usage = usage_snapshot(self.llm)
                 if token_usage is not None:
@@ -247,10 +251,16 @@ class GlobalSearchRetriever:
 
             diag.selected_level = resolved_level
 
+            phase_start = time.monotonic()
             reports = self._read_reports(resolved_level, self.max_reports)
+            read_ms = int((time.monotonic() - phase_start) * 1000)
             diag.reports_available = len(reports)
+            logger.debug(
+                "global phase=read ms=%d reports=%d", read_ms, len(reports)
+            )
 
             if not reports:
+                diag.elapsed_ms = int((time.monotonic() - start) * 1000)
                 metadata = {}
                 token_usage = usage_snapshot(self.llm)
                 if token_usage is not None:
@@ -266,6 +276,7 @@ class GlobalSearchRetriever:
             diag.reports_used = len(reports)
 
             if not reports:
+                diag.elapsed_ms = int((time.monotonic() - start) * 1000)
                 metadata = {}
                 token_usage = usage_snapshot(self.llm)
                 if token_usage is not None:
@@ -287,9 +298,17 @@ class GlobalSearchRetriever:
             )
             diag.map_batches = len(batches)
 
+            phase_start = time.monotonic()
             partials = await self._map_phase(query, batches)
             diag.map_succeeded = sum(1 for p in partials if p.error is None)
             diag.map_failed = sum(1 for p in partials if p.error is not None)
+            logger.debug(
+                "global phase=map ms=%d batches=%d failed=%d concurrency=%d",
+                int((time.monotonic() - phase_start) * 1000),
+                len(batches),
+                diag.map_failed,
+                self.map_concurrency,
+            )
 
             scored = [p for p in partials if p.error is None and p.helpfulness > 0]
             diag.map_filtered_zero = diag.map_succeeded - len(scored)
@@ -322,7 +341,14 @@ class GlobalSearchRetriever:
             context = "\n\n---\n\n".join(context_parts)
 
             # Resolve citations from explicit map references and report-derived refs.
+            phase_start = time.monotonic()
             citations = self._resolve_source_citations(diag, scored, resolved_level)
+            logger.debug(
+                "global phase=citations ms=%d refs=%d citations=%d",
+                int((time.monotonic() - phase_start) * 1000),
+                diag.source_references_extracted,
+                diag.source_citations_resolved,
+            )
 
             if not synthesize_response:
                 diag.reduce_partials_used = 0
@@ -350,10 +376,17 @@ class GlobalSearchRetriever:
                     graph=graph,
                 )
 
+            phase_start = time.monotonic()
             answer, retained_ids = await self._reduce_phase(
                 query, scored, use_general_knowledge=use_general_knowledge
             )
             diag.reduce_partials_used = len(scored)
+            logger.debug(
+                "global phase=reduce ms=%d partials=%d",
+                int((time.monotonic() - phase_start) * 1000),
+                len(scored),
+            )
+            phase_start = time.monotonic()
             graph = (
                 await self._graph_evidence(
                     [p for p in scored if p.batch_id in retained_ids],
@@ -364,7 +397,20 @@ class GlobalSearchRetriever:
                 else {}
             )
 
+            logger.debug(
+                "global phase=evidence ms=%d enabled=%s",
+                int((time.monotonic() - phase_start) * 1000),
+                include_graph_evidence,
+            )
+
             diag.elapsed_ms = int((time.monotonic() - start) * 1000)
+            logger.debug(
+                "global total ms=%d level=%s reports=%d batches=%d",
+                diag.elapsed_ms,
+                resolved_level,
+                diag.reports_used,
+                diag.map_batches,
+            )
 
             metadata = _diag_to_dict(diag)
             token_usage = usage_snapshot(self.llm)

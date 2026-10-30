@@ -10,6 +10,8 @@ answers anchored to particular entities and their local graph neighborhood.
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any, Optional
 
 from recon_graphrag.embeddings.base import BaseEmbedder
@@ -31,6 +33,8 @@ from recon_graphrag.retrieval.community_levels import CommunityLevelSelector
 from recon_graphrag.retrieval.graph_evidence import build_evidence
 from recon_graphrag.retrieval.hybrid import HybridEntityRetriever, HybridRanker
 from recon_graphrag.retrieval.mixed_context import MixedContextBuilder
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_ANSWER_PROMPT = """Based on the findings below, answer the query.
 
@@ -146,8 +150,15 @@ class LocalSearchRetriever:
                 their member entities and edges (extra database reads).
         """
         with run_scope():
+            start = time.monotonic()
             if query_vector is None:
+                phase_start = time.monotonic()
                 query_vector = await self.embedder.async_embed_query(query)
+                logger.debug(
+                    "local phase=embed ms=%d",
+                    int((time.monotonic() - phase_start) * 1000),
+                )
+            phase_start = time.monotonic()
             retriever_result = await self._retriever.search(
                 query_text=query,
                 query_vector=query_vector,
@@ -156,6 +167,11 @@ class LocalSearchRetriever:
                 query_params=self._retrieval_params(query_params, query_vector),
                 ranker=ranker,
                 alpha=alpha,
+            )
+            logger.debug(
+                "local phase=retrieve ms=%d items=%d",
+                int((time.monotonic() - phase_start) * 1000),
+                len(retriever_result.items) if retriever_result else 0,
             )
 
             if self.use_mixed_context:
@@ -170,7 +186,14 @@ class LocalSearchRetriever:
                     include_graph_evidence=include_graph_evidence,
                 )
 
+            phase_start = time.monotonic()
             citations, citation_warnings = self._resolve_citations(retriever_result)
+            logger.debug(
+                "local phase=citations ms=%d citations=%d total_ms=%d",
+                int((time.monotonic() - phase_start) * 1000),
+                len(citations),
+                int((time.monotonic() - start) * 1000),
+            )
             context = self._format_context(
                 retriever_result,
                 citations=citations if synthesize_citation_metadata else None,
@@ -198,7 +221,12 @@ class LocalSearchRetriever:
                     metadata={**metadata, **({"citation_warnings": citation_warnings} if citation_warnings else {})},
                     graph=graph,
                 )
+            phase_start = time.monotonic()
             answer = await self._generate_answer(query, context)
+            logger.debug(
+                "local phase=answer ms=%d",
+                int((time.monotonic() - phase_start) * 1000),
+            )
             token_usage = usage_snapshot(self.llm)
             metadata = {}
             if token_usage is not None:
@@ -271,6 +299,7 @@ class LocalSearchRetriever:
             entity_id = content.get("entity_id") or content.get("title", "")
             entity_matches.append({"id": entity_id, "score": score})
 
+        phase_start = time.monotonic()
         mixed = self._mixed_context_builder.build_context(
             entity_matches=entity_matches,
             entity_context_rows=entity_context_rows,
@@ -278,6 +307,12 @@ class LocalSearchRetriever:
             community_level=community_level,
             synthesize_citation_metadata=synthesize_citation_metadata,
             synthesis_metadata_keys=synthesis_metadata_keys,
+        )
+        logger.debug(
+            "local phase=mixed_context ms=%d citations=%d tokens=%d",
+            int((time.monotonic() - phase_start) * 1000),
+            len(mixed.citations),
+            mixed.used_tokens,
         )
 
         graph = (
@@ -307,7 +342,12 @@ class LocalSearchRetriever:
                 graph=graph,
             )
 
+        phase_start = time.monotonic()
         answer = await self._generate_answer(query, mixed.context)
+        logger.debug(
+            "local phase=answer ms=%d",
+            int((time.monotonic() - phase_start) * 1000),
+        )
         token_usage = usage_snapshot(self.llm)
         metadata = {
             "mixed_context": True,
