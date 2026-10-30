@@ -18,6 +18,20 @@
   label or `graph_name` filters are applied and trim to `top_k` after the
   filter, matching Memgraph behavior; result shape is unchanged.
 
+## [0.13.1](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.13.0...v0.13.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* **drift:** drop unusable references instead of discarding the answer ([263d576](https://github.com/FadhelHaidar/recon-graphrag/commit/263d57664309164f1e8914460db1e23cd2289314))
+* **retrieval:** keep metadata row order inside a citation category ([84ae6d5](https://github.com/FadhelHaidar/recon-graphrag/commit/84ae6d567781a8841f186a4d1546522f5c197cb1))
+
+
+### Performance Improvements
+
+* **retrieval:** time phases and resolve reference citations once ([f22aad8](https://github.com/FadhelHaidar/recon-graphrag/commit/f22aad82b6ac5b66884bbfb78cc525c69ce1fa21))
+* **retrieval:** time phases, resolve reference citations once, keep DRIFT answers ([f53a665](https://github.com/FadhelHaidar/recon-graphrag/commit/f53a6656f246bfd2af759609b571fa7419f53b65))
+
 ## [0.13.0](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.12.1...v0.13.0) (2026-10-27)
 
 
