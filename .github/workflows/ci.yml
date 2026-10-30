@@ -5,6 +5,9 @@ on:
   push:
     branches:
       - main
+  # Release PRs merged by GITHUB_TOKEN do not trigger further workflows, so the
+  # run that creates the tag and uploads artifacts must be startable by hand.
+  workflow_dispatch:
 
 permissions:
   contents: read
