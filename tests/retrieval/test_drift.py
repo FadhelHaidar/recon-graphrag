@@ -432,6 +432,40 @@ class TestDriftTraversal:
         assert trace["total_llm_calls"] >= 2
 
     @pytest.mark.asyncio
+    async def test_unusable_references_do_not_discard_the_action_answer(self):
+        store = FakeGraphStore()
+        llm = FakeLLM(
+            responses=[
+                json.dumps({
+                    "answer": "Initial answer.",
+                    "score": 80,
+                    "follow_ups": ["What year?"],
+                }),
+                json.dumps({
+                    "answer": "2010.",
+                    "score": 90,
+                    "follow_ups": [],
+                    "references": [
+                        {"target_id": "community:3", "target_type": "community"},
+                        {"target_id": "Alice directed it.", "target_type": "claim"},
+                        {"target_id": "person:alice", "target_type": "entity"},
+                    ],
+                }),
+            ]
+        )
+        config = DriftSearchConfig(use_hyde=False, action_use_mixed_context=False)
+        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()), config=config)
+
+        result = await retriever.search("query", top_k=2)
+
+        trace = result.metadata["drift_trace"]
+        # The answer and follow-ups are valid, so the only repair prompt possible
+        # here is a rejected response: an unusable reference must not cause one.
+        assert not any("invalid JSON" in prompt for prompt in llm.prompts)
+        answers = [action["answer"] for action in trace["actions"]]
+        assert "2010." in answers
+
+    @pytest.mark.asyncio
     async def test_low_score_followup_not_expanded(self):
         store = FakeGraphStore()
         llm = FakeLLM(

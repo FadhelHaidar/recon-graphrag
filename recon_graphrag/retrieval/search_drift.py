@@ -85,7 +85,10 @@ You are answering a question using community reports from a knowledge graph.
 2. Rate your confidence from 0 to 100.
 3. Generate up to 3 follow-up questions that would help refine the answer.
 4. Cite report IDs you used.
-5. Return valid JSON only.
+5. For each reference, `target_type` must be one of entity, claim, relationship,
+   and `target_id` must be an id copied exactly from the reports above. Omit any
+   reference you cannot match to an id.
+6. Return valid JSON only.
 
 JSON format:
 {{
@@ -94,7 +97,7 @@ JSON format:
   "follow_ups": ["follow-up question 1", "follow-up question 2"],
   "report_ids": ["report:0:0"],
   "references": [
-    {{"target_id": "entity-id", "target_type": "entity"}}
+    {{"target_id": "<id copied from the reports>", "target_type": "entity"}}
   ]
 }}
 
@@ -122,7 +125,10 @@ You are refining an answer using local graph context.
 2. Rate your confidence from 0 to 100.
 3. Generate up to 2 additional follow-up questions if the context suggests
    new angles worth exploring.
-4. Return valid JSON only.
+4. For each reference, `target_type` must be one of entity, claim, relationship,
+   and `target_id` must be an id copied exactly from the local context above.
+   Omit any reference you cannot match to an id; never cite a description.
+5. Return valid JSON only.
 
 JSON format:
 {{
@@ -130,7 +136,7 @@ JSON format:
   "score": 60,
   "follow_ups": ["new follow-up 1"],
   "references": [
-    {{"target_id": "entity-or-claim-id", "target_type": "entity"}}
+    {{"target_id": "<id copied from the local context>", "target_type": "entity"}}
   ]
 }}
 
@@ -1290,13 +1296,24 @@ class DriftSearchRetriever:
         ):
             raise ValueError("follow_ups must be a list of non-empty strings")
         references = data.get("references", [])
-        if not isinstance(references, list) or not all(
-            isinstance(ref, dict)
+        if not isinstance(references, list):
+            raise ValueError("references must be a list")
+        usable_references = [
+            ref
+            for ref in references
+            if isinstance(ref, dict)
             and str(ref.get("target_id", "")).strip()
             and ref.get("target_type") in {"entity", "relationship", "claim"}
-            for ref in references
-        ):
-            raise ValueError("references must contain typed target_id objects")
+        ]
+        if len(usable_references) != len(references):
+            # Models cite descriptions or unresolvable types (community, document).
+            # Dropping those keeps an otherwise valid answer instead of discarding it.
+            logger.warning(
+                "drift %s response dropped %d of %d unusable reference(s)",
+                phase,
+                len(references) - len(usable_references),
+                len(references),
+            )
         report_ids = data.get("report_ids", [])
         if phase == "primer" and (
             not isinstance(report_ids, list)
@@ -1305,7 +1322,7 @@ class DriftSearchRetriever:
             raise ValueError("report_ids must be a list of strings")
         data["score"] = float(score)
         data["follow_ups"] = [question.strip() for question in follow_ups]
-        data["references"] = references
+        data["references"] = usable_references
         data["report_ids"] = report_ids if isinstance(report_ids, list) else []
         return data
 
