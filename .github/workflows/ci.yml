@@ -5,8 +5,9 @@ on:
   push:
     branches:
       - main
-  # Release PRs merged by GITHUB_TOKEN do not trigger further workflows, so the
-  # run that creates the tag and uploads artifacts must be startable by hand.
+  # GitHub suppresses workflow runs for events caused by GITHUB_TOKEN, so a release
+  # PR merged by a workflow would never trigger the tag/build job. Merge release PRs
+  # by hand, or start this workflow manually to finish a pending release.
   workflow_dispatch:
 
 permissions:
@@ -80,14 +81,6 @@ jobs:
           target-branch: main
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-
-      - name: Enable auto-merge on the release PR
-        if: ${{ steps.release.outputs.prs_created == 'true' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_PR: ${{ fromJSON(steps.release.outputs.pr || '{}').number }}
-        run: gh pr merge --repo "$GH_REPO" --auto --squash "$RELEASE_PR"
 
       - name: Check out release tag
         if: steps.release.outputs.release_created == 'true'
