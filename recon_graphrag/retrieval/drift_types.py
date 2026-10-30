@@ -38,6 +38,9 @@ class DriftQueryState:
     total_llm_calls: int = 0
     phase_tokens: dict = field(default_factory=dict)
     failures: list[str | dict[str, str]] = field(default_factory=list)
+    # Wall-clock milliseconds per phase; metadata only, never used for control flow.
+    # Trails `failures` so existing positional construction stays valid.
+    phase_ms: dict = field(default_factory=dict)
 
 
 @dataclass

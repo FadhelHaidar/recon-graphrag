@@ -8,6 +8,7 @@ directed relationships, and the report id/level stays in ``provenance``.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
@@ -295,7 +296,8 @@ class GraphEvidenceBuilder:
                 )
                 continue
             try:
-                rows = self.graph_store.fetch_community_member_graph(
+                rows = await asyncio.to_thread(
+                    self.graph_store.fetch_community_member_graph,
                     self.graph_name,
                     community_id,
                     level=level,

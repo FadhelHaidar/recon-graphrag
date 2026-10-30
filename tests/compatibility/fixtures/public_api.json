@@ -352,12 +352,20 @@
           "kw_only": false,
           "name": "failures",
           "type": "list[str | dict[str, str]]"
+        },
+        {
+          "default": "<required>",
+          "factory": "builtins.dict",
+          "init": true,
+          "kw_only": false,
+          "name": "phase_ms",
+          "type": "dict"
         }
       ],
       "frozen": false,
       "import_path": "recon_graphrag.retrieval.drift_types.DriftQueryState",
       "methods": {},
-      "signature": "(query: 'str' = '', primer_reports: 'list[dict]' = <factory>, actions: 'list[DriftAction]' = <factory>, stopping_reason: 'str' = '', total_llm_calls: 'int' = 0, phase_tokens: 'dict' = <factory>, failures: 'list[str | dict[str, str]]' = <factory>) -> None"
+      "signature": "(query: 'str' = '', primer_reports: 'list[dict]' = <factory>, actions: 'list[DriftAction]' = <factory>, stopping_reason: 'str' = '', total_llm_calls: 'int' = 0, phase_tokens: 'dict' = <factory>, failures: 'list[str | dict[str, str]]' = <factory>, phase_ms: 'dict' = <factory>) -> None"
     },
     "DriftSearchConfig": {
       "fields": [

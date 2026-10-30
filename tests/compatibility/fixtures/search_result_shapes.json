@@ -230,6 +230,12 @@
             "primer": "int",
             "elapsed_ms": "int"
           },
+          "phase_ms": {
+            "primer": "int",
+            "traversal": "int",
+            "reduce": "int",
+            "total": "int"
+          },
           "failures": []
         }
       },
@@ -482,6 +488,12 @@
             "primer": "int",
             "elapsed_ms": "int",
             "reduce": "int"
+          },
+          "phase_ms": {
+            "primer": "int",
+            "traversal": "int",
+            "reduce": "int",
+            "total": "int"
           },
           "failures": []
         }
@@ -762,6 +774,12 @@
           "phase_tokens": {
             "primer": "int",
             "elapsed_ms": "int"
+          },
+          "phase_ms": {
+            "primer": "int",
+            "traversal": "int",
+            "reduce": "int",
+            "total": "int"
           },
           "failures": []
         },
@@ -1099,6 +1117,12 @@
             "primer": "int",
             "elapsed_ms": "int",
             "reduce": "int"
+          },
+          "phase_ms": {
+            "primer": "int",
+            "traversal": "int",
+            "reduce": "int",
+            "total": "int"
           },
           "failures": []
         },

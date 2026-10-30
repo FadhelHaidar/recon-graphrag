@@ -311,8 +311,11 @@ class DriftSearchRetriever:
             target_selector = (
                 community_level if community_level is not None else config.community_level
             )
-            resolved_level = resolve_community_level(
-                self.graph_store, self.graph_name, target_selector
+            resolved_level = await asyncio.to_thread(
+                resolve_community_level,
+                self.graph_store,
+                self.graph_name,
+                target_selector,
             )
 
             # --- Phase 1: Primer ---
@@ -327,6 +330,7 @@ class DriftSearchRetriever:
                 config,
                 call_lock,
             )
+            state.phase_ms["primer"] = int((time.monotonic() - phase_start) * 1000)
 
             if primer_result.get("fallback"):
                 logger.debug(
@@ -359,6 +363,7 @@ class DriftSearchRetriever:
                 synthesize_citation_metadata, synthesis_metadata_keys, call_lock,
                 synthesize_response, include_graph_evidence,
             )
+            state.phase_ms["traversal"] = int((time.monotonic() - phase_start) * 1000)
             logger.debug(
                 "drift phase=traversal ms=%d actions=%d llm_calls=%d",
                 int((time.monotonic() - phase_start) * 1000),
@@ -378,9 +383,12 @@ class DriftSearchRetriever:
             )
             # Total wall time covers reduction, citations and graph evidence.
             elapsed_ms = int((time.monotonic() - start) * 1000)
-            result.metadata.setdefault("drift_trace", {}).setdefault(
-                "phase_tokens", {}
-            )["elapsed_ms"] = elapsed_ms
+            state.phase_ms["reduce"] = int((time.monotonic() - phase_start) * 1000)
+            state.phase_ms["total"] = elapsed_ms
+            trace = result.metadata.setdefault("drift_trace", {})
+            trace.setdefault("phase_tokens", {})["elapsed_ms"] = elapsed_ms
+            # The trace is built inside the reduction phase, so republish timings.
+            trace["phase_ms"] = dict(state.phase_ms)
             logger.debug(
                 "drift phase=reduce ms=%d total ms=%d actions=%d llm_calls=%d",
                 int((time.monotonic() - phase_start) * 1000),
@@ -431,7 +439,8 @@ class DriftSearchRetriever:
             }
 
         try:
-            reports = self.graph_store.vector_search_community_reports(
+            reports = await asyncio.to_thread(
+                self.graph_store.vector_search_community_reports,
                 query_vector=query_vector,
                 graph_name=self.graph_name,
                 top_k=primer_top_k,
@@ -552,7 +561,8 @@ class DriftSearchRetriever:
             return reports
 
         try:
-            reranked = self.graph_store.vector_search_community_reports(
+            reranked = await asyncio.to_thread(
+                self.graph_store.vector_search_community_reports,
                 query_vector=hyde_vector,
                 graph_name=self.graph_name,
                 top_k=primer_top_k,
@@ -784,7 +794,8 @@ class DriftSearchRetriever:
         # Build context
         mixed = None
         if config.action_use_mixed_context:
-            mixed = self._build_action_mixed_context(
+            mixed = await asyncio.to_thread(
+                self._build_action_mixed_context,
                 retriever_result,
                 synthesize_citation_metadata=synthesize_citation_metadata,
                 synthesis_metadata_keys=synthesis_metadata_keys,
@@ -798,8 +809,11 @@ class DriftSearchRetriever:
             chunk_ids = _source_chunk_ids_from_result(retriever_result)
             if chunk_ids:
                 try:
-                    action.citations = resolve_chunk_citations(
-                        self.graph_store, self.graph_name, chunk_ids
+                    action.citations = await asyncio.to_thread(
+                        resolve_chunk_citations,
+                        self.graph_store,
+                        self.graph_name,
+                        chunk_ids,
                     )
                 except Exception:
                     state.failures.append({
@@ -853,8 +867,11 @@ class DriftSearchRetriever:
             action.references = data.get("references", [])
             if action.references:
                 try:
-                    ref_citations = resolve_reference_citations(
-                        self.graph_store, self.graph_name, action.references
+                    ref_citations = await asyncio.to_thread(
+                        resolve_reference_citations,
+                        self.graph_store,
+                        self.graph_name,
+                        action.references,
                     )
                     action.citations = self._dedupe_citations(
                         action.citations + ref_citations
@@ -1022,8 +1039,11 @@ class DriftSearchRetriever:
         )
         if report_refs:
             try:
-                ref_citations = resolve_reference_citations(
-                    self.graph_store, self.graph_name, report_refs
+                ref_citations = await asyncio.to_thread(
+                    resolve_reference_citations,
+                    self.graph_store,
+                    self.graph_name,
+                    report_refs,
                 )
                 for cite in ref_citations:
                     key = (cite.document_id, cite.chunk_id)
@@ -1167,8 +1187,11 @@ class DriftSearchRetriever:
         citations = []
         if chunk_ids:
             try:
-                citations = resolve_chunk_citations(
-                    self.graph_store, self.graph_name, chunk_ids
+                citations = await asyncio.to_thread(
+                    resolve_chunk_citations,
+                    self.graph_store,
+                    self.graph_name,
+                    chunk_ids,
                 )
             except Exception:
                 state.failures.append({
@@ -1478,5 +1501,6 @@ class DriftSearchRetriever:
             "stopping_reason": state.stopping_reason,
             "total_llm_calls": state.total_llm_calls,
             "phase_tokens": dict(state.phase_tokens),
+            "phase_ms": dict(state.phase_ms),
             "failures": list(state.failures),
         }
