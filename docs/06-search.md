@@ -212,6 +212,54 @@ the highest level currently stored in the graph.
 
 Global search skips failed or empty community reports.
 
+### Scored point context (`map_strategy="scored_points"`)
+
+By default global search joins whole map answers and runs a reduce call. Pass
+`map_strategy="scored_points"` to return ranked evidence points for an agent
+instead: each map call emits a strict list of `{description, score, report_ids}`
+points, and the retriever packs the best points into a bounded context string
+without a reduce call.
+
+```python
+retriever = GlobalSearchRetriever(
+    graph_store=store,
+    llm=llm,  # must support structured output
+    map_strategy="scored_points",
+)
+result = await retriever.search(
+    "What are the main themes in this dataset?",
+    community_level="coarsest",
+    synthesize_response=False,  # required in point mode
+)
+```
+
+Point mode is context-only. `synthesize_response=True` and an LLM adapter whose
+`supports_structured_output` is `False` are both rejected before any graph read
+or LLM call. Adapters without that attribute are allowed through.
+
+* Points are sorted by score DESC, then batch ID, then position in the batch.
+  Cached map responses use an integer `score`; points scoring `0` or less are
+dropped, and a batch whose points are all dropped contributes no evidence.
+* The context is one JSON envelope (`query`, `mode`, `answer`, `context`,
+  `citations`) charged against `reduce_budget_tokens`, so a fixed budget holds
+  across models. Points that do not fit are skipped whole (never sliced). If
+  even the bare envelope plus the omission notice cannot fit, the search raises
+  `ValueError`. When only the query field alone overflows, the envelope drops
+  `query` and keeps the points.
+* Skipped points add a fixed notice to the context, so a truncated context is
+  visible to the caller.
+* `report_ids` returned by a map batch are validated against that batch and
+  out-of-batch IDs are discarded; citations still resolve from the community
+  reports that contributed evidence.
+
+Metadata adds `map_strategy`, `context_budget_tokens`, `context_tokens`,
+`context_parts_available`, `context_parts_kept`, `context_parts_dropped`,
+`context_warnings`, and `context_failed`. A failed map batch in point mode is
+recorded in `map_failures` with a fixed reason (`invalid_schema`, `truncated`,
+`refused`, `provider_error`) and logged once at WARNING with no provider text.
+If every batch fails, `context_failed` is `True` and the result carries empty
+`answer` and `context` rather than a synthesized guess.
+
 Global citations resolve explicit map-phase references to entities,
 relationships, or claims, plus validated references from the used community
 reports' structured `report_json` or rendered `[refs: ...]` text.

@@ -10,6 +10,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from recon_graphrag.retrieval.search_global import (
+    GLOBAL_POINT_RESPONSE_FORMAT,
+    POINT_OMITTED_NOTICE,
     GlobalSearchRetriever,
     MapBatch,
     PartialAnswer,
@@ -906,3 +908,466 @@ class TestWholeQueryLimits:
         assert llm.max_active <= 2
         # One task per batch would push live tasks past the batch count.
         assert llm.max_tasks <= 10
+
+
+# Scored-point map strategy
+def _point(description: str = "A point.", score: int = 80, report_ids: tuple[str, ...] = ()) -> dict:
+    return {
+        "description": description,
+        "score": score,
+        "report_ids": list(report_ids),
+    }
+
+
+def _point_payload(*points: dict) -> str:
+    return json.dumps({"points": list(points)})
+
+
+def _envelope_tokens(search: GlobalSearchRetriever, query: str, context: str) -> int:
+    """Documented SDK context envelope: query/mode/answer/context/citations."""
+    envelope = {
+        "query": query,
+        "mode": "global",
+        "answer": "",
+        "context": context,
+        "citations": [],
+    }
+    return search.token_counter.count(json.dumps(envelope, ensure_ascii=False))
+
+
+class PointLLM:
+    """Strict-schema map LLM that records prompts and request kwargs."""
+
+    supports_structured_output = True
+
+    def __init__(self, responses: Any, finish_reason: str | None = None):
+        self._responses = responses if isinstance(responses, list) else [responses]
+        self._finish_reason = finish_reason
+        self.calls: list[dict] = []
+
+    async def ainvoke(self, prompt, **kwargs):
+        self.calls.append({"prompt": prompt, "kwargs": kwargs})
+        item = self._responses[min(len(self.calls) - 1, len(self._responses) - 1)]
+        if isinstance(item, Exception):
+            raise item
+        if isinstance(item, MagicMock):
+            return item
+        return MagicMock(content=item, finish_reason=self._finish_reason, usage=None)
+
+
+class NoIoStore:
+    """Fails the test if validation happens after database work."""
+
+    def execute_query(self, *args, **kwargs):
+        raise AssertionError("database access before argument validation")
+
+
+def _two_batch_search(
+    llm: PointLLM, reports: list[dict] | None = None, **kwargs
+) -> GlobalSearchRetriever:
+    """Retriever whose map budget admits exactly one report per batch."""
+    reports = _make_reports(2) if reports is None else reports
+    retriever = GlobalSearchRetriever(
+        cast(Any, FakeGraphStore(reports)),
+        cast(Any, llm),
+        map_strategy="scored_points",
+        **kwargs,
+    )
+    overhead = retriever.token_counter.count(
+        retriever.map_prompt.format(query="q", batch_text="")
+    )
+    block = retriever.token_counter.count("Report report:0:0:\nSummary for community 0.")
+    retriever.map_budget_tokens = overhead + block
+    return retriever
+
+
+class TestScoredPointStrategy:
+    def test_unknown_map_strategy_rejected(self):
+        with pytest.raises(ValueError, match="map_strategy"):
+            GlobalSearchRetriever(
+                cast(Any, FakeGraphStore()),
+                cast(Any, PointLLM(_point_payload())),
+                map_strategy="points",
+            )
+
+    @pytest.mark.asyncio
+    async def test_synthesized_search_rejected_before_io(self):
+        search = GlobalSearchRetriever(
+            cast(Any, NoIoStore()),
+            cast(Any, PointLLM(_point_payload())),
+            map_strategy="scored_points",
+        )
+
+        with pytest.raises(ValueError, match="synthesize_response=False"):
+            await search.search("q", community_level=0)
+
+    @pytest.mark.asyncio
+    async def test_adapter_without_structured_output_rejected_before_io(self):
+        class Unstructured(PointLLM):
+            supports_structured_output = False
+
+        search = GlobalSearchRetriever(
+            cast(Any, NoIoStore()),
+            cast(Any, Unstructured(_point_payload())),
+            map_strategy="scored_points",
+        )
+
+        with pytest.raises(ValueError, match="structured output"):
+            await search.search("q", community_level=0, synthesize_response=False)
+
+    @pytest.mark.asyncio
+    async def test_adapter_with_unknown_capability_is_allowed(self):
+        class Unknown(PointLLM):
+            supports_structured_output = None
+        llm = Unknown(_point_payload(_point()))
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(_make_reports(1))),
+            cast(Any, llm),
+            map_strategy="scored_points",
+        )
+
+        result = await search.search(
+            "q", community_level=0, synthesize_response=False
+        )
+
+        assert len(llm.calls) == 1
+        assert result.metadata["map_succeeded"] == 1
+
+    @pytest.mark.asyncio
+    async def test_strict_schema_request_kwargs_only_in_point_mode(self):
+        point_llm = PointLLM(_point_payload(_point()))
+        point_search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(_make_reports(1))),
+            cast(Any, point_llm),
+            map_strategy="scored_points",
+        )
+        await point_search.search("q", community_level=0, synthesize_response=False)
+
+        legacy_llm = PointLLM(_make_map_response())
+        legacy_search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(_make_reports(1))), cast(Any, legacy_llm)
+        )
+        await legacy_search.search("q", community_level=0)
+
+        assert point_llm.calls[0]["kwargs"] == {
+            "response_format": GLOBAL_POINT_RESPONSE_FORMAT
+        }
+        assert legacy_llm.calls[0]["kwargs"] == {}
+
+    @pytest.mark.asyncio
+    async def test_point_prompt_used_by_default_and_custom_prompt_respected(self):
+        llm = PointLLM(_point_payload(_point()))
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(_make_reports(1))),
+            cast(Any, llm),
+            map_strategy="scored_points",
+        )
+        await search.search("q", community_level=0, synthesize_response=False)
+
+        assert '"points"' in llm.calls[0]["prompt"]
+        assert "Community Reports" in llm.calls[0]["prompt"]
+        assert "q" in llm.calls[0]["prompt"]
+
+        custom = PointLLM(_point_payload(_point()))
+        custom_search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(_make_reports(1))),
+            cast(Any, custom),
+            map_strategy="scored_points",
+            map_prompt="CUSTOM {query}\n{batch_text}",
+        )
+        await custom_search.search("q", community_level=0, synthesize_response=False)
+
+        assert custom.calls[0]["prompt"].startswith("CUSTOM q\nReport report:0:0:")
+
+    @pytest.mark.asyncio
+    async def test_points_sorted_and_rendered_with_scores(self):
+        llm = PointLLM(
+            [
+                _point_payload(_point("low point", 10), _point("high point", 90)),
+                _point_payload(_point("mid point", 50)),
+            ]
+        )
+        search = _two_batch_search(llm)
+
+        result = await search.search(
+            "q", community_level=0, random_seed=42, synthesize_response=False
+        )
+
+        assert result.answer == ""
+        assert "[Score 90] high point" in result.context
+        assert (
+            result.context.index("high point")
+            < result.context.index("mid point")
+            < result.context.index("low point")
+        )
+        meta = result.metadata
+        assert meta["map_succeeded"] == 2
+        assert meta["context_parts_available"] == 3
+        assert meta["context_parts_kept"] == 3
+        assert meta["context_parts_dropped"] == 0
+        assert meta["context_failed"] is False
+        assert meta["context_warnings"] == []
+        assert "synthesize_response" in meta and meta["synthesize_response"] is False
+        assert len(llm.calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_zero_score_points_are_filtered_from_context(self):
+        llm = PointLLM(
+            [
+                _point_payload(_point("kept point", 40)),
+                _point_payload(_point("irrelevant point", 0)),
+            ]
+        )
+        search = _two_batch_search(llm)
+
+        result = await search.search(
+            "q", community_level=0, random_seed=42, synthesize_response=False
+        )
+
+        assert "kept point" in result.context
+        assert "irrelevant point" not in result.context
+        assert result.metadata["context_parts_available"] == 1
+        assert result.metadata["map_filtered_zero"] == 1
+
+    @pytest.mark.asyncio
+    async def test_empty_points_still_reports_no_relevant_information(self):
+        llm = PointLLM(_point_payload())
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(_make_reports(1))),
+            cast(Any, llm),
+            map_strategy="scored_points",
+        )
+
+        result = await search.search(
+            "q", community_level=0, synthesize_response=False
+        )
+
+        assert "No relevant information" in result.answer
+        assert result.context == ""
+        assert result.metadata["context_failed"] is False
+
+    @pytest.mark.asyncio
+    async def test_omitted_points_keep_notice_and_fit_envelope(self):
+        long_point = "x " * 100
+        llm = PointLLM(
+            _point_payload(
+                _point("first " + long_point, 90),
+                _point("second " + long_point, 80),
+                _point("third " + long_point, 70),
+            )
+        )
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(_make_reports(1))),
+            cast(Any, llm),
+            map_strategy="scored_points",
+            reduce_budget_tokens=150,
+        )
+
+        result = await search.search(
+            "q", community_level=0, synthesize_response=False
+        )
+
+        meta = result.metadata
+        assert meta["context_parts_dropped"] >= 1
+        assert meta["context_parts_available"] == 3
+        assert meta["context_parts_kept"] + meta["context_parts_dropped"] == 3
+        assert POINT_OMITTED_NOTICE in result.context
+        assert _envelope_tokens(search, "q", result.context) <= 150
+        assert any("Omitted" in w for w in meta["context_warnings"])
+
+    @pytest.mark.asyncio
+    async def test_oversized_point_skipped_without_slicing(self):
+        oversized = "y " * 400
+        llm = PointLLM(
+            _point_payload(
+                _point("oversized " + oversized, 95),
+                _point("small point", 10),
+            )
+        )
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(_make_reports(1))),
+            cast(Any, llm),
+            map_strategy="scored_points",
+            reduce_budget_tokens=120,
+        )
+
+        result = await search.search(
+            "q", community_level=0, synthesize_response=False
+        )
+
+        assert "small point" in result.context
+        assert oversized[:100] not in result.context
+        assert result.metadata["context_parts_kept"] == 1
+        assert result.metadata["context_parts_dropped"] == 1
+
+    @pytest.mark.asyncio
+    async def test_impossible_budget_raises(self):
+        llm = PointLLM(_point_payload(_point("point", 90)))
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(_make_reports(1))),
+            cast(Any, llm),
+            map_strategy="scored_points",
+            reduce_budget_tokens=1,
+        )
+
+        with pytest.raises(ValueError, match="context envelope"):
+            await search.search("q", community_level=0, synthesize_response=False)
+
+    @pytest.mark.asyncio
+    async def test_long_query_dropped_from_envelope_before_points(self):
+        llm = PointLLM(_point_payload(_point("kept point", 90)))
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(_make_reports(1))),
+            cast(Any, llm),
+            map_strategy="scored_points",
+            reduce_budget_tokens=80,
+        )
+
+        result = await search.search(
+            "question " * 100, community_level=0, synthesize_response=False
+        )
+
+        assert "kept point" in result.context
+        assert result.metadata["context_parts_kept"] == 1
+
+    @pytest.mark.asyncio
+    async def test_invalid_schema_fails_batch_instead_of_no_relevant(self, caplog):
+        llm = PointLLM(json.dumps({"answer": "secret report text"}))
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(_make_reports(1))),
+            cast(Any, llm),
+            map_strategy="scored_points",
+        )
+
+        with caplog.at_level("WARNING"):
+            result = await search.search(
+                "q", community_level=0, synthesize_response=False
+            )
+
+        meta = result.metadata
+        assert result.answer == ""
+        assert result.context == ""
+        assert meta["context_failed"] is True
+        assert meta["map_failed"] == meta["map_batches"] == 1
+        assert any("All 1 map batches failed" in w for w in meta["context_warnings"])
+        assert "secret report text" not in json.dumps(meta)
+        assert "secret report text" not in caplog.text
+        assert "invalid_schema" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_provider_error_reason_is_sanitized(self, caplog):
+        llm = PointLLM(RuntimeError("HTTP 500 for prompt: secret report text"))
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(_make_reports(1))),
+            cast(Any, llm),
+            map_strategy="scored_points",
+        )
+
+        with caplog.at_level("WARNING"):
+            result = await search.search(
+                "q", community_level=0, synthesize_response=False
+            )
+
+        assert result.metadata["context_failed"] is True
+        assert "secret report text" not in json.dumps(result.metadata)
+        assert "secret report text" not in caplog.text
+        assert "provider_error" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_truncated_and_refused_responses_are_categorized(self, caplog):
+        for finish_reason in ("length", "refusal"):
+            llm = PointLLM(_point_payload(_point()), finish_reason=finish_reason)
+            search = GlobalSearchRetriever(
+                cast(Any, FakeGraphStore(_make_reports(1))),
+                cast(Any, llm),
+                map_strategy="scored_points",
+            )
+            with caplog.at_level("WARNING"):
+                result = await search.search(
+                    "q", community_level=0, synthesize_response=False
+                )
+            assert result.metadata["context_failed"] is True
+        assert "truncated" in caplog.text
+        assert "refused" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_keeps_evidence_and_warns(self):
+        llm = PointLLM(
+            [
+                _point_payload(_point("surviving point", 88)),
+                json.dumps({"points": "not-a-list"}),
+            ]
+        )
+        search = _two_batch_search(llm)
+
+        result = await search.search(
+            "q", community_level=0, random_seed=42, synthesize_response=False
+        )
+
+        meta = result.metadata
+        assert "surviving point" in result.context
+        assert meta["map_failed"] == 1
+        assert meta["map_succeeded"] == 1
+        assert meta["context_failed"] is False
+        assert any("1 of 2 map batches failed" in w for w in meta["context_warnings"])
+
+    @pytest.mark.asyncio
+    async def test_whole_batch_rejected_when_any_point_invalid(self):
+        llm = PointLLM(
+            _point_payload(
+                _point("valid point", 90),
+                {"description": "missing score", "report_ids": []},
+            )
+        )
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(_make_reports(1))),
+            cast(Any, llm),
+            map_strategy="scored_points",
+        )
+
+        result = await search.search(
+            "q", community_level=0, synthesize_response=False
+        )
+
+        assert "valid point" not in result.context
+        assert result.metadata["context_failed"] is True
+
+    @pytest.mark.asyncio
+    async def test_out_of_batch_report_ids_dropped_and_counted(self):
+        reports = [_make_report_with_json_ref("report:0:0", "person:alice")]
+        llm = PointLLM(
+            _point_payload(
+                _point("point from batch", 90, ("report:0:0", "report:9:0"))
+            )
+        )
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(reports)),
+            cast(Any, llm),
+            map_strategy="scored_points",
+        )
+
+        result = await search.search(
+            "q", community_level=0, synthesize_response=False
+        )
+
+        meta = result.metadata
+        assert meta["context_parts_kept"] == 1
+        assert any("Dropped 1 report references" in w for w in meta["context_warnings"])
+        assert [c.chunk_id for c in result.citations] == ["chunk:1"]
+
+    @pytest.mark.asyncio
+    async def test_two_batches_never_share_points_from_shuffled_reports(self):
+        llm = PointLLM(
+            _point_payload(_point("point a", 90), _point("point b", 60))
+        )
+        search = _two_batch_search(llm)
+
+        result = await search.search(
+            "q", community_level=0, random_seed=7, synthesize_response=False
+        )
+
+        meta = result.metadata
+        assert meta["map_batches"] == 2
+        assert meta["context_parts_available"] == 4
+        assert meta["context_parts_kept"] == 4
+        assert meta["context_warnings"] == []

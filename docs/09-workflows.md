@@ -759,6 +759,18 @@ retriever = GlobalSearchRetriever(
     graph_name="entity-graph",
 )
 result = await retriever.search("What are the main themes?", community_level="coarsest")
+
+# Opt-in: ranked evidence points instead of a map-reduce answer.
+point_retriever = GlobalSearchRetriever(
+    graph_store=store,
+    llm=llm,
+    map_strategy="scored_points",
+)
+point_result = await point_retriever.search(
+    "What are the main themes?",
+    community_level="coarsest",
+    synthesize_response=False,
+)
 ```
 
 ### `DriftSearchRetriever`

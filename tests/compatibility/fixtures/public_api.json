@@ -490,7 +490,7 @@
       "methods": {
         "search": "(self, query: 'str', community_level: 'CommunityLevelSelector', random_seed: 'int | None' = 42, synthesize_response: 'bool' = True, include_graph_evidence: 'bool' = False) -> 'SearchResult'"
       },
-      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', map_prompt: 'Optional[str]' = None, reduce_prompt: 'Optional[str]' = None, graph_name: 'str' = 'entity-graph', token_counter: 'TokenCounter | None' = None, map_budget_tokens: 'int' = 12000, reduce_budget_tokens: 'int' = 12000, map_concurrency: 'int' = 5, max_map_calls: 'int | None' = None, max_reports: 'int | None' = None, max_map_tokens: 'int | None' = None, allow_general_knowledge: 'bool' = False, track_token_usage: 'bool' = True)"
+      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', map_prompt: 'Optional[str]' = None, reduce_prompt: 'Optional[str]' = None, graph_name: 'str' = 'entity-graph', token_counter: 'TokenCounter | None' = None, map_budget_tokens: 'int' = 12000, reduce_budget_tokens: 'int' = 12000, map_concurrency: 'int' = 5, max_map_calls: 'int | None' = None, max_reports: 'int | None' = None, max_map_tokens: 'int | None' = None, allow_general_knowledge: 'bool' = False, track_token_usage: 'bool' = True, *, map_strategy: 'str' = 'batch')"
     },
     "GraphBuilderPipeline": {
       "import_path": "recon_graphrag.pipelines.graphrag_pipeline.GraphBuilderPipeline",
