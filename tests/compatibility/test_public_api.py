@@ -18,7 +18,6 @@ from recon_graphrag.graphdb.base import GraphWriter
 from recon_graphrag.models import artifacts
 from recon_graphrag.utils.tokens import TokenCounter
 
-
 FIXTURES = Path(__file__).with_name("fixtures")
 
 
@@ -83,3 +82,8 @@ def test_star_import_resolves_lazy_exports_and_submodule_identity():
         if inspect.isclass(obj) or inspect.isfunction(obj):
             module = __import__(obj.__module__, fromlist=[obj.__name__])
             assert getattr(module, obj.__name__) is obj
+
+
+def test_drift_query_state_keeps_positional_construction_order():
+    state = sdk.DriftQueryState("q", [], [], "", 0, {}, ["boom"])
+    assert state.query == "q" and state.failures == ["boom"] and state.phase_ms == {}

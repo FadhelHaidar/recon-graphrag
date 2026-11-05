@@ -352,116 +352,116 @@
           "kw_only": false,
           "name": "failures",
           "type": "list[str | dict[str, str]]"
+        },
+        {
+          "default": "<required>",
+          "factory": "builtins.dict",
+          "init": true,
+          "kw_only": false,
+          "name": "phase_ms",
+          "type": "dict"
         }
       ],
       "frozen": false,
       "import_path": "recon_graphrag.retrieval.drift_types.DriftQueryState",
       "methods": {},
-      "signature": "(query: 'str' = '', primer_reports: 'list[dict]' = <factory>, actions: 'list[DriftAction]' = <factory>, stopping_reason: 'str' = '', total_llm_calls: 'int' = 0, phase_tokens: 'dict' = <factory>, failures: 'list[str | dict[str, str]]' = <factory>) -> None"
+      "signature": "(query: 'str' = '', primer_reports: 'list[dict]' = <factory>, actions: 'list[DriftAction]' = <factory>, stopping_reason: 'str' = '', total_llm_calls: 'int' = 0, phase_tokens: 'dict' = <factory>, failures: 'list[str | dict[str, str]]' = <factory>, phase_ms: 'dict' = <factory>) -> None"
     },
     "DriftSearchConfig": {
+      "import_path": "recon_graphrag.retrieval.drift_types.DriftSearchConfig",
+      "signature": "(primer_top_k: 'int' = 3, actions_per_round: 'int' = 3, max_rounds: 'int' = 3, max_llm_calls: 'int' = 20, action_concurrency: 'int' = 3, community_level: 'CommunityLevelSelector' = 'coarsest', reduce_budget_tokens: 'int' = 12000, use_hyde: 'bool' = True, primer_folds: 'int' = 1, action_use_mixed_context: 'bool' = True, action_mixed_context_tokens: 'int' = 12000) -> None",
+      "methods": {},
       "fields": [
         {
-          "default": "3",
-          "factory": null,
-          "init": true,
-          "kw_only": false,
           "name": "primer_top_k",
-          "type": "int"
-        },
-        {
+          "type": "int",
           "default": "3",
           "factory": null,
           "init": true,
-          "kw_only": false,
-          "name": "max_followups",
-          "type": "int"
+          "kw_only": false
         },
         {
+          "name": "actions_per_round",
+          "type": "int",
           "default": "3",
           "factory": null,
           "init": true,
-          "kw_only": false,
-          "name": "max_depth",
-          "type": "int"
+          "kw_only": false
         },
         {
-          "default": "20.0",
+          "name": "max_rounds",
+          "type": "int",
+          "default": "3",
           "factory": null,
           "init": true,
-          "kw_only": false,
-          "name": "min_expand_score",
-          "type": "float"
+          "kw_only": false
         },
         {
+          "name": "max_llm_calls",
+          "type": "int",
           "default": "20",
           "factory": null,
           "init": true,
-          "kw_only": false,
-          "name": "max_llm_calls",
-          "type": "int"
+          "kw_only": false
         },
         {
+          "name": "action_concurrency",
+          "type": "int",
           "default": "3",
           "factory": null,
           "init": true,
-          "kw_only": false,
-          "name": "action_concurrency",
-          "type": "int"
+          "kw_only": false
         },
         {
+          "name": "community_level",
+          "type": "CommunityLevelSelector",
           "default": "'coarsest'",
           "factory": null,
           "init": true,
-          "kw_only": false,
-          "name": "community_level",
-          "type": "CommunityLevelSelector"
+          "kw_only": false
         },
         {
+          "name": "reduce_budget_tokens",
+          "type": "int",
           "default": "12000",
           "factory": null,
           "init": true,
-          "kw_only": false,
-          "name": "reduce_budget_tokens",
-          "type": "int"
+          "kw_only": false
         },
         {
+          "name": "use_hyde",
+          "type": "bool",
           "default": "True",
           "factory": null,
           "init": true,
-          "kw_only": false,
-          "name": "use_hyde",
-          "type": "bool"
+          "kw_only": false
         },
         {
+          "name": "primer_folds",
+          "type": "int",
           "default": "1",
           "factory": null,
           "init": true,
-          "kw_only": false,
-          "name": "primer_folds",
-          "type": "int"
+          "kw_only": false
         },
         {
+          "name": "action_use_mixed_context",
+          "type": "bool",
           "default": "True",
           "factory": null,
           "init": true,
-          "kw_only": false,
-          "name": "action_use_mixed_context",
-          "type": "bool"
+          "kw_only": false
         },
         {
+          "name": "action_mixed_context_tokens",
+          "type": "int",
           "default": "12000",
           "factory": null,
           "init": true,
-          "kw_only": false,
-          "name": "action_mixed_context_tokens",
-          "type": "int"
+          "kw_only": false
         }
       ],
-      "frozen": false,
-      "import_path": "recon_graphrag.retrieval.drift_types.DriftSearchConfig",
-      "methods": {},
-      "signature": "(primer_top_k: 'int' = 3, max_followups: 'int' = 3, max_depth: 'int' = 3, min_expand_score: 'float' = 20.0, max_llm_calls: 'int' = 20, action_concurrency: 'int' = 3, community_level: 'CommunityLevelSelector' = 'coarsest', reduce_budget_tokens: 'int' = 12000, use_hyde: 'bool' = True, primer_folds: 'int' = 1, action_use_mixed_context: 'bool' = True, action_mixed_context_tokens: 'int' = 12000) -> None"
+      "frozen": false
     },
     "DriftSearchRetriever": {
       "import_path": "recon_graphrag.retrieval.search_drift.DriftSearchRetriever",
@@ -482,7 +482,7 @@
       "methods": {
         "search": "(self, query: 'str', community_level: 'CommunityLevelSelector', random_seed: 'int | None' = 42, synthesize_response: 'bool' = True, include_graph_evidence: 'bool' = False) -> 'SearchResult'"
       },
-      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', map_prompt: 'Optional[str]' = None, reduce_prompt: 'Optional[str]' = None, graph_name: 'str' = 'entity-graph', token_counter: 'TokenCounter | None' = None, map_budget_tokens: 'int' = 12000, reduce_budget_tokens: 'int' = 12000, map_concurrency: 'int' = 5, max_map_calls: 'int | None' = None, max_reports: 'int | None' = None, max_map_tokens: 'int | None' = None, allow_general_knowledge: 'bool' = False, track_token_usage: 'bool' = True)"
+      "signature": "(graph_store: 'GraphStore', llm: 'BaseLLM', map_prompt: 'Optional[str]' = None, reduce_prompt: 'Optional[str]' = None, graph_name: 'str' = 'entity-graph', token_counter: 'TokenCounter | None' = None, map_budget_tokens: 'int' = 12000, reduce_budget_tokens: 'int' = 12000, map_concurrency: 'int' = 5, max_map_calls: 'int | None' = None, max_reports: 'int | None' = None, max_map_tokens: 'int | None' = None, allow_general_knowledge: 'bool' = False, track_token_usage: 'bool' = True, *, map_strategy: 'str' = 'batch')"
     },
     "GraphBuilderPipeline": {
       "import_path": "recon_graphrag.pipelines.graphrag_pipeline.GraphBuilderPipeline",

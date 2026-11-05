@@ -3,6 +3,9 @@
 Reads community reports at one level, shuffles for unbiased ordering,
 packs into token-budgeted batches, runs parallel map calls that score
 helpfulness, filters and sorts by score, and reduces into a final answer.
+
+The optional ``map_strategy="scored_points"`` replaces batch-level answers
+with strict-schema scored points selected into one budgeted context envelope.
 """
 
 from __future__ import annotations
@@ -14,7 +17,7 @@ import random as _random
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.llm.base import BaseLLM
@@ -70,6 +73,87 @@ If the reports contain no relevant information, set helpfulness to 0 and
 answer to "No relevant information found."
 """
 
+DEFAULT_POINT_MAP_PROMPT = """\
+You are extracting scored evidence points from community reports.
+
+## Question
+{query}
+
+## Community Reports
+{batch_text}
+
+## Instructions
+1. Extract every distinct point the reports support that helps answer the
+   question. Each point must stand on its own as a short statement.
+2. Score each point 0-100 for how much it helps answer the question.
+   - 0 = not relevant
+   - 100 = directly and completely answers the question
+3. List the report IDs that support the point, using the "Report {{id}}:"
+   labels above. Use only IDs from these reports.
+4. Return valid JSON only, with no prose before or after.
+
+JSON format:
+{{
+  "points": [
+    {{
+      "description": "A self-contained statement from the reports.",
+      "score": 75,
+      "report_ids": ["report:1:0", "report:2:0"]
+    }}
+  ]
+}}
+
+Return an empty "points" array when the reports contain nothing relevant.
+"""
+
+# Strict provider schema for the scored-point map strategy.
+GLOBAL_POINT_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "global_map_points",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "points": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "description": {"type": "string"},
+                            "score": {"type": "integer"},
+                            "report_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                        "required": ["description", "score", "report_ids"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["points"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+# Context notices are SDK-controlled: no prompt text, provider text, or IDs.
+POINT_OMITTED_NOTICE = (
+    "Budgeted point selection: lower-scored points are omitted from this context."
+)
+
+MAP_STRATEGIES = ("batch", "scored_points")
+
+
+class _MapPointsError(ValueError):
+    """A point-mode map failure carrying a fixed, publishable reason code."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
 DEFAULT_REDUCE_PROMPT = """\
 You are synthesizing partial answers into a comprehensive final answer.
 
@@ -121,6 +205,9 @@ class PartialAnswer:
     references: list[dict] = field(default_factory=list)
     batch_report_ids: list[str] = field(default_factory=list)
     error: str | None = None
+    # Scored-point strategy only: validated points and dropped report IDs.
+    points: list[dict] = field(default_factory=list)
+    rejected_references: int = 0
 
 
 @dataclass
@@ -188,10 +275,22 @@ class GlobalSearchRetriever:
         max_map_tokens: int | None = None,
         allow_general_knowledge: bool = False,
         track_token_usage: bool = True,
+        *,
+        map_strategy: str = "batch",
     ):
+        if map_strategy not in MAP_STRATEGIES:
+            raise ValueError(
+                f"map_strategy must be one of {MAP_STRATEGIES}, got {map_strategy!r}"
+            )
         self.graph_store = graph_store
         self.llm = track_usage(llm) if track_token_usage else llm
-        self.map_prompt = map_prompt or DEFAULT_MAP_PROMPT
+        self.map_strategy = map_strategy
+        default_prompt = (
+            DEFAULT_POINT_MAP_PROMPT
+            if map_strategy == "scored_points"
+            else DEFAULT_MAP_PROMPT
+        )
+        self.map_prompt = map_prompt or default_prompt
         self.reduce_prompt = reduce_prompt or DEFAULT_REDUCE_PROMPT
         self.graph_name = graph_name
         self.token_counter = token_counter or ApproximateTokenCounter()
@@ -220,12 +319,26 @@ class GlobalSearchRetriever:
             synthesize_response: If False, skip the final reduce synthesis and
                 return scored partial answers in context with ``answer=""``.
                 Map LLM calls still run for relevance scoring and reference
-                extraction.
+                extraction. Required to be False with
+                ``map_strategy="scored_points"``.
             include_graph_evidence: When True, attach the member entities and
                 relationships of the community reports behind the partial
                 answers that reached the final reduce prompt (extra database
                 reads). Reports only mapped or read are not expanded.
         """
+        point_mode = self.map_strategy == "scored_points"
+        if point_mode:
+            if synthesize_response:
+                raise ValueError(
+                    "map_strategy='scored_points' returns evidence context and "
+                    "requires synthesize_response=False"
+                )
+            if getattr(self.llm, "supports_structured_output", None) is False:
+                raise ValueError(
+                    "map_strategy='scored_points' requires an LLM adapter with "
+                    "structured output support"
+                )
+
         with run_scope():
             start = time.monotonic()
             diag = GlobalSearchDiagnostics(random_seed=random_seed)
@@ -313,11 +426,36 @@ class GlobalSearchRetriever:
             scored = [p for p in partials if p.error is None and p.helpfulness > 0]
             diag.map_filtered_zero = diag.map_succeeded - len(scored)
 
+            # Point mode selects its context from every successful point, so the
+            # envelope is built before the no-evidence returns below.
+            point_meta: dict = {}
+            point_context = ""
+            if point_mode:
+                point_context, point_meta = self._point_context(
+                    query, partials, diag
+                )
+
+            if point_mode and point_meta["context_failed"]:
+                diag.elapsed_ms = int((time.monotonic() - start) * 1000)
+                metadata = {**_diag_to_dict(diag), **point_meta}
+                metadata["synthesize_response"] = False
+                metadata["response_synthesis_skipped"] = True
+                token_usage = usage_snapshot(self.llm)
+                if token_usage is not None:
+                    metadata["token_usage"] = token_usage
+                return SearchResult(
+                    query=query,
+                    mode="global",
+                    answer="",
+                    context="",
+                    metadata=metadata,
+                )
+
             use_general_knowledge = False
             if not scored:
                 if not self.allow_general_knowledge:
                     diag.elapsed_ms = int((time.monotonic() - start) * 1000)
-                    metadata = _diag_to_dict(diag)
+                    metadata = {**_diag_to_dict(diag), **point_meta}
                     token_usage = usage_snapshot(self.llm)
                     if token_usage is not None:
                         metadata["token_usage"] = token_usage
@@ -332,13 +470,16 @@ class GlobalSearchRetriever:
 
             scored.sort(key=lambda p: (-p.helpfulness, p.batch_id))
 
-            # Build context from scored reports
-            context_parts = []
-            for p in scored:
-                context_parts.append(
-                    f"[Batch {p.batch_id}] (score: {p.helpfulness})\n{p.answer}"
-                )
-            context = "\n\n---\n\n".join(context_parts)
+            if point_mode:
+                context = point_context
+            else:
+                # Build context from scored reports
+                context_parts = []
+                for p in scored:
+                    context_parts.append(
+                        f"[Batch {p.batch_id}] (score: {p.helpfulness})\n{p.answer}"
+                    )
+                context = "\n\n---\n\n".join(context_parts)
 
             # Resolve citations from explicit map references and report-derived refs.
             phase_start = time.monotonic()
@@ -353,7 +494,7 @@ class GlobalSearchRetriever:
             if not synthesize_response:
                 diag.reduce_partials_used = 0
                 diag.elapsed_ms = int((time.monotonic() - start) * 1000)
-                metadata = _diag_to_dict(diag)
+                metadata = {**_diag_to_dict(diag), **point_meta}
                 metadata["synthesize_response"] = False
                 metadata["response_synthesis_skipped"] = True
                 token_usage = usage_snapshot(self.llm)
@@ -746,13 +887,170 @@ class GlobalSearchRetriever:
         return batches
 
     # Map phase
+    def _point_context(
+        self,
+        query: str,
+        partials: list[PartialAnswer],
+        diag: GlobalSearchDiagnostics,
+    ) -> tuple[str, dict]:
+        """Select scored points into one JSON context envelope within budget."""
+        counter = self.token_counter
+        budget = self.reduce_budget_tokens
+
+        blocks: list[str] = []
+        ordered = sorted(
+            (
+                (partial.batch_id, index, point)
+                for partial in partials
+                if partial.error is None
+                for index, point in enumerate(partial.points)
+                if point["score"] > 0
+            ),
+            key=lambda item: (-item[2]["score"], item[0], item[1]),
+        )
+        for _, _, point in ordered:
+            text = f"[Score {point['score']}] {point['description']}"
+            if point["report_ids"]:
+                text += "\nReports: " + ", ".join(point["report_ids"])
+            blocks.append(text)
+
+        envelope = {
+            "query": query,
+            "mode": "global",
+            "answer": "",
+            "context": "",
+            "citations": [],
+        }
+
+        def over_budget(kept: list[str], notice: str | None) -> bool:
+            envelope["context"] = "\n\n".join(([notice] if notice else []) + kept)
+            return counter.count(json.dumps(envelope, ensure_ascii=False)) > budget
+
+        if over_budget([], None):
+            del envelope["query"]  # Already present in the caller's history.
+        if over_budget([], None):
+            raise ValueError(
+                "reduce_budget_tokens is too small for the global context envelope"
+            )
+
+        kept: list[str] = []
+
+        def pack(notice: str | None) -> list[str]:
+            # Skip an oversized point and keep packing: no text slicing.
+            packed: list[str] = []
+            for block in blocks:
+                if not over_budget([*packed, block], notice):
+                    packed.append(block)
+            return packed
+
+        kept = pack(None)
+        notice = POINT_OMITTED_NOTICE if len(kept) < len(blocks) else None
+        if notice:
+            kept = pack(notice)
+            if over_budget(kept, notice):
+                raise ValueError(
+                    "reduce_budget_tokens is too small for the global context envelope"
+                )
+
+        dropped = len(blocks) - len(kept)
+        context = "\n\n".join(([notice] if notice else []) + kept)
+
+        all_failed = diag.map_batches > 0 and diag.map_failed == diag.map_batches
+        warnings: list[str] = []
+        if all_failed:
+            warnings.append(
+                f"All {diag.map_batches} map batches failed; no evidence was returned."
+            )
+        elif diag.map_failed:
+            warnings.append(
+                f"{diag.map_failed} of {diag.map_batches} map batches failed; "
+                "context may be incomplete."
+            )
+        rejected = sum(p.rejected_references for p in partials)
+        if rejected:
+            warnings.append(
+                f"Dropped {rejected} report references that did not belong to "
+                "their mapped batch."
+            )
+        if dropped:
+            warnings.append(
+                f"Omitted {dropped} of {len(blocks)} scored points to fit the "
+                "context budget."
+            )
+
+        metadata = {
+            "context_budget_tokens": budget,
+            "context_tokens": counter.count(context),
+            "context_parts_available": len(blocks),
+            "context_parts_kept": len(kept),
+            "context_parts_dropped": dropped,
+            "context_warnings": warnings,
+            "context_failed": all_failed,
+        }
+        return context, metadata
+
+    def _point_partial(self, batch: MapBatch, response: Any) -> PartialAnswer:
+        """Validate a batch's points and scope their report IDs to the batch."""
+        points = self._parse_point_response(response)
+        allowed = set(batch.report_ids)
+        rejected = 0
+        for point in points:
+            claimed = list(dict.fromkeys(point["report_ids"]))
+            valid = [rid for rid in claimed if rid in allowed]
+            rejected += len(claimed) - len(valid)
+            point["report_ids"] = valid
+
+        positive = [p for p in points if p["score"] > 0]
+        report_ids: list[str] = []
+        for point in positive:
+            for rid in point["report_ids"]:
+                if rid not in report_ids:
+                    report_ids.append(rid)
+
+        return PartialAnswer(
+            batch_id=batch.batch_id,
+            answer="",
+            helpfulness=max((p["score"] for p in positive), default=0),
+            report_ids=report_ids,
+            batch_report_ids=batch.report_ids,
+            points=points,
+            rejected_references=rejected,
+        )
+
     async def _map_phase(
         self, query: str, batches: list[MapBatch]
     ) -> list[PartialAnswer]:
         """Run map phase with bounded concurrency and bounded pending work."""
 
+        point_mode = self.map_strategy == "scored_points"
+
         async def _process_batch(batch: MapBatch) -> PartialAnswer:
             prompt = self.map_prompt.format(query=query, batch_text=batch.text)
+            if point_mode:
+                try:
+                    with token_stage("retrieval.global_map"):
+                        response = await self.llm.ainvoke(
+                            prompt, response_format=GLOBAL_POINT_RESPONSE_FORMAT
+                        )
+                    return self._point_partial(batch, response)
+                except Exception as e:
+                    # Fixed reason code only: provider text never reaches logs.
+                    reason = (
+                        e.reason
+                        if isinstance(e, _MapPointsError)
+                        else "provider_error"
+                    )
+                    logger.warning(
+                        "global map batch %s failed: %s", batch.batch_id, reason
+                    )
+                    return PartialAnswer(
+                        batch_id=batch.batch_id,
+                        answer="",
+                        helpfulness=0,
+                        report_ids=batch.report_ids,
+                        batch_report_ids=batch.report_ids,
+                        error=reason,
+                    )
             try:
                 with token_stage("retrieval.global_map"):
                     response = await self.llm.ainvoke(prompt)
@@ -774,10 +1072,7 @@ class GlobalSearchRetriever:
                     batch_report_ids=batch.report_ids,
                     error=str(e),
                 )
-
-        # Fixed workers over an iterator: pending map work is bounded by
-        # map_concurrency instead of one task per batch. Partial answers are
-        # written back by batch position, so ordering is unchanged.
+        # Fixed workers bound pending work; positional writes preserve order.
         partials: list[PartialAnswer] = []
         pending = iter(list(enumerate(batches)))
 
@@ -803,16 +1098,7 @@ class GlobalSearchRetriever:
 
     def _parse_map_response(self, content: str) -> dict:
         """Parse map response JSON, stripping fences."""
-        content = content.strip()
-        fenced = re.search(r"```(?:json)?\s*(.*?)```", content, re.DOTALL)
-        if fenced:
-            content = fenced.group(1).strip()
-        try:
-            data = json.loads(content)
-        except json.JSONDecodeError:
-            data = self._extract_json_object(content)
-        if not isinstance(data, dict):
-            raise ValueError("Map response must be a JSON object")
+        data = self._json_object(content)
 
         # Validate helpfulness range
         score = data.get("helpfulness", 0)
@@ -839,6 +1125,64 @@ class GlobalSearchRetriever:
                 )
         data["references"] = references
 
+        return data
+
+    def _parse_point_response(self, response: Any) -> list[dict]:
+        """Parse a scored-point map response strictly under the point schema."""
+        finish_reason = getattr(response, "finish_reason", None)
+        if finish_reason in ("length", "max_tokens"):
+            raise _MapPointsError("truncated")
+        if finish_reason in ("refusal", "content_filter"):
+            raise _MapPointsError("refused")
+        try:
+            data = self._json_object(response.content)
+        except ValueError:
+            raise _MapPointsError("invalid_schema") from None
+
+        raw_points = data.get("points")
+        if not isinstance(raw_points, list):
+            raise _MapPointsError("invalid_schema")
+        points: list[dict] = []
+        for item in raw_points:
+            if not isinstance(item, dict):
+                raise _MapPointsError("invalid_schema")
+            description = item.get("description")
+            score = item.get("score")
+            report_ids = item.get("report_ids")
+            if not isinstance(description, str) or not description.strip():
+                raise _MapPointsError("invalid_schema")
+            if (
+                isinstance(score, bool)
+                or not isinstance(score, int)
+                or not 0 <= score <= 100
+            ):
+                raise _MapPointsError("invalid_schema")
+            if not isinstance(report_ids, list) or not all(
+                isinstance(rid, str) and rid.strip() for rid in report_ids
+            ):
+                raise _MapPointsError("invalid_schema")
+            points.append(
+                {
+                    "description": description.strip(),
+                    "score": score,
+                    "report_ids": [rid.strip() for rid in report_ids],
+                }
+            )
+        return points
+
+    @staticmethod
+    def _json_object(content: str) -> dict:
+        """Parse the JSON object in a response body, stripping code fences."""
+        content = content.strip()
+        fenced = re.search(r"```(?:json)?\s*(.*?)```", content, re.DOTALL)
+        if fenced:
+            content = fenced.group(1).strip()
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            data = GlobalSearchRetriever._extract_json_object(content)
+        if not isinstance(data, dict):
+            raise ValueError("Map response must be a JSON object")
         return data
 
     @staticmethod

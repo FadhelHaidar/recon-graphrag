@@ -182,7 +182,16 @@ async def _run_synthetic_e2e(store, graph_name: str):
 
         drift_result = results[2]
         assert "drift_fallback_reason" not in drift_result.metadata
-        assert drift_result.metadata["drift_trace"]["primer_report_ids"]
+        drift_trace = drift_result.metadata["drift_trace"]
+        assert drift_trace["primer_report_ids"]
+        # Bounded-round traversal: default 3 rounds x 3 selected questions.
+        assert drift_trace["stopping_reason"] in {
+            "all_actions_completed",
+            "max_llm_calls_reached",
+            "max_rounds_reached",
+        }
+        follow_up_actions = [a for a in drift_trace["actions"] if a["depth"] >= 1]
+        assert 0 <= len(follow_up_actions) <= 9, len(follow_up_actions)
 
         for result in (results[0], results[2]):
             assert result.citations, f"Expected citations for {result.mode} search"

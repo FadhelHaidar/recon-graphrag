@@ -38,6 +38,9 @@ class DriftQueryState:
     total_llm_calls: int = 0
     phase_tokens: dict = field(default_factory=dict)
     failures: list[str | dict[str, str]] = field(default_factory=list)
+    # Wall-clock milliseconds per phase; metadata only, never used for control flow.
+    # Trails `failures` so existing positional construction stays valid.
+    phase_ms: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -45,9 +48,8 @@ class DriftSearchConfig:
     """Configuration for iterative DRIFT search."""
 
     primer_top_k: int = 3
-    max_followups: int = 3
-    max_depth: int = 3
-    min_expand_score: float = 20.0
+    actions_per_round: int = 3
+    max_rounds: int = 3
     max_llm_calls: int = 20
     action_concurrency: int = 3
     community_level: CommunityLevelSelector = "coarsest"
@@ -60,10 +62,10 @@ class DriftSearchConfig:
     def __post_init__(self) -> None:
         if self.primer_top_k < 1:
             raise ValueError("primer_top_k must be positive")
-        if self.max_followups < 0 or self.max_depth < 0:
-            raise ValueError("max_followups and max_depth must be non-negative")
-        if not 0 <= self.min_expand_score <= 100:
-            raise ValueError("min_expand_score must be between 0 and 100")
+        for name in ("actions_per_round", "max_rounds"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
         if self.max_llm_calls < 1 or self.action_concurrency < 1:
             raise ValueError("max_llm_calls and action_concurrency must be positive")
         if self.reduce_budget_tokens < 0:

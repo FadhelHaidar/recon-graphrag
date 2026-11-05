@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Literal, Optional
 
@@ -72,14 +73,18 @@ class HybridEntityRetriever:
 
         candidate_k = top_k * effective_search_ratio
         filters = {"graph_name": self.graph_name}
-        vector_rows = self.graph_store.vector_search(
+        # The graph-store contract is synchronous; keep those driver reads off
+        # the event loop so concurrent searches do not serialize on them.
+        vector_rows = await asyncio.to_thread(
+            self.graph_store.vector_search,
             self.vector_index_name,
             query_vector,
             candidate_k,
             label="__Entity__",
             filters=filters,
         )
-        keyword_rows = self.graph_store.keyword_search(
+        keyword_rows = await asyncio.to_thread(
+            self.graph_store.keyword_search,
             self.fulltext_index_name,
             query_text,
             candidate_k,
@@ -96,7 +101,9 @@ class HybridEntityRetriever:
         if not matches:
             return RetrievalResult(items=[], metadata={"query_vector": query_vector})
 
-        context_rows = self._fetch_context(matches, query_params=query_params)
+        context_rows = await asyncio.to_thread(
+            self._fetch_context, matches, query_params=query_params
+        )
         return RetrievalResult(
             items=[RetrievalItem(content=row) for row in context_rows],
             metadata={"query_vector": query_vector},

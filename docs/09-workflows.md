@@ -759,6 +759,18 @@ retriever = GlobalSearchRetriever(
     graph_name="entity-graph",
 )
 result = await retriever.search("What are the main themes?", community_level="coarsest")
+
+# Opt-in: ranked evidence points instead of a map-reduce answer.
+point_retriever = GlobalSearchRetriever(
+    graph_store=store,
+    llm=llm,
+    map_strategy="scored_points",
+)
+point_result = await point_retriever.search(
+    "What are the main themes?",
+    community_level="coarsest",
+    synthesize_response=False,
+)
 ```
 
 ### `DriftSearchRetriever`
@@ -864,7 +876,7 @@ from recon_graphrag.retrieval.drift_types import DriftAction, DriftQueryState, D
 | --- | --- | --- |
 | `id` | `str` | Unique action identifier (e.g. `"primer"`, `"a1"`, `"a2"`). |
 | `parent_id` | `str \| None` | Parent action ID (`None` for the primer). |
-| `depth` | `int` | Traversal depth (0 for primer). |
+| `depth` | `int` | Parent-chain depth (0 for primer), not the round number. |
 | `query` | `str` | The follow-up question this action addresses. |
 | `answer` | `str` | LLM-generated answer for this action. |
 | `score` | `float` | Confidence score (0-100). |
@@ -882,7 +894,7 @@ from recon_graphrag.retrieval.drift_types import DriftAction, DriftQueryState, D
 | `query` | `str` | Original user query. |
 | `primer_reports` | `list[dict]` | Community reports from the primer phase. |
 | `actions` | `list[DriftAction]` | All completed and pending actions. |
-| `stopping_reason` | `str` | Why traversal stopped (budget, depth, etc.). |
+| `stopping_reason` | `str` | Why traversal stopped: `all_actions_completed`, `max_llm_calls_reached`, or `max_rounds_reached`. |
 | `total_llm_calls` | `int` | LLM calls consumed so far. |
 | `phase_tokens` | `dict` | Token telemetry per phase. |
 | `failures` | `list[str]` | Non-fatal error messages. |
