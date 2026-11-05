@@ -18,6 +18,23 @@
   label or `graph_name` filters are applied and trim to `top_k` after the
   filter, matching Memgraph behavior; result shape is unchanged.
 
+## [0.14.0](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.13.1...v0.14.0) (2026-11-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* **retrieval:** `DriftSearchConfig.max_depth` and `max_followups` are replaced by `max_rounds` and `actions_per_round`, and `min_expand_score` is removed. No aliases are provided, so old keyword arguments raise TypeError and equal numbers no longer describe the same amount of work. Construction with three or more positional arguments also changes meaning.
+
+### Features
+
+* **retrieval:** add scored-point context strategy to global search ([3d27ac3](https://github.com/FadhelHaidar/recon-graphrag/commit/3d27ac3677b16e51d8f5aa7edcbb0c0e96f2e41f))
+* **retrieval:** schedule DRIFT traversal in bounded rounds ([ec59994](https://github.com/FadhelHaidar/recon-graphrag/commit/ec599940f2145ac5a3fd6af6b3918f88c01b0dfd))
+
+
+### Performance Improvements
+
+* **retrieval:** keep DRIFT graph-store reads off the event loop ([19fc50c](https://github.com/FadhelHaidar/recon-graphrag/commit/19fc50c68b36a3bd309032a28d3e85876e7bd5ff))
+
 ## [0.13.1](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.13.0...v0.13.1) (2026-10-30)
 
 
