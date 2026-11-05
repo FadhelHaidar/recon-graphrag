@@ -7,9 +7,9 @@ for each follow-up, and reduces all gathered evidence into a final answer.
 Pipeline:
 1. Primer: embed query → vector search community reports → LLM generates
    initial answer, score, and follow-up questions (strict JSON).
-2. Traversal: breadth-first expansion of follow-up questions via local
-   entity retrieval + LLM scoring, respecting depth/LLM-call/concurrency
-   limits.
+2. Traversal: bounded-round expansion from a shared pending pool of
+   follow-up questions via local entity retrieval + LLM scoring, respecting
+   rounds/selected-actions-per-round/LLM-call/concurrency limits.
 3. Reduction: sort completed actions by score, token-pack, LLM synthesizes
    final answer.
 """
@@ -519,7 +519,7 @@ class DriftSearchRetriever:
             score=float(data.get("score", 0)),
             status="completed",
             context=self._format_primer_reports(reports),
-            follow_ups=data.get("follow_ups", [])[:3],
+            follow_ups=data.get("follow_ups", []),
             references=data.get("references", []),
             report_ids=data.get("report_ids", []),
         )
@@ -670,18 +670,20 @@ class DriftSearchRetriever:
         synthesize_response: bool,
         include_graph_evidence: bool = False,
     ) -> None:
-        """Breadth-first expansion of follow-up questions."""
-        # Seed from primer follow-ups
+        """Bounded-round expansion from a shared pending-question pool."""
         pending: list[DriftAction] = []
         action_counter = 0
         seen_questions = {self._normalize_question(query)}
         traversal_call_limit = max(
             config.max_llm_calls - (1 if synthesize_response else 0), 0
         )
+        selection_rng = _random.Random(zlib.crc32(query.encode("utf-8")))
 
-        primer = state.actions[0] if state.actions else None
-        if primer and primer.follow_ups and config.max_depth >= 1:
-            for fq in primer.follow_ups[: config.max_followups]:
+        def enqueue(follow_ups: list, parent_id: str, depth: int) -> None:
+            nonlocal action_counter
+            for fq in follow_ups:
+                if not isinstance(fq, str):
+                    continue
                 normalized = self._normalize_question(fq)
                 if not normalized or normalized in seen_questions:
                     continue
@@ -690,70 +692,77 @@ class DriftSearchRetriever:
                 pending.append(
                     DriftAction(
                         id=f"action:{action_counter}",
-                        parent_id="primer",
-                        depth=1,
+                        parent_id=parent_id,
+                        depth=depth,
                         query=fq,
                     )
                 )
 
-        while pending:
-            # Check limits
+        if config.max_rounds == 0 or config.actions_per_round == 0:
+            state.stopping_reason = "all_actions_completed"
+            return
+
+        primer = state.actions[0] if state.actions else None
+        if primer and primer.follow_ups:
+            enqueue(primer.follow_ups, "primer", 1)
+
+        for _ in range(config.max_rounds):
+            if not pending:
+                break
             if state.total_llm_calls >= traversal_call_limit:
                 state.stopping_reason = "max_llm_calls_reached"
                 break
 
-            # Process batch up to concurrency
-            available_calls = traversal_call_limit - state.total_llm_calls
-            if available_calls <= 0:
-                state.stopping_reason = "max_llm_calls_reached"
+            # One seeded shuffle per round; unselected questions stay available.
+            selection_rng.shuffle(pending)
+            selected = pending[: config.actions_per_round]
+            del pending[: config.actions_per_round]
+
+            offset = 0
+            while offset < len(selected):
+                available_calls = traversal_call_limit - state.total_llm_calls
+                if available_calls <= 0:
+                    state.stopping_reason = "max_llm_calls_reached"
+                    break
+                chunk = selected[
+                    offset : offset + min(config.action_concurrency, available_calls)
+                ]
+                offset += len(chunk)
+
+                tasks = [
+                    self._process_action(
+                        action, query, state, config, top_k,
+                        effective_search_ratio, query_params,
+                        ranker, alpha, conversation_history,
+                        synthesize_citation_metadata, synthesis_metadata_keys,
+                        call_lock, traversal_call_limit,
+                        include_graph_evidence,
+                    )
+                    for action in chunk
+                ]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                for action, result in zip(chunk, results, strict=True):
+                    if isinstance(result, Exception):
+                        action.status = "failed"
+                        state.failures.append(f"action {action.id} failed: {result}")
+                    state.actions.append(action)
+
+                    # Every completed action contributes questions to the next round.
+                    if action.status == "completed" and action.follow_ups:
+                        enqueue(action.follow_ups, action.id, action.depth + 1)
+
+            if state.stopping_reason:
                 break
-            batch_size = min(config.action_concurrency, available_calls)
-            batch = pending[:batch_size]
-            pending = pending[batch_size:]
-
-            tasks = [
-                self._process_action(
-                    action, query, state, config, top_k,
-                    effective_search_ratio, query_params,
-                    ranker, alpha, conversation_history,
-                    synthesize_citation_metadata, synthesis_metadata_keys,
-                    call_lock, traversal_call_limit,
-                    include_graph_evidence,
-                )
-                for action in batch
-            ]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            for action, result in zip(batch, results, strict=True):
-                if isinstance(result, Exception):
-                    action.status = "failed"
-                    state.failures.append(f"action {action.id} failed: {result}")
-                state.actions.append(action)
-
-                # Queue follow-ups
-                if (
-                    action.status == "completed"
-                    and action.score >= config.min_expand_score
-                    and action.depth < config.max_depth
-                    and action.follow_ups
-                ):
-                    for fq in action.follow_ups[: config.max_followups]:
-                        # Deduplicate by normalized query
-                        normalized = self._normalize_question(fq)
-                        if normalized and normalized not in seen_questions:
-                            seen_questions.add(normalized)
-                            action_counter += 1
-                            pending.append(
-                                DriftAction(
-                                    id=f"action:{action_counter}",
-                                    parent_id=action.id,
-                                    depth=action.depth + 1,
-                                    query=fq,
-                                )
-                            )
 
         if not state.stopping_reason:
-            state.stopping_reason = "all_actions_completed"
+            if not pending:
+                state.stopping_reason = "all_actions_completed"
+            elif state.total_llm_calls >= traversal_call_limit:
+                # Budget, not the round limit, is what left work unfinished.
+                state.stopping_reason = "max_llm_calls_reached"
+            else:
+                state.stopping_reason = "max_rounds_reached"
 
     async def _process_action(
         self,
@@ -863,7 +872,7 @@ class DriftSearchRetriever:
             )
             action.answer = data.get("answer", "")
             action.score = float(data.get("score", 0))
-            action.follow_ups = data.get("follow_ups", [])[: config.max_followups]
+            action.follow_ups = data.get("follow_ups", [])
             action.references = data.get("references", [])
             if action.references:
                 try:

@@ -293,14 +293,16 @@ Reports: [comm:1:0 ("Hans Zimmer composed scores for...")]
 Primer: { answer: "Zimmer composed for both...", score: 65,
           follow_ups: ["What films did Zimmer score for Nolan?",
                        "How did Zimmer's style evolve between Inception and Dune?"] }
-  ↓ Phase 2: Traversal (breadth-first)
+  ↓ Phase 2: Traversal (2 rounds, up to 2 selected questions each)
+  ↓ round 1 selects action:1 and action:2 from the shuffled pending pool
   ↓ action:1 — "What films did Zimmer score for Nolan?"
     → local entity retrieval (top_k=10): [Hans_Zimmer, Christopher_Nolan, ...]
-    → 1-hop neighbors + chunks → LLM scores 80, 0 follow-ups (score ≥ min_expand_score=20, but no new questions)
+    → LLM scores 80, no new questions
   ↓ action:2 — "How did Zimmer's style evolve between Inception and Dune?"
     → local entity retrieval: [Hans_Zimmer, Inception, Dune, ...]
-    → LLM scores 45, 1 follow-up at depth 2
-  ↓ action:3 (depth 2) — follow-up from action:2
+    → LLM scores 45, 1 follow-up queued for the next round
+  ↓ round 2 selects action:3 (the queued follow-up) from the pool
+  ↓ action:3 — follow-up from action:2
     → local entity retrieval → LLM scores 30
   ↓ Phase 3: Reduction
   ↓ sort completed actions by score: [action:1 (80), action:2 (45), action:3 (30)]
@@ -309,8 +311,9 @@ Primer: { answer: "Zimmer composed for both...", score: 65,
   ↓ resolve citations from local chunks + primer report references
 ```
 
-Total LLM calls: 1 (primer) + 3 (actions) + 1 (reduce) = 5. The tree did not
-reach `max_depth=3` because actions did not generate enough follow-ups.
+Total LLM calls: 1 (primer) + 3 (actions) + 1 (reduce) = 5. Two rounds with
+two selected questions each allow at most four actions; generation stopped
+after three because no further questions remained.
 
 | Parameter | Description |
 | --- | --- |
@@ -328,9 +331,8 @@ from recon_graphrag import DriftSearchConfig
 
 config = DriftSearchConfig(
     primer_top_k=3,           # top community reports for primer phase
-    max_followups=3,          # max follow-up questions per action
-    max_depth=3,              # max traversal depth
-    min_expand_score=20.0,    # minimum score to expand an action (0-100)
+    actions_per_round=3,      # questions selected from the pool per round
+    max_rounds=3,             # traversal rounds
     max_llm_calls=20,         # hard cap on total LLM calls per search
     action_concurrency=3,     # max concurrent action evaluations
     community_level="coarsest",  # default community level
@@ -338,12 +340,20 @@ config = DriftSearchConfig(
 )
 ```
 
+Traversal keeps one shared pool of pending follow-up questions. Each round
+shuffles that pool with a seed derived from the query, selects up to
+`actions_per_round` questions, runs them with `action_concurrency` parallelism,
+and appends their follow-ups to the pool for a later round. Unselected
+questions stay available, and a question generated in a round is never run in
+that same round. `DriftAction.depth` remains the parent-chain depth of a
+question, not the round number, so later rounds can select older shallow
+questions.
+
 | Field | Default | Description |
 | --- | --- | --- |
 | `primer_top_k` | `3` | Number of community reports retrieved by vector similarity in the primer phase. |
-| `max_followups` | `3` | Maximum follow-up questions generated per action. |
-| `max_depth` | `3` | Maximum depth of the iterative traversal tree. |
-| `min_expand_score` | `20.0` | Minimum action score (0-100) required to expand into follow-ups. Actions scoring below this are pruned. |
+| `actions_per_round` | `3` | Maximum questions selected from the pending pool per round, independent of `action_concurrency`. `0` disables traversal. |
+| `max_rounds` | `3` | Maximum traversal rounds. `0` disables traversal. Work still pending after the last round stops with `max_rounds_reached`. |
 | `max_llm_calls` | `20` | Hard cap on total LLM calls across all phases (primer, actions, reduction). Prevents runaway costs. |
 | `action_concurrency` | `3` | Maximum number of actions evaluated concurrently during traversal. |
 | `community_level` | `"coarsest"` | Default community level for primer report search. Overridden by the `community_level` search parameter if provided. |
@@ -352,6 +362,25 @@ config = DriftSearchConfig(
 | `primer_folds` | `1` | Number of folds to split primer reports into for parallel LLM decomposition. When > 1, reports are split into N folds, processed in parallel, and follow-ups are merged. |
 | `action_use_mixed_context` | `True` | When `True`, each DRIFT action builds mixed context (entities + community reports + claims) instead of entity-only context. |
 | `action_mixed_context_tokens` | `12000` | Token budget for mixed context in each DRIFT action. Only used when `action_use_mixed_context=True`. |
+
+#### Migrating from `max_depth` / `max_followups` / `min_expand_score`
+
+The traversal config is a breaking change, not a rename:
+
+```python
+# Old: per-parent branching, depth limit, and score pruning
+DriftSearchConfig(max_depth=3, max_followups=3, min_expand_score=20)
+
+# New: up to three selected questions per round, for three rounds
+DriftSearchConfig(max_rounds=3, actions_per_round=3)
+```
+
+`max_depth`, `max_followups`, and `min_expand_score` are rejected as unknown
+keywords. These settings are not cost- or answer-equivalent: equal numbers mean
+different work, and low-scoring actions now contribute follow-up questions.
+`min_expand_score` is removed rather than renamed. Positional construction is
+also affected because the fourth field is gone, so prefer keyword arguments and
+re-check any call site that passed three or more arguments positionally.
 
 DRIFT returns citations for retrieved local source chunks and for references in
 the selected primer reports.
@@ -1287,9 +1316,8 @@ uses the configured counter, which is approximate by default.
 | --- | --- | --- |
 | `primer_top_k` | `3` | Community reports retrieved by vector similarity in the primer phase. |
 | `top_k` | `10` | Entities retrieved per follow-up action (same as local search). |
-| `max_followups` | `3` | Max follow-up questions generated per action by the LLM. |
-| `max_depth` | `3` | Max depth of the traversal tree. Depth 0 = primer, depth 1 = first follow-ups, etc. |
-| `min_expand_score` | `20.0` | Minimum action score (0-100) to expand into follow-ups. Actions below this are pruned. |
+| `actions_per_round` | `3` | Questions selected from the shared pending pool per round, independent of `action_concurrency`. |
+| `max_rounds` | `3` | Maximum traversal rounds. Depth 0 = primer; a question's `depth` stays its parent-chain depth, not the round number. |
 | `max_llm_calls` | `20` | Hard cap on total LLM calls across all phases (primer + actions + reduce). |
 | `action_concurrency` | `3` | Max concurrent action evaluations during traversal. |
 | `top_k_relationships` | `10` | Relationships kept per direction per seed entity, applied in Cypher (same query as local search). |
@@ -1297,16 +1325,17 @@ uses the configured counter, which is approximate by default.
 | `reduce_budget_tokens` | `12000` | Token budget for packing scored action answers into the final reduction prompt. |
 | Cypher traversal depth | **1 hop** | Each action's local entity retrieval uses the same 1-hop query as local search. |
 
-**Example:** With default config, DRIFT can make at most:
+**Example:** With `max_rounds=3` and `actions_per_round=3`, normal traversal
+is bounded by 3 × 3 = 9 action answer calls:
 - 1 primer LLM call
-- Up to 3 primer follow-ups at depth 1 (3 LLM calls for actions)
-- Each action may generate up to 3 more follow-ups at depth 2 (up to 9 LLM calls)
-- Each depth-2 action may generate up to 3 follow-ups at depth 3 (up to 27 LLM calls)
+- Up to 3 selected questions per round, for at most 3 rounds (9 action calls)
 - 1 reduce LLM call
-- **Theoretical max without `max_llm_calls`:** 1 + 3 + 9 + 27 + 1 = 41
-- **With default `max_llm_calls=20`:** capped at 20 total, so deeper levels are pruned.
-- **With `min_expand_score=20.0`:** actions scoring below 20 are not expanded, so
-  real-world traversal is typically much smaller.
+- **Theoretical max without `max_llm_calls`:** 1 + 9 + 1 = 11
+- **With default `max_llm_calls=20`:** the cap still applies, but rounds are the
+  normal bound. Follow-ups from any completed action are queued regardless of
+  its score, so low-confidence branches are explored too.
+- HyDE, extra primer folds, and JSON repairs consume the same call budget, so
+  they can reduce how many rounds complete.
 
 ### Comparison
 
@@ -1315,7 +1344,7 @@ uses the configured counter, which is approximate by default.
 | **Graph nodes touched** | `top_k` entities + 1-hop neighbors + source chunks | All community reports at one level | `primer_top_k` reports + `top_k` entities per action × actions |
 | **Cypher traversal depth** | 1 hop | N/A (reads reports directly) | 1 hop per action |
 | **LLM calls** | 1 | map batches + 1 reduce | 1 primer + N actions + 1 reduce (capped by `max_llm_calls`) |
-| **What scales cost** | `top_k` and neighbor count | Number of reports and `map_budget_tokens` | `max_llm_calls`, `max_depth`, `max_followups` |
+| **What scales cost** | `top_k` and neighbor count | Number of reports and `map_budget_tokens` | `max_llm_calls`, `max_rounds`, `actions_per_round` |
 
 ---
 
@@ -1482,7 +1511,7 @@ below shows alignment status for each feature.
 | HyDE primer query expansion | Aligned | `use_hyde=True` | Generates hypothetical answer from random report template, re-embeds for better retrieval. |
 | Primer folds (parallel decomposition) | Opt-in | `primer_folds=1` | Splits reports into N folds for parallel primer LLM calls. Default 1 preserves single-call behavior. |
 | DRIFT action mixed context | Aligned | `action_use_mixed_context=True` | Each action builds full mixed context, not just entity-only context. |
-| DRIFT iterative traversal | Aligned | — | Same breadth-first expansion with depth/LLM-call limits. |
+| DRIFT iterative traversal | Aligned | `max_rounds=3`, `actions_per_round=3` | Shared pending pool, seeded shuffle per round, bounded rounds and selected questions. |
 | Community level resolution | Aligned | — | Same `"coarsest"` / `"finest"` / numeric level selection. |
 | Citation resolution from report references | Aligned | — | Same `report_json` → `findings[*].references` → chunk citation pipeline. |
 | `synthesize_response=False` agent mode | Aligned | — | All modes support skipping LLM synthesis. |

@@ -5,7 +5,9 @@ Tests for iterative DRIFT behavior and limits.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import random
 from typing import Any, cast
 
 import pytest
@@ -466,7 +468,7 @@ class TestDriftTraversal:
         assert "2010." in answers
 
     @pytest.mark.asyncio
-    async def test_low_score_followup_not_expanded(self):
+    async def test_low_score_followup_still_expanded(self):
         store = FakeGraphStore()
         llm = FakeLLM(
             responses=[
@@ -482,14 +484,16 @@ class TestDriftTraversal:
                 }),
             ]
         )
-        config = DriftSearchConfig(min_expand_score=20.0, use_hyde=False)
+        config = DriftSearchConfig(use_hyde=False, action_use_mixed_context=False)
         retriever = DriftSearchRetriever(cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()), config=config)
 
         result = await retriever.search("query", top_k=2)
 
         trace = result.metadata["drift_trace"]
-        # Only primer + 1 action (no further expansion due to low score)
-        assert len(trace["actions"]) == 2
+        # Scores no longer gate expansion: the low-scoring action's question runs.
+        actions = {action["query"]: action for action in trace["actions"]}
+        assert "Another?" in actions
+        assert actions["Question?"]["score"] == 5
 
 
 class TestDriftConversationHistory:
@@ -643,7 +647,7 @@ class TestDriftCitationDegradation:
     @pytest.mark.asyncio
     async def test_action_records_citation_warning_non_mixed(self):
         retriever = DriftSearchRetriever(cast(Any, BrokenCitationStore()), cast(Any, _follow_up_llm()), cast(Any, FakeEmbedder()), config=DriftSearchConfig(
-            use_hyde=False, action_use_mixed_context=False, max_depth=1
+            use_hyde=False, action_use_mixed_context=False, max_rounds=1
         ),)
 
         result = await retriever.search("Who directed Inception?", top_k=2)
@@ -659,7 +663,7 @@ class TestDriftCitationDegradation:
     @pytest.mark.asyncio
     async def test_action_records_citation_warning_mixed(self):
         retriever = DriftSearchRetriever(cast(Any, BrokenCitationStore()), cast(Any, _follow_up_llm()), cast(Any, FakeEmbedder()), config=DriftSearchConfig(
-            use_hyde=False, action_use_mixed_context=True, max_depth=1
+            use_hyde=False, action_use_mixed_context=True, max_rounds=1
         ),)
 
         result = await retriever.search("Who directed Inception?", top_k=2)
@@ -674,7 +678,7 @@ class TestDriftCitationDegradation:
         store = MixedFakeGraphStore()
         llm = _follow_up_llm()
         retriever = DriftSearchRetriever(cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()), config=DriftSearchConfig(
-            use_hyde=False, action_use_mixed_context=True, max_depth=1
+            use_hyde=False, action_use_mixed_context=True, max_rounds=1
         ),)
 
         await retriever.search(
@@ -733,7 +737,7 @@ class TestDriftMixedCitations:
         retriever = DriftSearchRetriever(
             cast(Any, store), cast(Any, _follow_up_llm()), cast(Any, FakeEmbedder()),
             config=DriftSearchConfig(
-                use_hyde=False, action_use_mixed_context=True, max_depth=1
+                use_hyde=False, action_use_mixed_context=True, max_rounds=1
             ),
         )
 
@@ -749,7 +753,7 @@ class TestDriftMixedCitations:
         retriever = DriftSearchRetriever(
             cast(Any, store), cast(Any, _follow_up_llm()), cast(Any, FakeEmbedder()),
             config=DriftSearchConfig(
-                use_hyde=False, action_use_mixed_context=False, max_depth=1
+                use_hyde=False, action_use_mixed_context=False, max_rounds=1
             ),
         )
 
@@ -757,3 +761,263 @@ class TestDriftMixedCitations:
 
         assert store.resolutions[0] == ["chunk:1"]
         assert "chunk:1" in [citation.chunk_id for citation in result.citations]
+
+
+def _prompt_action_question(prompt: str) -> str | None:
+    marker = "## Follow-up Question\n"
+    if marker not in prompt:
+        return None
+    return prompt.split(marker, 1)[1].split("\n", 1)[0].strip()
+
+
+class ScriptedLLM:
+    """Prompt-keyed DRIFT LLM so shuffled round order cannot misroute replies."""
+
+    def __init__(self, primer_follow_ups, answers=None, delay=0.0):
+        self.prompts: list[str] = []
+        self.actions: list[str] = []
+        self.primer_follow_ups = list(primer_follow_ups)
+        self.answers = answers or {}
+        self.delay = delay
+
+    async def ainvoke(self, prompt):
+        self.prompts.append(prompt)
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        if "Partial Answers" in prompt:
+            return LLMResponse(content="Final answer.")
+        question = _prompt_action_question(prompt)
+        if question is None:
+            return LLMResponse(content=json.dumps({
+                "answer": "Primer answer.",
+                "score": 90,
+                "follow_ups": self.primer_follow_ups,
+            }))
+        self.actions.append(question)
+        score, follow_ups = self.answers.get(question, (80, []))
+        return LLMResponse(content=json.dumps({
+            "answer": f"Answer for {question}",
+            "score": score,
+            "follow_ups": list(follow_ups),
+        }))
+
+
+class FailingEmbedder(FakeEmbedder):
+    def __init__(self, fail_for):
+        super().__init__()
+        self.fail_for = set(fail_for)
+        self.attempts: list[str] = []
+
+    async def async_embed_query(self, text):
+        self.attempts.append(text)
+        if text in self.fail_for:
+            raise RuntimeError("embedding boom")
+        return await super().async_embed_query(text)
+
+
+def _scheduling_retriever(llm, embedder=None, **config_kwargs):
+    config = DriftSearchConfig(
+        use_hyde=False, action_use_mixed_context=False, **config_kwargs
+    )
+    return DriftSearchRetriever(
+        cast(Any, FakeGraphStore()),
+        cast(Any, llm),
+        cast(Any, embedder or FakeEmbedder()),
+        config=config,
+    )
+
+
+def _scheduled_queries(result) -> list[str]:
+    return [
+        action["query"]
+        for action in result.metadata["drift_trace"]["actions"]
+        if action["depth"] >= 1
+    ]
+
+
+class TestDriftRoundScheduling:
+    @pytest.mark.asyncio
+    async def test_selects_at_most_k_actions_per_round_for_d_rounds(self):
+        questions = ["q1", "q2", "q3", "q4", "q5"]
+        llm = ScriptedLLM(
+            questions, {q: (80, [f"child-{q}"]) for q in questions}
+        )
+        result = await _scheduling_retriever(
+            llm, max_rounds=2, actions_per_round=2
+        ).search("query", top_k=2)
+
+        assert len(llm.actions) == 4
+        # Children of last-round actions never run, and nothing repeats.
+        assert not {f"child-{q}" for q in llm.actions[2:]} & set(llm.actions)
+        assert len(set(llm.actions)) == 4
+        assert result.metadata["drift_trace"]["stopping_reason"] == "max_rounds_reached"
+
+    @pytest.mark.asyncio
+    async def test_children_cannot_fill_their_parent_round(self):
+        llm = ScriptedLLM(["q1", "q2"], {"q1": (80, ["child-q1"])})
+        result = await _scheduling_retriever(
+            llm, max_rounds=1, actions_per_round=4
+        ).search("query", top_k=2)
+
+        assert sorted(llm.actions) == ["q1", "q2"]
+        # The generated child stays pending, so work is not reported complete.
+        assert result.metadata["drift_trace"]["stopping_reason"] == "max_rounds_reached"
+
+    @pytest.mark.asyncio
+    async def test_execution_concurrency_does_not_change_selection(self):
+        selections = []
+        for concurrency in (1, 5):
+            llm = ScriptedLLM(["q1", "q2", "q3"], {q: (80, []) for q in ("q1", "q2", "q3")})
+            await _scheduling_retriever(
+                llm,
+                max_rounds=1,
+                actions_per_round=3,
+                action_concurrency=concurrency,
+            ).search("query", top_k=2)
+            selections.append(llm.actions)
+
+        assert selections[0] == selections[1]
+        assert len(selections[0]) == 3
+
+    @pytest.mark.asyncio
+    async def test_selection_is_reproducible_and_leaves_global_rng_alone(self):
+        def build(delay, concurrency):
+            questions = ["q1", "q2", "q3", "q4"]
+            llm = ScriptedLLM(
+                questions,
+                {q: (80, [f"child-{q}"]) for q in questions},
+                delay=delay,
+            )
+            return llm, _scheduling_retriever(
+                llm, max_rounds=2, actions_per_round=2, action_concurrency=concurrency
+            )
+
+        state_before = random.getstate()
+        llm_a, retriever_a = build(0.0, 1)
+        await retriever_a.search("same query", top_k=2)
+        llm_b, retriever_b = build(0.002, 4)
+        await retriever_b.search("same query", top_k=2)
+
+        assert llm_a.actions == llm_b.actions
+        assert random.getstate() == state_before
+
+    @pytest.mark.asyncio
+    async def test_concurrent_searches_on_a_shared_retriever_select_the_same(self):
+        questions = ["q1", "q2", "q3", "q4"]
+        llm = ScriptedLLM(questions, {q: (80, []) for q in questions})
+        retriever = _scheduling_retriever(llm, max_rounds=2, actions_per_round=2)
+
+        first, second = await asyncio.gather(
+            retriever.search("same query", top_k=2),
+            retriever.search("same query", top_k=2),
+        )
+
+        assert _scheduled_queries(first) == _scheduled_queries(second)
+        assert len(_scheduled_queries(first)) == 4
+
+    @pytest.mark.asyncio
+    async def test_normalized_duplicates_and_the_original_query_run_once(self):
+        llm = ScriptedLLM(
+            ["query", "Q1?", " q1 "],
+            {"Q1?": (80, ["q1", "Q1!", "original query"])},
+        )
+        result = await _scheduling_retriever(
+            llm, max_rounds=3, actions_per_round=3
+        ).search("query", top_k=2)
+
+        assert sorted(_scheduled_queries(result)) == ["Q1?", "original query"]
+        assert len(llm.actions) == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("synthesize_response", [True, False])
+    async def test_exhausted_budget_reports_budget_not_round_limit(
+        self, synthesize_response
+    ):
+        llm = ScriptedLLM(["q1"], {"q1": (80, ["q2"]), "q2": (70, [])})
+        # Primer uses one call, q1 the last traversal call, so q2 never runs.
+        limit = 3 if synthesize_response else 2
+        result = await _scheduling_retriever(
+            llm, max_rounds=1, actions_per_round=1, max_llm_calls=limit
+        ).search("query", top_k=2, synthesize_response=synthesize_response)
+
+        trace = result.metadata["drift_trace"]
+        assert _scheduled_queries(result) == ["q1"]
+        assert trace["stopping_reason"] == "max_llm_calls_reached"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kwargs", [{"max_rounds": 0}, {"actions_per_round": 0}])
+    async def test_zero_controls_disable_traversal(self, kwargs):
+        llm = ScriptedLLM(["q1", "q2"])
+        result = await _scheduling_retriever(llm, **kwargs).search("query", top_k=2)
+
+        assert llm.actions == []
+        assert result.answer
+        assert result.metadata["drift_trace"]["stopping_reason"] == "all_actions_completed"
+
+    @pytest.mark.asyncio
+    async def test_empty_pool_completes(self):
+        result = await _scheduling_retriever(ScriptedLLM([])).search("query", top_k=2)
+
+        assert result.metadata["drift_trace"]["stopping_reason"] == "all_actions_completed"
+
+    @pytest.mark.asyncio
+    async def test_generated_questions_wait_for_the_next_round(self):
+        llm = ScriptedLLM(["q1"], {"q1": (80, ["q2"]), "q2": (80, ["q3"])})
+        result = await _scheduling_retriever(
+            llm, max_rounds=2, actions_per_round=1
+        ).search("query", top_k=2)
+
+        # One question per round: the chain only reaches its second child.
+        assert llm.actions == ["q1", "q2"]
+        assert result.metadata["drift_trace"]["stopping_reason"] == "max_rounds_reached"
+
+    @pytest.mark.asyncio
+    async def test_hard_call_cap_still_limits_round_actions(self):
+        questions = ["q1", "q2", "q3", "q4"]
+        llm = ScriptedLLM(questions, {q: (80, []) for q in questions})
+        result = await _scheduling_retriever(
+            llm, max_rounds=3, actions_per_round=4, max_llm_calls=4
+        ).search("query", top_k=2)
+
+        assert len(llm.actions) == 2
+        trace = result.metadata["drift_trace"]
+        assert trace["total_llm_calls"] == 4
+        assert trace["stopping_reason"] == "max_llm_calls_reached"
+
+    @pytest.mark.asyncio
+    async def test_failed_action_is_recorded_and_not_retried(self):
+        embedder = FailingEmbedder({"q1"})
+        llm = ScriptedLLM(["q1", "q2"], {"q2": (80, [])})
+        result = await _scheduling_retriever(
+            llm, embedder=embedder, max_rounds=2, actions_per_round=2
+        ).search("query", top_k=2)
+
+        # The failing question was attempted once; the other waiting question still ran.
+        assert embedder.attempts.count("q1") == 1
+        trace = result.metadata["drift_trace"]
+        assert sorted(_scheduled_queries(result)) == ["q1", "q2"]
+        statuses = {a["query"]: a["status"] for a in trace["actions"]}
+        assert statuses["q1"] == "failed"
+        assert any("embedding boom" in str(failure) for failure in trace["failures"])
+        assert trace["stopping_reason"] == "all_actions_completed"
+
+
+class TestDriftConfigMigration:
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"max_rounds": -1},
+            {"actions_per_round": -1},
+            {"max_rounds": True},
+            {"actions_per_round": 1.5},
+        ],
+    )
+    def test_new_controls_reject_invalid_values(self, kwargs):
+        with pytest.raises(ValueError, match="non-negative integer"):
+            DriftSearchConfig(**kwargs)
+
+    @pytest.mark.parametrize("keyword", ["max_depth", "max_followups", "min_expand_score"])
+    def test_removed_keywords_are_rejected(self, keyword):
+        removed: dict[str, Any] = {keyword: 1}
+        with pytest.raises(TypeError):
+            DriftSearchConfig(**removed)

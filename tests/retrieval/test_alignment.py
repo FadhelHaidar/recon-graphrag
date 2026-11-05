@@ -421,13 +421,24 @@ class TestDriftPrimerFolds:
         llm = FakeLLM(responses=responses)
         retriever = DriftSearchRetriever(
             store, llm, FakeEmbedder(),
-            config=DriftSearchConfig(primer_top_k=4, primer_folds=2, use_hyde=False, max_depth=0),
+            config=DriftSearchConfig(
+                primer_top_k=4, primer_folds=2, use_hyde=False,
+                max_rounds=1, actions_per_round=10,
+                action_use_mixed_context=False,
+            ),
         )
 
         result = await retriever.search("query", top_k=2)
 
         assert result.mode == "drift"
         assert result.answer
+        # Folded questions reach the shared pool without per-parent truncation.
+        scheduled = [
+            action["query"]
+            for action in result.metadata["drift_trace"]["actions"]
+            if action["depth"] >= 1
+        ]
+        assert sorted(scheduled) == sorted(follow_ups_fold1 + follow_ups_fold2)
 
     def test_primer_folds_default_is_1(self):
         """primer_folds defaults to 1 (single call)."""

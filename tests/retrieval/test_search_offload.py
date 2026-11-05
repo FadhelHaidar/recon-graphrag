@@ -70,7 +70,7 @@ async def test_drift_store_reads_run_off_the_loop():
         cast(Any, store),
         cast(Any, _follow_up_llm()),
         cast(Any, FakeEmbedder()),
-        config=DriftSearchConfig(use_hyde=False, max_depth=1),
+        config=DriftSearchConfig(use_hyde=False, max_rounds=1),
     )
 
     result = await with_heartbeat(retriever.search("Who directed Inception?", top_k=2))
