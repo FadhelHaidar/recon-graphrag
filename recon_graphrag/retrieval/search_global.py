@@ -1022,9 +1022,6 @@ class GlobalSearchRetriever:
     ) -> list[PartialAnswer]:
         """Run map phase with bounded concurrency and bounded pending work."""
 
-        partials: list[PartialAnswer] = []
-        pending = iter(list(enumerate(batches)))
-
         point_mode = self.map_strategy == "scored_points"
 
         async def _process_batch(batch: MapBatch) -> PartialAnswer:
@@ -1075,8 +1072,7 @@ class GlobalSearchRetriever:
                     batch_report_ids=batch.report_ids,
                     error=str(e),
                 )
-        # map_concurrency instead of one task per batch. Partial answers are
-        # written back by batch position, so ordering is unchanged.
+        # Fixed workers bound pending work; positional writes preserve order.
         partials: list[PartialAnswer] = []
         pending = iter(list(enumerate(batches)))
 
