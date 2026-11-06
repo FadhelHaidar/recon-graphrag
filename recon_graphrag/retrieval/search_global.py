@@ -88,8 +88,17 @@ You are extracting scored evidence points from community reports.
 2. Score each point 0-100 for how much it helps answer the question.
    - 0 = not relevant
    - 100 = directly and completely answers the question
-3. List the report IDs that support the point, using the "Report {{id}}:"
-   labels above. Use only IDs from these reports.
+3. List the report IDs that support the point. Use only IDs from the reports
+   above, and copy them exactly, character for character.
+   - Each report begins with a header of the form "Report {{id}}:". A report
+     ID is an opaque string, not an entity ID and not a citation from inside
+     the report body.
+   - Copy only the ID: omit the literal "Report " prefix and the final header
+     colon. Keep every other character, including colons inside the ID. The
+     header "Report 12:" means the ID "12", NOT "Report 12"; the header
+     "Report report:1:0:" means the ID "report:1:0".
+   - Do not infer an ID format from the examples below. An example ID is not
+     valid unless it also appears in the reports above.
 4. Return valid JSON only, with no prose before or after.
 
 JSON format:
@@ -98,7 +107,7 @@ JSON format:
     {{
       "description": "A self-contained statement from the reports.",
       "score": 75,
-      "report_ids": ["report:1:0", "report:2:0"]
+      "report_ids": ["12", "report:1:0"]
     }}
   ]
 }}

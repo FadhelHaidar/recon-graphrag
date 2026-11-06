@@ -1080,6 +1080,63 @@ class TestScoredPointStrategy:
         assert custom.calls[0]["prompt"].startswith("CUSTOM q\nReport report:0:0:")
 
     @pytest.mark.asyncio
+    async def test_point_prompt_copies_exact_opaque_report_ids(self):
+        reports = [
+            {"id": "0", "level": 0, "report_text": "Numeric zero."},
+            {"id": "12", "level": 0, "report_text": "Numeric twelve."},
+            {"id": "report:1:0", "level": 0, "report_text": "Opaque."},
+        ]
+        llm = PointLLM(_point_payload(_point("a point", 80, ("12",))))
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(reports)),
+            cast(Any, llm),
+            map_strategy="scored_points",
+        )
+
+        await search.search(
+            "q", community_level=0, random_seed=42, synthesize_response=False
+        )
+
+        prompt = " ".join(llm.calls[0]["prompt"].split())
+        # Headers keep the stored ID verbatim, including internal colons.
+        assert "Report 0:" in prompt
+        assert "Report 12:" in prompt
+        assert "Report report:1:0:" in prompt
+        assert (
+            'omit the literal "Report " prefix and the final header colon'
+            in prompt
+        )
+        assert '"Report 12:" means the ID "12", NOT "Report 12"' in prompt
+        assert '"report_ids": ["12", "report:1:0"]' in prompt
+
+    @pytest.mark.asyncio
+    async def test_labeled_and_out_of_batch_ids_rejected_and_counted(self):
+        reports = [{"id": "12", "level": 0, "report_text": "Summary 12."}]
+        llm = PointLLM(
+            _point_payload(
+                _point("supported point", 90, ("12", "Report 12", "12:", "13"))
+            )
+        )
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(reports)),
+            cast(Any, llm),
+            map_strategy="scored_points",
+        )
+
+        result = await search.search(
+            "q", community_level=0, synthesize_response=False
+        )
+
+        assert "supported point" in result.context
+        assert "Reports: 12" in result.context
+        assert "Report 12" not in result.context
+        assert result.metadata["context_parts_kept"] == 1
+        assert any(
+            "Dropped 3 report references" in w
+            for w in result.metadata["context_warnings"]
+        )
+
+    @pytest.mark.asyncio
     async def test_points_sorted_and_rendered_with_scores(self):
         llm = PointLLM(
             [
