@@ -18,6 +18,14 @@
   label or `graph_name` filters are applied and trim to `top_k` after the
   filter, matching Memgraph behavior; result shape is unchanged.
 
+## [0.14.1](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.14.0...v0.14.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **retrieval:** clarify scored-point report ID copying ([0769d2b](https://github.com/FadhelHaidar/recon-graphrag/commit/0769d2b51b5954e977a69f35b851613df99e48d0))
+* **retrieval:** clarify scored-point report ID copying in global map prompt ([58b6d46](https://github.com/FadhelHaidar/recon-graphrag/commit/58b6d4666d5a8cbea4802b81e9c4b71be6357957))
+
 ## [0.14.0](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.13.1...v0.14.0) (2026-11-05)
 
 
