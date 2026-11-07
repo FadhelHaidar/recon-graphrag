@@ -1,14 +1,11 @@
-"""Evaluation runner for capturing baseline GraphRAG runs.
+"""Capture baseline GraphRAG evaluation runs.
 
-The runner supports two modes:
+Use ``--fake`` for deterministic CLI runs without external services.
+The CLI does not implement real-provider runs. For live evaluation, call
+``run_baseline`` with a configured LLM and graph store, as described in
+``evaluation/README.md``.
 
-- ``--fake``: deterministic fake LLM/graph-store run for CI. No external
-  services are called.
-- real (default): uses configured LLM and a provided graph store. This
-  mode is opt-in and documented in ``evaluation/README.md``.
-
-Each run writes a ``manifest.json`` plus ``results.jsonl`` under the output
- directory.
+Each run writes ``manifest.json`` and ``results.jsonl`` to its output directory.
 """
 
 from __future__ import annotations

@@ -42,7 +42,7 @@ class SearchResult:
 
 @dataclass
 class IndexConfig:
-    """Configuration for Neo4j vector and fulltext indexes."""
+    """Configuration for graph-store vector and fulltext indexes."""
 
     entity_vector_index: str = "entity-embeddings"
     entity_fulltext_index: str = "entity-names"

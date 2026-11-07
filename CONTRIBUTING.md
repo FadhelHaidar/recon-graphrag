@@ -5,7 +5,7 @@ Thank you for your interest in Recon-GraphRAG! This project is open source and w
 ## Project values
 
 - **Practical:** We prioritize working code and clear examples.
-- **Collaborative:** Discuss big changes before investing heavy implementation time.
+- **Collaborative:** Discuss large changes before implementation.
 - **Respectful:** Be kind, constructive, and inclusive in all interactions.
 
 ## How to contribute
@@ -157,13 +157,15 @@ Release Please uses these signals to determine that the next release should be a
 
 ### Release automation
 
-After your PR merges, Release Please opens (or updates) a release PR that bumps
-the version in `pyproject.toml` and `uv.lock`, updates `CHANGELOG.md`, and
-proposes the next `v` tag. That release PR **auto-merges** once its checks
-pass, and the merge publishes the tag, creates the GitHub Release, and
-attaches the built wheel and sdist. Nothing publishes to PyPI. Maintainers do
-not need to merge the release PR manually; if auto-merge is unavailable,
-merge it like any other PR.
+After your PR merges, Release Please opens or updates a release PR.
+It updates the version files and `CHANGELOG.md`, and proposes the next `v` tag.
+A maintainer must merge the release PR; CI does not enable auto-merge.
+
+Merge the release PR manually so its push to `main` can trigger release publication.
+GitHub suppresses workflow runs for events created with `GITHUB_TOKEN`.
+The release job runs only on pushes to `main`; `workflow_dispatch` does not run that job.
+When Release Please creates a release, CI attaches the wheel and sdist.
+The workflow does not publish to PyPI.
 
 ## Pull request process
 
@@ -207,12 +209,12 @@ class BaseLLM(Protocol):
 
 ```python
 class BaseEntityResolver(ABC):
-    async def resolve(self, ...):  # shared logic
-        entities = self._load_entities(...)
+    async def resolve(self, *args, **kwargs):  # shared logic
+        entities = self._load_entities(*args, **kwargs)
         ...
 
     @abstractmethod
-    def _load_entities(self, ...):  # backend-specific
+    def _load_entities(self, *args, **kwargs):  # backend-specific
         ...
 ```
 
@@ -220,7 +222,7 @@ class BaseEntityResolver(ABC):
 
 | Class | Style | Reason |
 |---|---|---|
-| `GraphStore` | `Protocol` | Plugin interface, ~30 methods, no shared code |
+| `GraphStore` | `Protocol` | Plugin interface, no shared code |
 | `GraphWriter` | `Protocol` | Narrow writer-only contract |
 | `BaseLLM` | `Protocol` | Plugin interface, no shared code |
 | `BaseEmbedder` | `Protocol` | Plugin interface, no shared code |
@@ -237,10 +239,24 @@ class BaseEntityResolver(ABC):
 4. **New internal base classes with shared logic** → `ABC`.
 5. **When in doubt**, start with `Protocol`. Only switch to `ABC` if you need shared implementation.
 
+## Documentation writing
+
+Use ASD-STE100-based wording in maintained guides, comments, and API docstrings.
+This is an editing convention, not a claim of formal ASD-STE100 compliance or certification.
+
+- Use active voice and name the actor.
+- Use the imperative for instructions. Put conditions before actions.
+- Give one action per procedural step.
+- Keep procedural sentences to 20 words and descriptive sentences to 25 words where practical.
+- Use one term for each concept: graph store, graph building, community report, source chunk, and reserved key.
+- Retain SDK identifiers, database names, and technical terms such as embedding, Cypher, Leiden, LLM, and DRIFT.
+- Preserve API contracts, safety warnings, limits, code identifiers, and historical records.
+- State prerequisites before commands. Check examples and links against the current source.
+
 ## Code of conduct
 
 Be respectful, inclusive, and constructive. Harassment or discriminatory behavior will not be tolerated.
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the [MIT License](../LICENSE).
+By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).

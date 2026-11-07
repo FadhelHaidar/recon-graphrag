@@ -1,8 +1,7 @@
-"""Community pipeline: detect → report → embed.
+"""Community detection, report generation, and optional report embedding.
 
-Convenience wrapper that chains the two community steps into a single
-build() call. Typically run on a schedule (e.g. weekly) after new entities
-have been ingested.
+Call build() after graph building to run these stages together.
+For changing graphs, run the community pipeline again as required.
 """
 
 from __future__ import annotations

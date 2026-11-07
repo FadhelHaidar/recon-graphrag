@@ -1,14 +1,12 @@
 """Shared Cypher query templates for graph retrieval.
 
-Neo4j and Memgraph run the same query language here; they diverge only in two
-mechanical spots, both parameterized below so the backend modules stay
-byte-identical to their hand-written predecessors:
+Neo4j and Memgraph use these templates with two backend-specific settings:
 
-- the internal-id function (``elementId`` on Neo4j, ``id`` on Memgraph)
-- an optional ``ORDER BY score DESC, title`` tie-break appended to the
-  local/DRIFT queries (Memgraph only, where vector-search order is not stable)
+- The internal ID function: ``elementId`` on Neo4j, ``id`` on Memgraph.
+- An optional ``ORDER BY score DESC, title`` for local and DRIFT results.
+  Memgraph needs this ordering because vector-search order is not stable.
 
-Generic retrieval consumers should call GraphStore methods, not import these.
+Retrieval consumers should call GraphStore methods instead of importing templates.
 """
 
 from __future__ import annotations

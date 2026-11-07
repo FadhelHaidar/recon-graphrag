@@ -236,10 +236,10 @@ class DriftSearchRetriever:
     def _retrieval_params(
         self, query_params: dict | None, query_vector: list[float] | None = None
     ) -> dict:
-        """Per-seed caps pushed into the database so hub degree cannot bound work.
+        """Set database-side relationship and source limits for each seed entity.
 
-        Passing a query vector also switches source-chunk selection from chunk-id
-        order to relevance ranking; without one the previous order is kept.
+        A query vector selects relevance-ranked source chunks. Without a vector,
+        source chunks retain chunk-ID order. Caller parameters override defaults.
         """
         params: dict[str, Any] = {
             "rel_limit": self.top_k_relationships,

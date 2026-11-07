@@ -24,7 +24,7 @@ The repository includes Neo4j with APOC/GDS and Memgraph with MAGE. Memgraph Lab
 git clone https://github.com/FadhelHaidar/recon-graphrag.git
 cd recon-graphrag
 
-# Copy and customize the environment file (optional)
+# Copy and configure the environment file for the example scripts
 cp .env.example .env
 
 # Start one backend
@@ -46,11 +46,16 @@ The services will be available at:
 - **Memgraph Bolt**: `bolt://localhost:7689`
 - **Memgraph Lab**: <http://localhost:3000>
 
-To stop:
+Stop the services without removing their volumes:
 
 ```bash
 docker compose down
-# Or to also remove volumes (data will be lost):
+```
+
+**Data deletion:** The next command removes Compose volumes and their database data.
+Use it only to reset a disposable environment:
+
+```bash
 docker compose down -v
 ```
 
@@ -95,13 +100,15 @@ uv run python your_script.py
 
 ## Optional extras
 
-The core package includes the minimum dependencies needed to run the SDK, including the OpenAI client, `sentence-transformers`, and the Neo4j driver. The only remaining optional extra is for the Ollama provider.
+The core package includes the OpenAI client, `sentence-transformers`, and the Neo4j driver. Optional extras add providers, Excel support, and development tools.
 
 | Extra | Installs | Enables |
 | --------- | --------- | --------- |
+| `[anthropic]` | `anthropic` | Anthropic LLM provider |
+| `[excel]` | `openpyxl` | Excel row ingestion |
 | `[ollama]` | `ollama` | Ollama local LLM/embedder provider |
-| `[all]` | All optional extras | All supported providers |
-| `[dev]` | `pytest`, `pytest-asyncio`, `pydantic` | Running the test suite |
+| `[all]` | `anthropic`, `ollama`, `openpyxl` | Anthropic, Ollama, and Excel support |
+| `[dev]` | `pytest`, `pytest-asyncio`, `pydantic`, `openpyxl` | Running the test suite |
 | `[evaluation]` | `pydantic` | Evaluation helpers |
 
 With `uv`:
@@ -118,24 +125,24 @@ uv sync
 
 ### Pinning a version
 
-Pin to a specific release tag so your build stays reproducible:
+Pin to an existing release tag for reproducible builds. Replace `vX.Y.Z` in these commands with that tag:
 
 ```bash
-uv add git+https://github.com/FadhelHaidar/recon-graphrag.git@v0.4.0
+uv add git+https://github.com/FadhelHaidar/recon-graphrag.git@vX.Y.Z
 uv sync
 ```
 
 With extras:
 
 ```bash
-uv add "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/recon-graphrag.git@v0.4.0"
+uv add "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/recon-graphrag.git@vX.Y.Z"
 uv sync
 ```
 
 With `pip`:
 
 ```bash
-pip install "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/recon-graphrag.git@v0.4.0"
+pip install "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/recon-graphrag.git@vX.Y.Z"
 ```
 
 ---
@@ -188,11 +195,22 @@ pip install python-dotenv
 
 ## Clone without installing
 
-You can also clone the repository and import it directly without running `pip install`, as long as your script runs from the parent directory of the cloned folder:
+Clone the repository and install its dependencies before importing the source package.
+The package directory is `recon_graphrag` inside the repository, not the hyphenated repository folder.
+
+Run Python from the repository root:
 
 ```bash
-# From your project root (above the recon-graphrag folder)
-python your_script.py
+cd recon-graphrag
+uv sync --extra dev --group dev --no-install-project
+uv run --no-sync python -c "import recon_graphrag"
+```
+
+For a script outside the repository, add the repository root to `PYTHONPATH`.
+Use the environment that contains the dependencies:
+
+```bash
+PYTHONPATH=/absolute/path/to/recon-graphrag /absolute/path/to/recon-graphrag/.venv/bin/python your_script.py
 ```
 
 ```python
@@ -200,7 +218,8 @@ python your_script.py
 from recon_graphrag import LocalSearchRetriever, GraphBuilderPipeline
 ```
 
-Python automatically adds the current working directory to `sys.path`, so the package is importable without installation.
+For examples, install the development dependency group, which includes `python-dotenv`.
+Copy `.env.example` to `.env` at the repository root and configure the database URLs and provider credentials.
 
 ---
 
@@ -212,11 +231,7 @@ import recon_graphrag
 print(recon_graphrag.__version__)
 ```
 
-You should see the installed version, for example:
-
-```text
-0.4.0
-```
+The command prints the installed version.
 
 ---
 
@@ -253,7 +268,7 @@ pip install "recon-graphrag[ollama] @ git+https://github.com/FadhelHaidar/recon-
 
 - Confirm the plugins are in the Neo4j `plugins` directory.
 - For manual installs, make sure `dbms.security.procedures.unrestricted=apoc.*,gds.*` is set in `neo4j.conf`.
-- With Docker Compose, both plugins are pre-installed. If they are missing, try `docker compose down -v` followed by `docker compose up -d`.
+- With Docker Compose, check the Neo4j logs and plugin configuration. Do not delete database volumes to troubleshoot missing plugins.
 
 ### Conflicting Python version
 

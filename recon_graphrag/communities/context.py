@@ -1,8 +1,8 @@
-"""Typed community context records, rendering, and token-bounded packing.
+"""Typed community context records, rendering, and token-budget packing.
 
-Replaces raw backend node objects with plain typed records at the summarizer
-boundary. Edges are sorted by combined endpoint degree (paper-compatible).
-Packing ensures context fits within LLM token budgets.
+The summarizer receives typed records instead of backend node objects.
+Edges are sorted by combined endpoint degree. Packing limits the rendered
+context according to the selected token counter.
 """
 
 from __future__ import annotations

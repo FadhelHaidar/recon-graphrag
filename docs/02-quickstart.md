@@ -1,6 +1,8 @@
 # Quick Start
 
-This guide walks you through building and searching your first knowledge graph with Recon-GraphRAG.
+Build and search a knowledge graph with Recon-GraphRAG.
+Run individual `await` snippets in an async function or a notebook with top-level await support.
+The complete example below includes an async entry point.
 
 ## Before you start
 
@@ -15,7 +17,7 @@ See [Installation](01-installation.md) if you have not set these up yet.
 
 ## 1. Connect to a graph database
 
-Both backends use the Bolt-compatible `GraphDatabase` driver. Choose the matching store and index manager.
+Both graph stores use the Bolt-compatible `GraphDatabase` driver. Choose the store that matches your database.
 
 ### Neo4j
 
@@ -97,7 +99,9 @@ schema = GraphSchema(
 )
 ```
 
-See [Schema](03-schema.md) for more ways to define schemas, including the `build_schema()` helper and `analyze_schema()`, which lets an LLM propose a schema from sample documents when you don't know where to start.
+See [Schema](03-schema.md) for more schema options.
+Use `build_schema()` to construct a schema from dictionaries.
+Use `analyze_schema()` to propose a schema from sample documents. Inspect the proposal before use.
 
 ---
 
@@ -127,7 +131,7 @@ See [Providers](08-providers.md) for Azure OpenAI, Ollama, OpenRouter, and sente
 
 ## 5. Build the graph
 
-`GraphBuilderPipeline` extracts entities and relationships, resolves duplicate entities, and embeds the resulting graph:
+`GraphBuilderPipeline` extracts entities and relationships, writes graph records, resolves duplicates, and embeds entities:
 
 ```python
 from recon_graphrag import GraphBuilderPipeline
@@ -145,7 +149,9 @@ await pipeline.build_from_text(
 )
 ```
 
-You can also ingest multiple documents or paginated sources with `build_from_documents()`, or structured data (CSV/Excel/SQL rows) with `build_from_csv()` / `build_from_excel()` / `build_from_sql()` — see [docs/11-structured-data.md](11-structured-data.md).
+Use `build_from_documents()` for multiple documents or paginated sources.
+For CSV, Excel, or SQL rows, use `build_from_csv()`, `build_from_excel()`, or `build_from_sql()`.
+See [Structured data](11-structured-data.md).
 
 ---
 
@@ -229,9 +235,11 @@ ticket IDs, list-item IDs, or other source-specific keys.
 
 ## Complete Neo4j example
 
-Here is the full script in one block:
+Save this script and run it with Python:
 
 ```python
+import asyncio
+
 from neo4j import GraphDatabase
 from recon_graphrag import (
     LocalSearchRetriever,
@@ -247,59 +255,63 @@ from recon_graphrag import (
     RelationshipType,
 )
 
-# Connect
-driver = GraphDatabase.driver("bolt://localhost:7688", auth=("neo4j", "password"))
-store = Neo4jGraphStore(driver)
+async def main():
+    # Connect
+    driver = GraphDatabase.driver("bolt://localhost:7688", auth=("neo4j", "password"))
+    store = Neo4jGraphStore(driver)
 
-# Indexes
-store.create_indexes(IndexConfig(), embedding_dim=1536)
+    # Indexes
+    store.create_indexes(IndexConfig(), embedding_dim=1536)
 
-# Schema
-schema = GraphSchema(
-    node_types=[
-        NodeType(
-            label="Person",
-            description="An individual such as an actor or director",
-            properties=[
-                PropertyType(name="occupation", type="STRING", description="Primary role or profession"),
-            ],
-        ),
-        NodeType(
-            label="Movie",
-            description="A film or motion picture",
-            properties=[
-                PropertyType(name="release_year", type="STRING", description="Year the film was released"),
-                PropertyType(name="genre", type="STRING", description="Primary genre"),
-            ],
-        ),
-    ],
-    relationship_types=[
-        RelationshipType(label="DIRECTED", description="Person directed a movie"),
-    ],
-    patterns=[("Person", "DIRECTED", "Movie")],
-)
+    # Schema
+    schema = GraphSchema(
+        node_types=[
+            NodeType(
+                label="Person",
+                description="An individual such as an actor or director",
+                properties=[
+                    PropertyType(name="occupation", type="STRING", description="Primary role or profession"),
+                ],
+            ),
+            NodeType(
+                label="Movie",
+                description="A film or motion picture",
+                properties=[
+                    PropertyType(name="release_year", type="STRING", description="Year the film was released"),
+                    PropertyType(name="genre", type="STRING", description="Primary genre"),
+                ],
+            ),
+        ],
+        relationship_types=[
+            RelationshipType(label="DIRECTED", description="Person directed a movie"),
+        ],
+        patterns=[("Person", "DIRECTED", "Movie")],
+    )
 
-# Providers
-llm = create_llm("openai", model_name="gpt-4o", api_key="sk-...")
-embedder = create_embedder("openai", model="text-embedding-3-small", api_key="sk-...")
+    # Providers
+    llm = create_llm("openai", model_name="gpt-4o", api_key="sk-...")
+    embedder = create_embedder("openai", model="text-embedding-3-small", api_key="sk-...")
 
-# Build graph
-pipeline = GraphBuilderPipeline(graph_store=store, llm=llm, embedder=embedder)
-await pipeline.build_from_text("Christopher Nolan directed Inception.", schema=schema)
+    # Build graph
+    pipeline = GraphBuilderPipeline(graph_store=store, llm=llm, embedder=embedder)
+    await pipeline.build_from_text("Christopher Nolan directed Inception.", schema=schema)
 
-# Build communities
-community = CommunityPipeline(
-    graph_store=store,
-    llm=llm,
-    embedder=embedder,
-    relationship_types=["DIRECTED"],
-)
-await community.build()
+    # Build communities
+    community = CommunityPipeline(
+        graph_store=store,
+        llm=llm,
+        embedder=embedder,
+        relationship_types=["DIRECTED"],
+    )
+    await community.build()
 
-# Search
-local_search = LocalSearchRetriever(store, llm, embedder)
-result = await local_search.search("What are the key findings?", top_k=10)
-print(result.answer)
+    # Search
+    local_search = LocalSearchRetriever(store, llm, embedder)
+    result = await local_search.search("What are the key findings?", top_k=10)
+    print(result.answer)
+
+
+asyncio.run(main())
 ```
 
 To run the complete example on Memgraph, replace the connection setup with the Memgraph snippet from step 1. The schema, providers, pipelines, and search calls remain unchanged.

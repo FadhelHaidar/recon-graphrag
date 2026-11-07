@@ -1,10 +1,10 @@
 """Knowledge graph construction pipeline.
 
-Ingests text via internal extraction backend, then automatically
-runs entity resolution and embedding (steps 1-3 of the full pipeline).
+Extract and validate text observations, then write graph records.
+After writing, optionally resolve duplicate entities, summarize descriptions,
+and embed entities and source chunks.
 
-Steps 4-5 (community detection and summarization) are handled separately by the
-CommunityPipeline, typically on a schedule.
+Run CommunityPipeline separately for community detection and reports.
 """
 
 from __future__ import annotations
@@ -200,16 +200,15 @@ class GraphBuilderPipeline:
         token_counter: TokenCounter | None = None,
         token_encoding: str = _DEFAULT_CHUNK_ENCODING,
     ) -> dict:
-        """Build knowledge graph from raw text.
+        """Build a knowledge graph from raw text.
 
-        ``schema`` is required; to auto-generate one from sample text, call
-        ``analyze_schema``/``aanalyze_schema`` explicitly and pass the result.
+        ``schema`` is required. To propose one from sample text, call
+        ``analyze_schema`` or ``aanalyze_schema``, then inspect the result.
 
-        Uses internal token-based chunking and extraction, then automatically:
-          - Step 2: Entity resolution (merge duplicates)
-          - Step 3: Entity embedding (for local/DRIFT search)
-
-        Steps 4-5 must be run separately via CommunityPipeline.
+        Chunk the text, extract observations, validate them, and write records.
+        Then run the enabled resolution, description summarization, and embedding
+        stages. Chunking uses tokens by default; ``chunk_unit`` can select characters.
+        Run CommunityPipeline separately for community detection and reports.
         """
         self._require_schema(schema)
         self._require_concurrency(extraction_concurrency)
@@ -1029,7 +1028,7 @@ class GraphBuilderPipeline:
         await asyncio.to_thread(self.graph_store.backfill_descriptions)
 
     async def _resolve_entities(self):
-        """Step 2: Merge duplicate entities with the internal resolver."""
+        """Merge duplicate entities with the configured resolution strategy."""
         try:
             strategy = self.entity_resolution_strategy
             if strategy == "exact":
@@ -1075,11 +1074,10 @@ class GraphBuilderPipeline:
             return None
 
     async def _embed_entities(self, *, require_complete: bool = False):
-        """Step 3: Generate vector embeddings for entity nodes.
+        """Generate or refresh entity vectors.
 
-        With ``require_complete`` (or ``fail_on_embedding_error``), verifies
-        that no entity in this graph still lacks an embedding after the
-        embedding pass and raises if any remain.
+        With ``require_complete`` or ``fail_on_embedding_error``, check for
+        missing or stale vectors after embedding. Raise if any remain.
         """
         embedder = EntityEmbedder(
             self.graph_store, self.embedder, graph_name=self.graph_name
@@ -1120,14 +1118,13 @@ class GraphBuilderPipeline:
             logger.error("chunk embedding failed: %s", e)
 
     async def complete_embeddings(self) -> None:
-        """Embed every entity in this graph that still lacks an embedding.
+        """Generate missing entity vectors and refresh stale vectors in this graph.
 
-        Recovery after a failed embedding stage: uses the configured graph
-        store, embedder, and graph name to fill only missing entity vectors,
-        then verifies completion and raises if any remain. Existing vectors
-        are not replaced; extraction, writes, resolution, and summarization
-        are not rerun. A graph without missing vectors does not prove that
-        all intended documents were ingested.
+        Use the configured store, embedder, and graph name. Fingerprints identify
+        vectors that no longer match the entity text or embedding model.
+        Verify completion and raise if missing or stale vectors remain.
+        Do not repeat extraction, graph writes, resolution, or summarization.
+        Complete vectors do not prove that all intended documents were ingested.
         """
         await self._embed_entities(require_complete=True)
 

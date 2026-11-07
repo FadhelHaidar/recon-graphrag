@@ -1,8 +1,7 @@
-"""Auto-analyze a graph schema from sample documents.
+"""Propose a graph schema from sample documents.
 
-For when you have no idea what schema fits your use case: the LLM
-proposes one from sample text, which you inspect, tweak, and pass to
-the build methods (build_from_text/build_from_documents require a schema).
+The LLM proposes a schema from sample text. Inspect and edit the proposal.
+Pass it to build_from_text or build_from_documents; both methods require a schema.
 
 Usage:
   python analyze_schema.py

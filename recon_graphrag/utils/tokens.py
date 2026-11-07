@@ -1,10 +1,9 @@
 """Token counting and packing utilities.
 
-These primitives are intentionally dependency-light. The default
-``ApproximateTokenCounter`` uses a configurable character-to-token ratio so that
-budgeting works without an exact tokenizer. For provider-level accuracy, the
-``TiktokenTokenCounter`` adapter is available and ``tiktoken`` is included as a
-required project dependency.
+``ApproximateTokenCounter`` estimates tokens from a character-to-token ratio.
+``TiktokenTokenCounter`` counts tokens for a selected encoding. These counts
+need not match a provider's billing or full request token count.
+The project includes ``tiktoken`` as a required dependency.
 """
 
 from __future__ import annotations
@@ -28,11 +27,10 @@ class TokenCounter(Protocol):
 
 
 class ApproximateTokenCounter:
-    """Lightweight token estimator.
+    """Estimate token counts from text length.
 
-    Uses ``ceil(len(text) / ratio)`` as the token count. This is a coarse
-    estimate suitable for budgeting when no exact tokenizer is available.
-    Callers requiring provider-level accuracy should pass an exact counter.
+    Use ``ceil(len(text) / ratio)`` for approximate budgets. For encoding-specific
+    counts, use a counter that matches the selected model's tokenizer.
     """
 
     DEFAULT_RATIO = 4.0

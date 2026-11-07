@@ -47,13 +47,11 @@ class ModelParamsEmbedder:
 
 
 class TruncatingEmbedder:
-    """Wrap an embedder and cut its vectors to ``target_dim``, renormalized.
+    """Truncate embedding vectors to ``target_dim`` and normalize their length.
 
-    Matryoshka-style prefix truncation: the first N components of a larger
-    embedding remain a usable ranking signal, so scale-down does not need a
-    separate downsampling model. Consistency matters more than maximal
-    fidelity — the same truncation must apply at ingest AND query time, which
-    this wrapper guarantees.
+    Prefix truncation can preserve useful rankings for Matryoshka-style models.
+    Other models can lose retrieval quality. Use the same wrapper for graph
+    building and queries so both operations produce compatible vectors.
     """
 
     def __init__(self, embedder: BaseEmbedder, target_dim: int):
@@ -87,14 +85,13 @@ class TruncatingEmbedder:
 
 
 def detect_embedding_dim(embedder: BaseEmbedder) -> Optional[int]:
-    """Return the embedder's output dimension, or None if it cannot be told.
+    """Return the output dimension, or None when detection fails.
 
-    Works for all providers: TruncatingEmbedder reports its target,
-    sentence-transformer models report their encoder dimension, and any other
-    adapter is probed with a single real embed call (cached on the instance,
-    executed off-thread since callers may sit inside a running event loop).
-    Returns None only when probing fails (e.g. credentials/network down), so
-    callers keep their existing fallback behavior.
+    Read TruncatingEmbedder's target dimension or a sentence-transformer model's
+    encoder dimension when available. Otherwise, make one asynchronous embedding
+    request in a worker thread. The probe can incur provider costs.
+    Cache the probe result on the underlying instance when possible.
+    An unavailable async method or a failed probe returns None.
     """
     dim = getattr(embedder, "target_embedding_dim", None)
     if isinstance(dim, int) and dim > 0:

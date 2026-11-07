@@ -1,6 +1,7 @@
 # Advanced Workflows
 
-Recon-GraphRAG's high-level examples ([`GraphBuilderPipeline`](05-pipelines.md), [search classes](06-search.md)) cover the most common path, but the library is composed of smaller, interchangeable building blocks. This guide explains those primitives so you can assemble custom workflows, implement new backends, or inspect intermediate artifacts without running a full pipeline.
+Start with [`GraphBuilderPipeline`](05-pipelines.md) and the [search classes](06-search.md) for common workflows.
+Use the smaller components in this guide to assemble custom workflows, add graph stores, or inspect intermediate artifacts.
 
 ## When to use the building blocks
 
@@ -242,7 +243,7 @@ graph_doc = assembler.assemble(
 
 [`recon_graphrag.extraction.chunking`](../recon_graphrag/extraction/chunking.py) provides two chunk builders:
 
-- `TextChunker` — character-level sliding windows.
+- `TextChunker` — sliding windows measured in characters or tokens.
 - `PageWindowBuilder` — page-level sliding windows that join multiple pages into one chunk.
 
 ```python
@@ -442,7 +443,9 @@ leaves the database untouched.
 SDK-owned keys rejected in every map: `id`, `graph_name`, `created`, `updated`,
 `embedding`, `description_summary_status`, `description_input_fingerprint`,
 `description_summary_updated`, `description_summary_error`,
-`description_summary_fallback`.
+`description_summary_fallback`, `description_sources`, `strength_sources`,
+`embedding_input_fingerprint`, `embedding_content_fingerprint`,
+`embedding_model_fingerprint`, `uid`.
 
 Rejected on top of those:
 
@@ -484,17 +487,16 @@ For pipeline document identity, a nonempty metadata `document_id` takes preceden
 over `source`, then `title`, then the text-derived ID. Changing a lower-priority
 value does not replace an explicit identity.
 
-The guarantee is per artifact and applies to reserved-key rejection only:
-previously written artifacts are not rolled back when a later document in the
-same build is rejected, and a custom store without the `_transaction` hook can
-still leave partial writes. Built-in Neo4j and Memgraph stores write one
+This guarantee applies to reserved-key rejection for one artifact only.
+If a later document is rejected, earlier artifacts remain written.
+A custom store without the `_transaction` hook can still leave partial writes. Built-in Neo4j and Memgraph stores write one
 document inside one transaction, so a failure inside a single document write
 rolls that document back. Extraction may already have incurred provider costs
 before validation; a high-level retry may repeat that work.
 
 ### Implement a custom GraphStore
 
-Implement every method in `GraphStore` to add a new backend. The protocol defines around 30 methods spanning index management, entity resolution, vector/keyword search, community detection/persistence, and validation. The Neo4j and Memgraph store tests show the shared contract alongside backend-specific query behavior.
+Implement every method in `GraphStore` to add a new backend. The protocol covers index management, entity resolution, vector/keyword search, community detection/persistence, and validation. The Neo4j and Memgraph store tests show the shared contract alongside backend-specific query behavior.
 
 ```python
 from recon_graphrag.graphdb.base import GraphStore
@@ -516,9 +518,8 @@ See [`recon_graphrag/graphdb/base.py`](../recon_graphrag/graphdb/base.py) for th
 
 ## Run entity resolution independently
 
-`GraphBuilderPipeline` calls entity resolution for you after writing extracted
-entities, but the same operation is also available directly on any graph store
-through the strategy-specific methods: `GraphStore.resolve_entities_exact()`,
+`GraphBuilderPipeline` calls entity resolution after writing extracted entities.
+You can also call these graph-store methods directly: `GraphStore.resolve_entities_exact()`,
 `GraphStore.resolve_entities_normalized()`, `GraphStore.resolve_entities_fuzzy()`,
 and `GraphStore.resolve_entities_hybrid()`. Use these when you have already loaded
 graph data and want to inspect or merge duplicate entities without running
@@ -723,17 +724,16 @@ SearchResult(
 )
 ```
 
-Citation metadata is intentionally flexible. It is copied from document and
-chunk metadata, so callers can use row IDs, item IDs, file IDs, API object IDs,
-ticket IDs, page ranges, or any other source keys without changing the graph
-schema.
+Citation metadata is intentionally flexible. It is copied from document and chunk metadata.
+Callers can use row IDs, item IDs, file IDs, API object IDs, ticket IDs, page ranges, or other source keys.
+No graph-schema change is required.
 
 ### `LocalSearchRetriever`
 
 Entity-centric search: vector + keyword retrieval on entities, subgraph traversal, then an LLM answer.
 
 ```python
-from recon_graphrag.retrieval.local import LocalSearchRetriever
+from recon_graphrag.retrieval.search_local import LocalSearchRetriever
 
 retriever = LocalSearchRetriever(
     graph_store=store,
@@ -778,7 +778,7 @@ point_result = await point_retriever.search(
 Hybrid of local entity context and community context.
 
 ```python
-from recon_graphrag.retrieval.drift import DriftSearchRetriever
+from recon_graphrag.retrieval.search_drift import DriftSearchRetriever
 from recon_graphrag.retrieval.drift_types import DriftSearchConfig
 
 retriever = DriftSearchRetriever(
@@ -813,10 +813,8 @@ retriever = HybridEntityRetriever(
 result = await retriever.search("Who directed Inception?", top_k=10)
 ```
 
-A custom `retrieval_query` is responsible for its own limits. The default query
-honours `rel_limit` and `source_limit` (passed through `query_params`); a custom
-query that ignores them returns every matched row, so a hub entity can still
-stream its whole neighborhood into Python.
+A custom `retrieval_query` is responsible for its own limits. The default query enforces `rel_limit` and `source_limit`, passed through `query_params`.
+A custom query that ignores them returns every matched row. Thus, a hub entity can still send its whole neighborhood to Python.
 
 ### `MixedContextBuilder`
 
@@ -1074,23 +1072,26 @@ guarantee provider output-token or billed-cost ceilings.
 
 ## Token usage observability
 
-Token usage is tracked **by default** for every pipeline and search call, which
-surfaces a `token_usage` summary in its result — see
-[Token usage](05-pipelines.md#token-usage) for that default behavior, the stage
-taxonomy, and `render_usage_table`. This section covers the primitives for when
+Every pipeline and search call tracks token usage **by default** and includes a `token_usage` summary in its result.
+See [Token usage](05-pipelines.md#token-usage) for the default behavior, stage names, and `render_usage_table`. This section covers the primitives for when
 you need more than the default.
 
-Call `track_usage()` to wrap an LLM yourself when you want to attach a
-`JsonlUsageSink`, use your own `TokenUsageLedger` for cross-call accumulation
-(see below), or track a standalone building block that isn't auto-wrapped
-(`CommunitySummarizer`, `LLMGraphExtractor`, `DescriptionSummarizer`,
-`analyze_schema`/`aanalyze_schema`,
-`GraphStore.resolve_entities_hybrid(llm=...)`). `track_usage()` is idempotent,
+Wrap an LLM with `track_usage()` to attach a `JsonlUsageSink` or your own `TokenUsageLedger` for totals across calls.
+Also use it to track standalone components that do not wrap the LLM automatically:
+
+- `CommunitySummarizer`
+- `LLMGraphExtractor`
+- `DescriptionSummarizer`
+- `analyze_schema` and `aanalyze_schema`
+- `GraphStore.resolve_entities_hybrid(llm=...)`
+
+ `track_usage()` is idempotent,
 so wrapping the LLM before passing it into a pipeline (e.g. to attach a custom
 ledger) is always safe — the pipeline's own auto-wrap becomes a no-op.
 
 ```python
-from recon_graphrag import LLMGraphExtractor, render_usage_table, track_usage, usage_snapshot
+from recon_graphrag import render_usage_table, track_usage, usage_snapshot
+from recon_graphrag.extraction.extractor import LLMGraphExtractor
 
 llm = track_usage(create_llm(...))
 extractor = LLMGraphExtractor(llm)  # a standalone primitive, not auto-wrapped

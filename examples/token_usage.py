@@ -1,11 +1,9 @@
-"""Token usage observability example.
+"""Track token usage across graph building and search.
 
-Token tracking is on by default for the pipelines/retrievers used below, so
-wrapping the LLM isn't required to see ``token_usage`` in results. This
-example wraps it explicitly anyway (via ``track_usage(llm, ledger=...)``) to
-attach a custom ``TokenUsageLedger``/``JsonlUsageSink`` for cross-call
-persistence and round-trip analysis, which the default ledger does not do
-(it forgets each run once its response has been returned).
+The pipelines and retrievers below track token usage by default.
+This example explicitly wraps the LLM with ``track_usage(llm, ledger=...)``.
+The custom ``TokenUsageLedger`` and ``JsonlUsageSink`` persist events across calls
+for later analysis. The default ledger retains only the current run's events.
 
 Usage:
   python token_usage.py --backend neo4j --llm-provider openai

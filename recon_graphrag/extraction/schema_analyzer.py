@@ -1,13 +1,12 @@
-"""LLM-powered schema proposal from sample text.
+"""Propose a graph schema from sample text with an LLM.
 
-For users who do not yet know what graph schema fits their documents:
-feed sample text (plus an optional domain hint) to an LLM and get back
-a ``GraphSchema`` proposal to inspect, tweak, and pass to the pipeline.
+Supply sample text and an optional domain hint. Inspect and edit the returned
+``GraphSchema`` before passing it to a pipeline.
 
-When the input fits within ``max_sample_tokens`` it is analyzed in a
-single LLM call. Larger inputs are packed into batches, each batch is
-analyzed independently (concurrently in the async variant), and a final
-merge call unifies the partial proposals into one schema.
+Input within ``max_sample_tokens`` uses one analysis call. Larger inputs use
+separate batches and a final merge call. The async variant analyzes batches
+concurrently. Input beyond ``max_batches`` is omitted; oversized texts are
+truncated to the per-batch budget.
 """
 
 from __future__ import annotations
@@ -81,24 +80,22 @@ def analyze_schema(
     max_batches: int = 10,
     token_counter: TokenCounter | None = None,
 ) -> GraphSchema:
-    """Propose a GraphSchema from sample text using an LLM.
+    """Propose a GraphSchema from sample text with an LLM.
 
     Args:
-        llm: Any BaseLLM instance.
-        texts: A sample text or iterable of sample texts.
-        hint: Optional domain description (e.g. "legal contracts").
-        max_sample_tokens: Per-batch token budget for the sample text
-            (prompt template overhead is extra). Input beyond one batch
-            is analyzed batch-by-batch, then merged with one extra LLM
-            call (map-reduce). The sync variant analyzes batches
-            sequentially; use aanalyze_schema for concurrent analysis.
-        max_batches: Cap on analysis calls; batches beyond it are dropped.
-        token_counter: Counter used for budgeting. Defaults to tiktoken
-            with the cl100k_base encoding, like the pipeline chunker.
+        llm: A BaseLLM instance.
+        texts: One sample text or an iterable of sample texts.
+        hint: Optional domain description, such as "legal contracts".
+        max_sample_tokens: Per-batch sample budget, excluding prompt overhead.
+            Multiple batches require one analysis call each and a final merge
+            call. This function analyzes batches sequentially. Use aanalyze_schema
+            for concurrent analysis.
+        max_batches: Maximum analysis batches. Additional batches are omitted.
+        token_counter: Counter for sample budgets. The default uses tiktoken
+            with the cl100k_base encoding, as the pipeline chunker does.
 
     Returns:
-        A validated GraphSchema proposal to inspect, tweak, and pass
-        to GraphBuilderPipeline.
+        A validated GraphSchema proposal. Inspect and edit it before use.
     """
     batches = _make_batches(texts, max_sample_tokens, max_batches, token_counter)
     partials = [

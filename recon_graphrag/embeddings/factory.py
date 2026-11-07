@@ -55,12 +55,13 @@ def create_embedder(
 
 
 def scale_down_embeddings(embedder: BaseEmbedder, target_dim: int) -> BaseEmbedder:
-    """Emit embeddings of ``target_dim`` from whatever the model natively outputs.
+    """Reduce embedding vectors to ``target_dim`` when possible.
 
-    Works when the model uses MORE dimensions than requested (e.g. a 1536-dim
-    model emitting 768-dim vectors). Models with fewer dims are left as-is —
-    upscaling a vector manufactures no information. databases/index stores
-    already auto-detect, so index dims follow whatever this emits.
+    If detection shows a smaller native dimension, warn and return the original
+    embedder. Do not add vector components. If the dimensions match, return the
+    original embedder. Otherwise, return a truncation wrapper.
+    Set each graph store's index dimension to the wrapper's output dimension;
+    graph-store ``create_indexes`` methods do not automatically detect it.
     """
     native = detect_embedding_dim(embedder)
     if native is not None and target_dim > native:

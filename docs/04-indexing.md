@@ -42,9 +42,12 @@ You do not need to recreate them every time you ingest more text, unless you cha
 
 Before creating constraints, setup checks for duplicate `(graph_name, id)` records within each label. A failure names the label, graph, ID, and duplicate count. Resolve those duplicates or rebuild the affected graph, then rerun setup; it never auto-merges them. Once the preflight passes, missing UIDs are backfilled. Equivalent constraints are accepted; other constraint errors propagate.
 
-**Finish setup before starting concurrent ingestion.** Two concurrent writes may match the same node or one may receive a backend conflict. The constraints prevent duplicate committed identities, not interleaved property updates or partial document replacement; the SDK does not automatically retry conflicts. The same ID in different graphs remains independent.
+**Finish setup before starting concurrent graph building.** Two writes can match the same node or cause a database conflict.
+The constraints prevent duplicate committed identities; they do not order concurrent updates.
+The built-in writer uses document transactions and retries selected conflicts. See [document replacement](05-pipelines.md#document-replacement-and-legacy-graphs) for its guarantees and retry limits.
+The same ID in different graphs remains independent.
 
-Index setup does not migrate legacy description/strength ownership. See [replacement and migration](05-pipelines.md#document-replacement-and-legacy-graphs). Also note that managed retrieval indexes are recreated during setup: this is a maintenance operation, not a safe concurrent-serving rebuild.
+Index setup does not migrate legacy description/strength ownership. See [replacement and migration](05-pipelines.md#document-replacement-and-legacy-graphs). Index setup reuses compatible indexes and creates missing indexes. It raises an error for incompatible or unverifiable definitions; it does not drop indexes automatically.
 
 ---
 
@@ -57,7 +60,7 @@ The `embedding_dim` parameter must match the dimension of your embedder.
 | OpenAI `text-embedding-3-small` | 1536 | Default for OpenAI examples. |
 | OpenAI `text-embedding-3-large` | 3072 | Pass `embedding_dim=3072`. |
 | Azure OpenAI | 1536 or 3072 | Depends on the deployment. |
-| Sentence-Transformers | Auto-detected | Pass the embedder to `create_indexes` to detect the dimension. |
+| Sentence-Transformers | Model-specific | Pass `embedding_dim=detect_embedding_dim(embedder)`; `create_indexes` does not inspect the embedder. |
 | Ollama / OpenRouter | Varies | Check the model card and pass explicitly. |
 
 For sentence-transformers, detect the dimension and pass it explicitly:
@@ -135,13 +138,15 @@ This is useful during development to confirm that:
 
 ## Rebuilding indexes
 
-If you change the embedding dimension, recreate the managed indexes:
+If you change the embedding dimension, explicitly drop and recreate the managed indexes.
+Schedule maintenance: queries can fail while indexes are absent. This operation does not delete graph records.
 
 ```python
+store.drop_indexes()
 store.create_indexes(embedding_dim=1536)
 ```
 
-`create_indexes()` replaces its managed indexes. This does not delete graph data, but queries may briefly run without those indexes while they are recreated.
+Existing vectors must also match the new dimension. Regenerate them with the matching embedder before serving searches.
 
 ---
 
