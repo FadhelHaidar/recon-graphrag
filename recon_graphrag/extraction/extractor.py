@@ -31,11 +31,11 @@ class LLMGraphExtractor:
         Args:
             text: Source text to extract from.
             schema: Graph schema defining allowed types.
-            max_gleanings: Maximum gleaning iterations after initial extraction.
-                0 = single extraction call (current behavior).
+            max_gleanings: Maximum follow-up loops after initial extraction.
+                Set to 0 for one extraction call. Pipeline builds default to 1.
 
         Returns:
-            Merged GraphExtraction from initial + all gleaning iterations.
+            GraphExtraction containing the initial and additional observations.
         """
         current = await self._single_extract(text, schema)
 

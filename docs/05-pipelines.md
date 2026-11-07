@@ -7,11 +7,12 @@ Recon-GraphRAG splits indexing into two pipelines: one that builds the entity gr
 | Stage | Pipeline | Steps |
 | --------- | --------- | --------- |
 | **Graph Building** | `GraphBuilderPipeline` | 1. Extract entities & relationships via LLM |
-| | | 2. Entity resolution (merge duplicates) |
-| | | 3. Entity/relationship description summarization |
-| | | 4. Entity embedding |
-| **Community Building** | `CommunityPipeline` | 4. Community detection (Leiden via the backend store) |
-| | | 5. Community summarization (LLM) |
+| | | 2. Write documents, chunks, entities, and relationships |
+| | | 3. Entity resolution (merge duplicates) |
+| | | 4. Entity/relationship description summarization |
+| | | 5. Entity embedding |
+| **Community Building** | `CommunityPipeline` | 6. Community detection (Leiden via the graph store) |
+| | | 7. Community report generation and optional report embedding |
 
 After both pipelines run, the graph is ready for search using `LocalSearchRetriever`, `GlobalSearchRetriever`, or `DriftSearchRetriever`.
 
@@ -143,9 +144,8 @@ same call.
 **at once**. They do not bound the work a build does in total, and they do not
 bound memory.
 
-Internally a build uses a fixed pool of workers that pull from a shared queue,
-so a 10,000-document batch with `document_concurrency=2` keeps at most two
-documents in flight rather than creating 10,000 pending tasks. Still input-sized
+A build uses a fixed pool of workers that pull from a shared queue.
+For 10,000 documents with `document_concurrency=2`, at most two documents are in progress. The build does not create 10,000 pending tasks. Still input-sized
 and unavoidable for a single call:
 
 - the `documents` / `rows` argument you pass in;
@@ -164,6 +164,7 @@ By default, `chunk_size` and `chunk_overlap` are measured in tokens using
 ```python
 result = await pipeline.build_from_text(
     text,
+    schema=schema,
     chunk_size=500,
     chunk_overlap=50,
     chunk_unit="characters",
@@ -177,15 +178,16 @@ from recon_graphrag.utils import ApproximateTokenCounter
 
 result = await pipeline.build_from_text(
     text,
+    schema=schema,
     chunk_size=500,
     chunk_overlap=50,
     token_counter=ApproximateTokenCounter(),
 )
 ```
 
-`ApproximateTokenCounter` uses `ceil(len(text) / 4)` as a fast estimate. For
-provider-level accuracy with OpenAI models, use the default tiktoken-backed
-counter or pass `token_encoding`.
+`ApproximateTokenCounter` estimates tokens with `ceil(len(text) / 4)`.
+For encoding-specific counts, use the default tiktoken counter or set `token_encoding`.
+Counts can differ from provider billing and full request token counts.
 
 You can still pre-chunk text externally with `TextChunker` and pass each chunk
 as its own `"text"` envelope if you need full control over chunk boundaries
@@ -346,9 +348,8 @@ pipeline = GraphBuilderPipeline(
 ```
 
 Every parameter defaults to `None`, which keeps the existing default prompt
-unchanged. Each string may include optional placeholders to control where
-the backend inserts content; a placeholder that is present is substituted
-in place, and one that is absent is appended in the standard location.
+unchanged. Each string can include optional placeholders to control content placement.
+The backend replaces each supplied placeholder in place. For omitted placeholders, it appends the content in the standard location.
 
 | Parameter | Used for | Optional placeholders |
 | --- | --- | --- |
@@ -367,9 +368,9 @@ that prints the generated prompts.
 
 ### Gleaning
 
-By default, the extractor makes a single LLM call per chunk. Set
-`max_gleanings` on the build call to enable follow-up extraction loops that
-catch missed entities:
+The extractor first makes one extraction call per chunk.
+By default, `max_gleanings=1` allows one follow-up loop to find missed entities.
+Set `max_gleanings=0` to disable these loops:
 
 ```python
 result = await pipeline.build_from_text(
@@ -424,7 +425,10 @@ layer of structured evidence when enabled.
 
 ### Document replacement and legacy graphs
 
-The default writer replaces one document's contribution within its `graph_name`, including when called through `store.write_graph_document()`. Reusing the same document ID removes obsolete chunks, evidence and claims, replaces descriptions, and recomputes relationship chunk counts, weights and maximum strength from surviving document contributions. Shared evidence/descriptions survive; only unreferenced entities and relationships without surviving evidence are deleted.
+The default writer replaces one document's contribution within its `graph_name`. This also applies to `store.write_graph_document()`.
+Reusing a document ID removes obsolete chunks, evidence, and claims, and replaces descriptions.
+The writer recomputes relationship chunk counts, weights, and maximum strength from surviving contributions.
+Shared evidence and descriptions remain. The writer deletes only unreferenced entities and relationships without surviving evidence.
 
 Use stable `metadata["document_id"]` to identify updates explicitly. Otherwise the ID hashes the exact source/title, or the text when neither is supplied. Changing text without stable source/ID metadata creates a separate document; it cannot be recognized as a replacement automatically. Replacing the same ID in another graph is independent.
 
@@ -432,7 +436,26 @@ Description ownership (`description_sources`) and optional relationship strength
 
 Changed description inputs invalidate summaries and vectors. Removing an observation rebuilds raw text from the surviving contributions rather than retaining an obsolete summary. The embedding pass checks both input and provider/model fingerprints; changing a model refreshes vectors even when text is unchanged. Stale in-flight embedding results cannot certify newer input. Low-level vector writes without fingerprints remain supported but clear freshness certification and need a normal embedding pass before strict completion.
 
-Replacement of one document runs in **one database transaction**: `session.begin_transaction()` for Neo4j and Memgraph, committed after the last write and rolled back if any statement inside fails. A failure therefore leaves the document's previous state intact instead of a half-written one. The transaction covers only the document write: chunking, extraction, summarization and embedding stay outside it, and a failure later in the build still leaves the written document in place. Concurrent writes of different documents are not ordered; two writers can abort each other. Both a deadlock/serialization abort and a unique-constraint failure on the shared entity are retried inside the writer up to 3 times with a short backoff, reusing the same extracted document: the rollback leaves nothing to duplicate, and a constraint loser's retry matches the node its winner committed. An abort that survives all retries surfaces to the caller with the graph untouched. Nothing else is retried automatically. Stores that do not expose the transaction hook (custom store implementations and test doubles) keep the previous auto-commit behavior and its partial-write risk, and are not retried. `write_stats` reports what the database confirmed writing for each record kind, not the submitted input counts. A reference that cannot resolve — a relationship endpoint, evidence entity, or claim entity/chunk that exists neither in the document nor in the graph — raises `ValueError` before the first write, because those rows are only written when both endpoints exist. Custom writers must define their own guarantees.
+Replacement of one document runs in **one database transaction** on Neo4j and Memgraph, through `session.begin_transaction()`.
+The writer commits after the last write. If a statement fails, it rolls back the transaction, preserving the document's previous state.
+
+The transaction covers only the document write. Chunking, extraction, summarization, and embedding run outside it.
+A failure later in the build leaves the written document in place.
+
+Concurrent writes of different documents have no defined order and can cause each other to abort.
+The writer retries deadlock or serialization aborts and shared-entity uniqueness failures up to 3 times, with a short delay.
+Retries reuse the same extracted document. Rollback removes partial changes, so retries do not duplicate them.
+After a uniqueness conflict, a retry can match the node that the other writer committed.
+If all retries fail, the error reaches the caller without changes from that document transaction.
+The writer does not automatically retry other failures.
+
+Stores without the transaction hook use auto-commit writes. These custom stores and test doubles retain partial-write risk and receive no retries.
+Custom writers must define their own guarantees.
+
+`write_stats` gives database-confirmed write counts for each record kind, not submitted input counts.
+Before writing, the writer checks references to relationship endpoints, evidence entities, and claim entities or chunks.
+A reference absent from both the document and graph raises `ValueError` before the first write.
+The writer requires both endpoints before writing a relationship.
 
 Blocking database calls in pipeline writes/backfill/validation, description summarization, entity embedding, and resolver preflight/load/merge run through `asyncio.to_thread`. Cancellation does not terminate an in-flight database call or undo its writes.
 
@@ -473,10 +496,9 @@ have been written.
 #### Embedding failures and recovery
 
 Entity embedding is best-effort by default: provider or vector-write errors are
-logged and the build continues. With `fail_on_embedding_error=True` (or when you
-ask for strict completion directly), the build raises
-`RuntimeError("Entity embedding incomplete ...")` if any entity in the configured
-graph has a missing or stale embedding after the embedding pass. The check is
+logged and the build continues. Set `fail_on_embedding_error=True` to require strict completion. You can also request strict completion directly.
+After embedding, the build checks for missing or stale entity vectors in the configured graph.
+If any remain, it raises `RuntimeError("Entity embedding incomplete ...")`. The check is
 graph-wide and point-in-time: each entity must have a vector with current input
 and provider/model fingerprints in `graph_name`. It does not prove global
 coverage, atomicity under concurrent writers, or that every intended document
@@ -503,10 +525,9 @@ except RuntimeError:
     await pipeline.complete_embeddings()
 ```
 
-`complete_embeddings()` (and a strict build) does not resume interrupted
-extraction or resolve/summarize anything new; and re-running an entire
-`build_from_text(...)` after a failure re-extracts (and re-bills) documents, so
-prefer targeted recovery when only embeddings were incomplete.
+`complete_embeddings()` and strict completion checks do not resume extraction, resolution, or summarization.
+Repeating an entire `build_from_text(...)` call repeats extraction and its provider costs.
+Use targeted recovery when only embeddings were incomplete.
 
 ---
 
@@ -530,7 +551,7 @@ community = CommunityPipeline(
     relationship_weight_property="weight",  # numeric edge weight property
     random_seed=42,             # deterministic detection (default: 42)
     report_rubric=None,         # rating rubric for structured reports
-    summarize_concurrency=1,    # concurrent report generations (default: 1)
+    summarize_concurrency=10,   # concurrent report generations (default: 10)
     skip_existing=False,        # skip unchanged community reports
     max_context_tokens=8000,    # token budget for community context
     token_counter=None,         # token counter for context packing
@@ -611,7 +632,7 @@ them to untrusted users. `CommunitySummarizer` accepts the same option, and
 | `report_rubric` | Optional rating rubric for structured reports. |
 | `report_structured_output` | Explicit opt-in to strict OpenAI-style JSON schema for initial and repair report requests. Defaults to `False`; requires selected model support. |
 | `report_prompt` | Optional custom report prompt string. A simple instruction (e.g. `"You are a security analyst. Identify risks in this community."`) gets the standard structured body (community context, reference allowlist, rubric, JSON format) appended. A full template must include all placeholders in `recon_graphrag.communities.reports.REQUIRED_REPORT_PLACEHOLDERS`; a partial template raises `ValueError` at construction. |
-| `summarize_concurrency` | Maximum number of community reports to generate in parallel. Bounds concurrent reports, not total reports: every selected community is still processed and every report returned. Defaults to `1`. Increase for faster community builds when the LLM provider supports high throughput. |
+| `summarize_concurrency` | Maximum number of community reports to generate in parallel. Bounds concurrent reports, not total reports: every selected community is still processed and every report returned. Defaults to `10`. Increase for faster community builds when the LLM provider supports high throughput. |
 | `skip_existing` | Skip community reports whose input fingerprint has not changed. |
 | `max_context_tokens` | Maximum tokens for community context passed to the LLM. Degree-ranked context is greedily packed to fit this budget. Defaults to `8000`. Set to `None` to include all context without budgeting. |
 | `token_counter` | Token counter for context packing. Defaults to `ApproximateTokenCounter` when `max_context_tokens` is set. |
@@ -620,8 +641,8 @@ them to untrusted users. `CommunitySummarizer` accepts the same option, and
 | `embedder` | Embedder used to create report vectors after generation. |
 | `embed_community_reports` | Generate report vectors during `build()`; defaults to `True`. |
 
-The `embedder` parameter is required for DRIFT search, which uses community
-report vectors for the primer phase. When `embed_community_reports=True`
+Provide an `embedder` to generate community report vectors for the DRIFT primer phase.
+Without report vectors, DRIFT falls back to local-style entity search. When `embed_community_reports=True`
 (default), the pipeline embeds reports after generation. For existing graphs
 without report embeddings, use `CommunityReportEmbedder` to backfill:
 
@@ -659,10 +680,12 @@ or automatic retry. Local parsing and reference-ID filtering still apply; the
 schema does not enumerate the community's reference IDs. Async worker concurrency
 and finest-to-coarsest level ordering are unchanged.
 
-These are separate budgets: `max_context_tokens` packs **input context** (not the
-entire prompt), `max_report_words` is a **soft prompt instruction**, and the LLM
-provider's output-token setting (for example `max_tokens` or
-`max_completion_tokens`, depending on the model) limits generated output. Neither
+These budgets have separate purposes:
+
+- `max_context_tokens` limits **input context**, not the entire prompt.
+- `max_report_words` is a **soft prompt instruction**.
+- The provider's output-token setting limits generated output. Depending on the model, this can be `max_tokens` or `max_completion_tokens`.
+ Neither
 pipeline option increases that provider output limit. Strict schema does not
 prevent truncation. For initial and repair responses, known output-limit,
 refusal, or content-filter statuses cause fixed safe diagnostic errors before

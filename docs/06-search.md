@@ -77,10 +77,9 @@ result = await local_search.search(
 | `community_level` | Community level for mixed-context reports. Only used when `use_mixed_context=True`. |
 | `token_budget` | Total token budget for mixed context. Only used when `use_mixed_context=True`. Defaults to `12000`. |
 
-When `use_mixed_context=True` is set on `LocalSearchRetriever`, local search
-uses `MixedContextBuilder` to collect five candidate types — seed entities,
-relationships, text units (chunks), community reports, and claims — then ranks
-and token-packs them into a single context string. This provides richer context
+With `use_mixed_context=True`, `LocalSearchRetriever` uses `MixedContextBuilder`.
+It collects seed entities, relationships, text units (chunks), community reports, and claims.
+It ranks these candidates and packs them into one context string within the token budget. This provides richer context
 than the default entity-subgraph-only mode.
 
 Local search returns citations when retrieved entities have source chunks.
@@ -130,15 +129,15 @@ result = await global_search.search(
 Given two community reports at level 0:
 
 ```text
-comm:0:0: "Christopher Nolan directed Oppenheimer starring Cillian Murphy..."
-comm:1:0: "Hans Zimmer composed scores for Interstellar, Inception, and Dune..."
+0: "Christopher Nolan directed Oppenheimer starring Cillian Murphy..."
+1: "Hans Zimmer composed scores for Interstellar, Inception, and Dune..."
 
 Query: "What are the main themes in this dataset?"
   ↓ resolve level (coarsest = 0)
   ↓ read all reports at level 0
   ↓ shuffle with seed=42
   ↓ pack into batches (map_budget_tokens=12000)
-Batch 0: [comm:0:0, comm:1:0]
+Batch 0: [0, 1]
   ↓ LLM map call
 Map output: { answer: "Themes include human ambition, time, space...", helpfulness: 75, report_ids: [...] }
   ↓ filter (helpfulness > 0) and sort
@@ -167,10 +166,9 @@ values directly from the graph. It does not embed the user query, use vector
 similarity, or traverse raw entity nodes at query time.
 
 After the reduce phase, global search also reads `Community.report_json` for the
-community reports that the map phase used. It extracts validated entity,
-relationship, and claim references from `findings[*].references`, falls back to
-parsing `[refs: ...]` blocks in `report_text` if `report_json` has no usable
-references, and resolves those references to chunk-level citations. Map-returned
+community reports that the map phase used. It extracts validated entity, relationship, and claim references from `findings[*].references`.
+If `report_json` has no usable references, it parses `[refs: ...]` blocks in `report_text` instead.
+It resolves these references to chunk-level citations. Map-returned
 `report_ids` are validated against the batch's actual report IDs; invalid IDs are
 ignored. If a map response omits `report_ids`, the batch's report IDs are used as
 a fallback. Citation resolution is non-fatal: if report reading or citation
@@ -214,11 +212,9 @@ Global search skips failed or empty community reports.
 
 ### Scored point context (`map_strategy="scored_points"`)
 
-By default global search joins whole map answers and runs a reduce call. Pass
-`map_strategy="scored_points"` to return ranked evidence points for an agent
-instead: each map call emits a strict list of `{description, score, report_ids}`
-points, and the retriever packs the best points into a bounded context string
-without a reduce call.
+By default global search joins whole map answers and runs a reduce call. Pass `map_strategy="scored_points"` to return ranked evidence points for an agent instead.
+Each map call emits a strict list of `{description, score, report_ids}` points.
+The retriever packs the best points into a bounded context string without a reduce call.
 
 ```python
 retriever = GlobalSearchRetriever(
@@ -288,7 +284,7 @@ result = await drift_search.search(
 Query: "How does Hans Zimmer connect Inception to Dune?"
   ↓ Phase 1: Primer
   ↓ embed query → vector search community reports (primer_top_k=3)
-Reports: [comm:1:0 ("Hans Zimmer composed scores for...")]
+Reports: [1 ("Hans Zimmer composed scores for...")]
   ↓ LLM generates initial answer + follow-ups
 Primer: { answer: "Zimmer composed for both...", score: 65,
           follow_ups: ["What films did Zimmer score for Nolan?",
@@ -340,10 +336,9 @@ config = DriftSearchConfig(
 )
 ```
 
-Traversal keeps one shared pool of pending follow-up questions. Each round
-shuffles that pool with a seed derived from the query, selects up to
-`actions_per_round` questions, runs them with `action_concurrency` parallelism,
-and appends their follow-ups to the pool for a later round. Unselected
+Traversal keeps one shared pool of pending follow-up questions. Each round shuffles the pool with a seed derived from the query.
+It selects up to `actions_per_round` questions and evaluates them with `action_concurrency` parallelism.
+It adds their follow-ups to the pool for a later round. Unselected
 questions stay available, and a question generated in a round is never run in
 that same round. `DriftAction.depth` remains the parent-chain depth of a
 question, not the round number, so later rounds can select older shallow
@@ -572,7 +567,8 @@ gets lost.
 ### Phase 0: What the Graph Contains
 
 After running `GraphBuilderPipeline` and `CommunityPipeline` on a small movie
-corpus, the graph contains nodes and edges like these:
+corpus, the graph contains nodes and edges like these. IDs and excerpts below
+are illustrative; actual IDs depend on extraction and backend results:
 
 **Documents and chunks**
 
@@ -622,7 +618,7 @@ node has `report_text` plus `report_json` containing findings with validated
 entity references:
 
 ```text
-Community "comm:0:0"
+Community "0"
   <- IN_COMMUNITY <- Christopher_Nolan, Cillian_Murphy, Oppenheimer
   report_text: "Christopher Nolan directed Oppenheimer starring Cillian Murphy..."
   report_json: {
@@ -637,7 +633,7 @@ Community "comm:0:0"
     ]
   }
 
-Community "comm:1:0"
+Community "1"
   <- IN_COMMUNITY <- Hans_Zimmer, Inception, Dune, Interstellar
   report_text: "Hans Zimmer composed scores for science-fiction films..."
   report_json: {
@@ -699,8 +695,8 @@ Citation(document_id="smoke-source", chunk_id="chunk:4", page_start=5, page_end=
 relationships, and chunk excerpts, then writes the final answer.
 
 **Result:** `citations` has four items, `sources` groups them under the single
-document "smoke-source". Sources are reliable because every chunk ID came from a
-stored graph edge.
+document "smoke-source". Each chunk ID came from a stored graph edge.
+These links identify evidence; they do not prove that every answer claim is correct.
 
 ---
 
@@ -718,7 +714,7 @@ grounded in the selected report text.
 collects typed relationship context, and resolves source chunk IDs.
 
 **Step 4 — Score and expand.** Useful actions may propose bounded follow-ups;
-the configured depth and LLM-call limits cap the traversal.
+the configured round and LLM-call limits cap the traversal.
 
 **Step 5 — Resolve citations and reduce.** The highest-scoring action answers
 are packed into the reduction budget. Citations combine local source chunks
@@ -733,25 +729,25 @@ the final reduction.
 
 **Question:** `"What are the most common themes across science-fiction films?"`
 
-Global search does not touch entity nodes. It reads community reports and runs
-a map-reduce pipeline.
+Global search reads community reports for map-reduce synthesis. Citation
+resolution can also read entities, relationships, claims, and source chunks.
 
 #### Step 1 — Read reports at the selected level
 
 The retriever runs a query that returns, for each community:
 
 ```text
-id: "comm:0:0"
+id: "0"
 level: 0
 summary: "Christopher Nolan directed Oppenheimer starring Cillian Murphy..."
 
-id: "comm:1:0"
+id: "1"
 level: 0
 summary: "Hans Zimmer composed scores for science-fiction films including Interstellar, Inception, and Dune..."
 ```
 
-It does **not** return `report_json`. The validated entity references inside
-`report_json` are left on the graph node and ignored.
+This initial read does not return `report_json`. Citation resolution later
+reads structured references from the reports used by the map phase.
 
 #### Step 2 — Shuffle once
 
@@ -759,8 +755,8 @@ The reports are shuffled with a reproducible random seed. If there were six
 reports instead of two, the shuffle might reorder them like this:
 
 ```text
-Before shuffle (database order): comm:0:0, comm:1:0, comm:2:0, comm:3:0, comm:4:0, comm:5:0
-After shuffle (seed=42):         comm:3:0, comm:5:0, comm:1:0, comm:4:0, comm:0:0, comm:2:0
+Before shuffle (database order): 0, 1, 2, 3, 4, 5
+After shuffle (seed=42):         3, 5, 1, 4, 0, 2
 ```
 
 The shuffle happens exactly once per search call. Its purpose is to remove
@@ -774,12 +770,11 @@ fits in one batch. With six reports of ~2000 tokens each and a tight 8000-token
 budget, the packing might produce:
 
 ```text
-Batch 0: comm:3:0, comm:5:0, comm:1:0, comm:4:0
-Batch 1: comm:0:0, comm:2:0
+Batch 0: 3, 5, 1, 4
+Batch 1: 0, 2
 ```
 
-If one report is larger than the budget, it goes into a batch by itself and
-slightly exceeds the budget. If `max_map_calls` is set and there are more
+If one report exceeds the available budget, the retriever truncates its formatted text to fit. If `max_map_calls` is set and there are more
 batches than the limit, later batches are dropped and never processed.
 
 #### Step 4 — Map phase: one LLM call per batch
@@ -798,13 +793,13 @@ Question: What are the most common themes across science-fiction films?
 
 Community Reports:
 
-Report comm:1:0:
+Report 1:
 Hans Zimmer composed scores for science-fiction films including Interstellar,
 Inception, and Dune. These films share themes of time, space, and human
 ambition. Denis Villeneuve directed Dune while Nolan directed Interstellar and
 Inception.
 
-Report comm:0:0:
+Report 0:
 Christopher Nolan directed Oppenheimer (2023) starring Cillian Murphy. The film
 won Best Picture. Nolan is known for complex narratives and practical effects.
 ```
@@ -815,7 +810,7 @@ won Best Picture. Nolan is known for complex narratives and practical effects.
 {
   "answer": "Science-fiction films in this corpus share themes of human ambition, exploration of time and space, and emotionally intense musical scores. Directors such as Nolan and Villeneuve, along with composer Hans Zimmer, recur across these works.",
   "helpfulness": 75,
-  "report_ids": ["report:comm:1:0:0"],
+  "report_ids": ["1"],
   "references": [
     {"target_id": "Hans Zimmer", "target_type": "entity"},
     {"target_id": "Christopher Nolan", "target_type": "entity"}
@@ -871,13 +866,12 @@ The system combines two reference sources:
    `findings[*].references`. If a report has no structured references, it falls
    back to parsing `[refs: ...]` blocks from `report_text`.
 
-Both reference lists are filtered to supported `target_type` values (`entity`,
-`relationship`, `claim`), deduplicated by `(target_type, target_id)`, and then
-resolved to chunk citations through the same graph-scoped resolver used by Local
-and DRIFT.
+The retriever filters both lists to supported `target_type` values: `entity`, `relationship`, and `claim`.
+It removes duplicate `(target_type, target_id)` pairs.
+It resolves chunk citations with the same graph-scoped resolver as Local and DRIFT.
 
 Using the example above, the map output references do not match stored entity
-IDs. However, the structured `report_json` for `comm:1:0` contains validated
+IDs. However, the structured `report_json` for `1` contains validated
 references:
 
 ```json
@@ -895,7 +889,7 @@ references:
 }
 ```
 
-Because the map response included `report:comm:1:0:0` and that report ID was
+Because the map response included `1` and that report ID was
 present in the batch, the retriever reads the report's JSON and resolves:
 
 ```text
@@ -947,11 +941,11 @@ pointed to real graph entities with stored chunk links.
 
 ---
 
-### Why Global Cannot Use the Validated References
+### How Global Uses the Validated References
 
 When communities are generated with structured reports, every community report
 has a `report_json` property containing findings with validated references. For
-`comm:1:0`, that JSON includes:
+`1`, that JSON includes:
 
 ```json
 {
@@ -994,9 +988,8 @@ partial or empty citations and records the failure in
 | DRIFT | High | Local actions use edge-based chunk IDs; selected report references are also resolved to citations. |
 | Global | Medium/High | Chunk IDs come from validated `report_json` references (or rendered `[refs: ...]` fallback) for reports the map phase actually used. |
 
-If you need traceable source metadata for every claim, prefer Local or DRIFT.
-Global is now suitable for broad thematic answers where source metadata is
-valuable but not required to be sentence-exact.
+No search mode guarantees source metadata for every claim or sentence-level
+grounding. Inspect the cited passages when answer correctness matters.
 
 ---
 
@@ -1012,7 +1005,7 @@ result = await global_search.search(
 )
 print(result.metadata)
 # {
-#   "selected_level": 1,
+#   "selected_level": 0,
 #   "random_seed": 42,
 #   "reports_available": 5,
 #   "reports_used": 5,
@@ -1148,7 +1141,7 @@ drift_search.reduce_prompt = (
 ```
 
 DRIFT exposes internal prompts as module-level constants in
-`recon_graphrag.retrieval.drift`: `PRIMER_PROMPT`, `ACTION_PROMPT`,
+`recon_graphrag.retrieval.search_drift`: `PRIMER_PROMPT`, `ACTION_PROMPT`,
 `REDUCE_PROMPT`, and `REPAIR_PROMPT`. Only `reduce_prompt` is stored as an
 instance attribute and can be overridden on the retriever. To customize the
 primer or action prompts, import and patch the module constants before calling
@@ -1157,9 +1150,9 @@ search, or subclass `DriftSearchRetriever`.
 ### Custom Retrieval Query
 
 Advanced users can override the Cypher query used to fetch local or DRIFT
-entity context. A custom query is responsible for its own limits: the default
-`rel_limit` / `source_limit` parameters are still passed in the query
-parameters, but a custom query that ignores them returns whatever it matches.
+entity context. A custom query must enforce its own limits.
+The retriever still passes `rel_limit` and `source_limit` in the query parameters.
+A query that ignores them returns all matching records.
 
 ```python
 local_search.retrieval_query = (
@@ -1237,10 +1230,9 @@ The table below summarizes the hard and soft limits.
 
 **Example:** With `top_k=10`, local search retrieves 10 entities, then for each
 entity fetches up to `top_k_relationships=10` relationships in each direction and up to
-`top_k_sources=3` source chunks. If entity `Christopher_Nolan` has 5
-relationships and 4 source chunks, all 5 relationships are returned but only 3
-of the 4 chunks — the 3 closest to the question when chunk vectors exist,
-otherwise the 3 lowest chunk ids. The rest never leave the database.
+`top_k_sources=3` source chunks. Suppose entity `Christopher_Nolan` has 5 relationships and 4 source chunks.
+All 5 relationships are returned, but only 3 chunks.
+With chunk vectors, these are the 3 closest to the question. Otherwise, they have the 3 lowest chunk IDs. The rest never leave the database.
 
 These limits bound returned neighborhood/source data, not database traversal or
 sorting work, nor LLM cost. `top_k`, `top_k_relationships`, and `top_k_sources`
@@ -1265,17 +1257,13 @@ is deterministic but arbitrary: the kept passages have nothing to do with the
 question.
 
 Ingestion can store one vector per chunk with `GraphBuilderPipeline(embed_chunks=True)`.
-It is off by default because it costs one embedding call per chunk. When chunk
-vectors exist and the query supplies a vector, sources are ordered by cosine
-similarity to the query instead of by chunk id, and ties still fall back to chunk
-id so ordering stays deterministic. The retriever already has a query vector for
+It is off by default because it costs one embedding call per chunk. When chunk vectors exist and the query supplies a vector, sources are ordered by cosine similarity to the query.
+Ties use chunk-ID order, so ordering stays deterministic. The retriever already has a query vector for
 hybrid entity search, so ranking adds no provider call at query time.
 
 Scoring happens in the database as a dot product over unit-length vectors, so
-Neo4j and Memgraph return the same order and no vector index is needed. Chunks
-without a vector, and chunks whose vector has a different dimension than the
-query, score `0.0` rather than failing — a graph ingested without
-`embed_chunks=True` therefore keeps exactly the previous chunk-id ordering.
+Neo4j and Memgraph return the same order and no vector index is needed. Chunks without a vector score `0.0` rather than failing. Vectors with a different dimension than the query also score `0.0`.
+Thus, a graph built without `embed_chunks=True` retains chunk-ID ordering.
 Callers that pass their own `retrieval_query=` keep full control of source
 selection and get no automatic ranking.
 
@@ -1293,16 +1281,16 @@ selection and get no automatic ranking.
 | Map calls (total) | One per retained batch | Depends on report sizes, prompt overhead, packing and configured caps; not an exact `ceil(total_report_tokens / map_budget_tokens)` calculation. |
 | Reduce calls | At most `1` | Skipped when synthesis is disabled or no usable map answers remain. |
 
-**Example:** With 20 reports totaling ~40k tokens and `map_budget_tokens=12000`:
-- Batches: `ceil(40000 / 12000) = 4` batches
+**Example:** Suppose 20 reports total about 40k tokens and packing produces four
+batches with `map_budget_tokens=12000`:
+- Batches: 4 (actual packing depends on individual report sizes and overhead)
 - Map LLM calls: 4 (concurrent, up to `map_concurrency=5`)
 - Reduce LLM calls: 1
 - Total LLM calls: 5
 
-`map_concurrency` bounds only how many map calls run at once. Total map work is
-bounded by `max_reports`, `max_map_calls`, and `max_map_tokens`; all default to
-unlimited, so the same 20 reports with no caps cost 5 LLM calls, while
-`max_map_calls=2` costs 3 (2 map + 1 reduce) and drops the remaining reports.
+`map_concurrency` bounds only how many map calls run at once. `max_reports`, `max_map_calls`, and `max_map_tokens` bound total map work. All three default to unlimited.
+Without these limits, this four-batch example uses 5 LLM calls.
+With `max_map_calls=2`, it uses 3 calls (2 map and 1 reduce) and drops the remaining reports.
 `max_reports` chooses the ID-ordered report prefix in the database **before**
 shuffling. The existing `random_seed` shuffles that subset; `max_map_calls` and
 `max_map_tokens` retain a prefix of its uncapped batches. All reports in the
@@ -1352,7 +1340,7 @@ is bounded by 3 × 3 = 9 action answer calls:
 
 The retrievers format graph records into readable text before prompting the LLM.
 
-Local context (default mode):
+Local context (`use_mixed_context=False`):
 
 ```text
 Finding: Nolan (Person)
@@ -1364,7 +1352,7 @@ Evidence:
   Nolan's next film was Interstellar...
 ```
 
-Local context (mixed-context mode, when `use_mixed_context=True`):
+Local context (default mixed-context mode, `use_mixed_context=True`):
 
 ```text
 === Graph Facts ===
@@ -1377,7 +1365,7 @@ Claim: Christopher_Nolan won Academy Award (evidence: 2 chunks)
 Christopher Nolan directed Inception. Hans Zimmer composed the score...
 
 === Community Reports ===
-Report comm:0:0 (level 0, rating: 8.5):
+Report 0 (level 0, rating: 8.5):
   Christopher Nolan directed Oppenheimer starring Cillian Murphy...
 ```
 
@@ -1412,8 +1400,8 @@ Token budgeting uses shared utilities from `recon_graphrag.utils`:
 
 - `ApproximateTokenCounter` — fast estimate using `ceil(len(text) / 4)`.
   Always available, no dependencies.
-- `TiktokenTokenCounter` — exact count using `tiktoken`. Requires the
-  `tiktoken` package. Use when provider-level accuracy matters.
+- `TiktokenTokenCounter` — exact count for the selected `tiktoken` encoding.
+  The package is a core dependency. Counts need not match provider billing or chat-message overhead.
 - `create_token_counter("approximate")` or `create_token_counter("tiktoken")`
   — factory function.
 - `pack_items(items, max_tokens, counter)` — greedy packing for already ordered
@@ -1474,7 +1462,7 @@ count = await CommunityReportEmbedder(store, embedder, "entity-graph").embed_rep
 
 ## Current Limits
 
-- The query is not decomposed into sub-questions.
+- Local and global search do not decompose the query. DRIFT generates follow-up questions.
 - Local and DRIFT do not perform entity linking before retrieval.
 - Ranking is hybrid vector/keyword fusion, not a re-ranking model.
 - Local and DRIFT collect immediate neighbors and source chunks, not arbitrary

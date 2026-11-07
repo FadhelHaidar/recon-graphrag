@@ -2,6 +2,22 @@
 
 An end-to-end movie-domain GraphRAG workflow for Neo4j and Memgraph.
 
+## Setup
+
+Run these setup commands from the repository root:
+
+```bash
+uv sync --extra dev --group dev
+cp .env.example .env
+```
+
+Set provider credentials in `.env`. Use a disposable database. The Compose
+services expose Neo4j at `bolt://localhost:7688` and Memgraph at
+`bolt://localhost:7689`; the example helpers otherwise default to port 7687.
+Keep `NEO4J_URL` and `MEMGRAPH_URL` consistent with your database setup.
+Then run the example commands from `examples/` with the environment active,
+or prefix each Python command with `uv run`.
+
 ## Quick start
 
 ```bash
@@ -21,7 +37,7 @@ python communities.py --backend all --llm-provider openrouter
 python search.py --backend neo4j --llm-provider openrouter --embedder-provider openrouter
 
 # 5. Compare Neo4j and Memgraph outputs (advanced)
-python examples/advanced/compare_backends.py
+python advanced/compare_backends.py
 ```
 
 ## Provider flags
@@ -40,13 +56,13 @@ If no provider is specified, scripts default to `openrouter`.
 
 ## Artifact workflow
 
-The example uses a two-phase approach:
+The example separates extraction from ingestion, then builds and queries communities:
 
 1. **Extract once** (`extract.py`) — runs LLM extraction and saves a `GraphDocument` JSON artifact to `artifacts/movie_graph.json`.
 2. **Ingest into backends** (`ingest.py`) — loads the artifact and writes it to Neo4j and/or Memgraph, then resolves duplicate entities, embeds entity nodes, and validates the build.
 3. **Build communities** (`communities.py`) — runs Leiden community detection and LLM summarization.
 4. **Search** (`search.py`) — runs local, global, and DRIFT retrieval against the built graph.
-5. **Compare** (`examples/advanced/compare_backends.py`) — side-by-side comparison of Neo4j and Memgraph retrieval quality.
+5. **Compare** (`advanced/compare_backends.py`) — side-by-side comparison of Neo4j and Memgraph retrieval quality.
 
 This separation lets you extract once and experiment with multiple backends without re-running the LLM extraction.
 

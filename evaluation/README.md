@@ -1,8 +1,8 @@
 # Evaluation Harness
 
 This directory contains a lightweight evaluation harness for Recon-GraphRAG.
-It is introduced in Phase 0 of the paper-alignment roadmap to capture baselines
-before behavior changes land.
+Use it to record retrieval baselines before changing behavior. Run the commands
+below from the repository root with development dependencies installed.
 
 ## Layout
 

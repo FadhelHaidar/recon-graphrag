@@ -1,5 +1,8 @@
 # Testing
 
+Run commands from the repository root. Use `uv run pytest` unless you have
+activated an environment with the development dependencies installed.
+
 This guide explains how to run the Recon-GraphRAG test suite. It covers mandatory tests, optional integration tests, and which commands to run for different kinds of changes.
 
 The short version:
@@ -41,7 +44,9 @@ There are four tiers, each with its own marker and run flag:
 | **Workflow** | `@pytest.mark.workflow` | `RUN_WORKFLOW_INTEGRATION_TESTS` | Full pipeline (extraction → build → community → search) works against real databases with deterministic fake AI. No provider cost. |
 | **E2E** | `@pytest.mark.e2e` | `RUN_E2E_INTEGRATION_TESTS` | Full pipeline works end-to-end with real LLM, real embedder, and real database. Highest cost. |
 
-These tests may be slower, flaky if external services are unhealthy, and may incur provider cost.
+Use disposable databases only. Integration tests write and delete graph data.
+Configure the selected services and credentials before enabling a tier. Provider
+and E2E tests can incur costs. External-service failures can make results unstable.
 
 > **Warning:** If your `.env` file sets integration run flags, those tests will attempt to run against live services under plain `pytest`. Always use `pytest -m "not integration"` for local-only development.
 
@@ -51,6 +56,7 @@ These tests may be slower, flaky if external services are unhealthy, and may inc
 
 | Test area | Real LLM | Real embeddings | Real graph DB | What it proves |
 | --- | ---: | ---: | ---: | --- |
+| `tests/compatibility/` | No | No | No | Public exports, signatures, ingestion, search, and community result contracts. |
 | `tests/extraction/` | No | No | No | JSON parsing, schema validation, chunking, and graph document assembly. |
 | `tests/llm/` | No | No | No | LLM protocol and factory behavior using fake or monkeypatched clients. |
 | `tests/embeddings/` | No | No | No | Embedder protocol and factory behavior using fake or monkeypatched clients. |
@@ -277,10 +283,10 @@ RUN_DATABASE_INTEGRATION_TESTS=1 pytest tests/integration/memgraph/test_memgraph
 
 ```bash
 # Neo4j
-RUN_WORKFLOW_INTEGRATION_TESTS=1 pytest tests/integration/test_workflow_deterministic.py -q
+RUN_WORKFLOW_INTEGRATION_TESTS=1 pytest tests/integration/test_workflow_deterministic.py -k neo4j -q
 
 # Memgraph
-RUN_WORKFLOW_INTEGRATION_TESTS=1 pytest tests/integration/test_workflow_deterministic.py -q
+RUN_WORKFLOW_INTEGRATION_TESTS=1 pytest tests/integration/test_workflow_deterministic.py -k memgraph -q
 ```
 
 ### Synthetic E2E (real everything, compact corpus)
@@ -289,12 +295,12 @@ RUN_WORKFLOW_INTEGRATION_TESTS=1 pytest tests/integration/test_workflow_determin
 # Neo4j
 LLM_PROVIDER=azure_openai EMBEDDER_PROVIDER=azure_openai \
 RUN_E2E_INTEGRATION_TESTS=1 \
-pytest tests/integration/test_smoke_full.py -k synthetic -q
+pytest tests/integration/test_smoke_full.py -k 'synthetic and neo4j' -q
 
 # Memgraph
 LLM_PROVIDER=azure_openai EMBEDDER_PROVIDER=azure_openai \
 RUN_E2E_INTEGRATION_TESTS=1 \
-pytest tests/integration/test_smoke_full.py -k synthetic -q
+pytest tests/integration/test_smoke_full.py -k 'synthetic and memgraph' -q
 ```
 
 In PowerShell, set the same values with `$env:NAME="value"` on separate lines before invoking `pytest`.
@@ -479,4 +485,4 @@ or with `pytest` directly if you installed into an activated virtual environment
 - `pyproject.toml` also defines a `characterization` marker for tests that document current behavior, including known defects. Use it for tests that pin behavior without asserting ideal correctness.
 - New external-service tests should use `@pytest.mark.integration` and skip unless explicitly enabled.
 - New graph database backends should get backend-specific integration tests under `tests/integration/<backend>/`.
-- Use the [graph backend checklist](../plans/backends.md) when adding a new graph database backend.
+- Follow [Implement a custom GraphStore](09-workflows.md#implement-a-custom-graphstore) when adding a graph database backend.

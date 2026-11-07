@@ -1,13 +1,15 @@
-"""Ingest structured data (CSV) into the graph: direct mapping + LLM notes pass.
+"""Ingest CSV data with direct mapping and optional LLM extraction.
 
-Columns map deterministically to entities/relationships (no LLM per row); the
-free-text ``notes`` column gets an LLM extraction pass whose entities anchor to
-the row's Product. Run with a Neo4j from docker-compose up.
+Columns map to entities and relationships without LLM extraction per row.
+The LLM extracts entities from the free-text ``notes`` column and links them
+to the row's Product. Embedding calls can still incur provider costs.
+Start Neo4j with Docker Compose. Configure its URL and provider credentials
+as described in examples/README.md.
 
 Usage:
   python structured_ingest.py
   python structured_ingest.py --llm-provider openai
-  python structured_ingest.py --no-notes   # zero LLM calls end to end
+  python structured_ingest.py --no-notes   # no LLM extraction calls
 """
 
 from __future__ import annotations

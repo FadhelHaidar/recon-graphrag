@@ -126,7 +126,7 @@ schema = build_schema(
 
 ## Auto-analyzing a schema
 
-If you do not yet know what schema fits your use case, let an LLM propose one from sample documents with `analyze_schema()` (or the async `aanalyze_schema()`):
+To propose a schema from sample documents, use `analyze_schema()` or the async `aanalyze_schema()`:
 
 ```python
 from recon_graphrag import analyze_schema, create_llm
@@ -144,16 +144,21 @@ print(schema.relationship_labels())  # e.g. {"ACQUIRED", "WORKS_AT"}
 print(schema.patterns)               # e.g. [("Company", "ACQUIRED", "Company")]
 ```
 
-The result is a regular `GraphSchema`: inspect it, tweak it (rebuild via `build_schema()` with edited dicts), then pass it to the pipeline as usual.
+The result is a `GraphSchema`. Inspect the proposal before use. To change it, edit its dictionary representation and rebuild it with `build_schema()`. Then pass the schema to the pipeline.
 
 ### How large inputs are handled
 
-Input that fits within `max_sample_tokens` (default 2000 tokens, counted with tiktoken's `cl100k_base` encoding like the pipeline chunker; pass `token_counter` to override) is analyzed in a single LLM call. Larger input is handled map-reduce style, like global search:
+Input within `max_sample_tokens` uses one LLM analysis call. The default budget is 2000 sample tokens, excluding prompt overhead.
+The default counter uses tiktoken's `cl100k_base` encoding, as the pipeline chunker does. Pass `token_counter` to override it.
 
-1. **Map** — texts are packed whole into batches of up to `max_sample_tokens` each (a text that would overflow a batch starts the next one intact), and every batch is analyzed independently into a partial schema (concurrently with `aanalyze_schema`, sequentially with `analyze_schema`).
-2. **Reduce** — one final LLM call merges the partial proposals into a single schema, unifying labels that mean the same thing (e.g. `Actor` and `Person`).
+Larger input uses map-reduce processing:
 
-`max_batches` (default 10) caps the number of analysis calls; batches beyond it are dropped with a warning, so put representative documents first or raise the cap for very heterogeneous corpora. Only a single text that alone exceeds the whole budget is head-truncated.
+1. **Map** — Pack whole texts into batches of up to `max_sample_tokens`. A text that exceeds the remaining space starts the next batch. Analyze each batch separately: `aanalyze_schema` runs concurrently; `analyze_schema` runs sequentially.
+2. **Reduce** — Merge the partial proposals with one final LLM call. This call unifies labels with the same meaning, such as `Actor` and `Person`.
+
+`max_batches` defaults to 10 and limits analysis batches, not the final merge call.
+The analyzer omits additional batches with a warning. Put representative documents first, or increase the limit for varied corpora.
+If one text exceeds the entire batch budget, the analyzer keeps only its beginning.
 
 ### Saving and loading schemas as JSON
 
@@ -182,7 +187,7 @@ pipeline = GraphBuilderPipeline(graph_store=store, llm=llm, embedder=embedder)
 await pipeline.build_from_documents(docs, schema=schema)
 ```
 
-A hand-crafted schema generally beats an inferred one — treat the proposal as a starting point, review it, and refine it as your domain understanding grows.
+Treat the proposed schema as a starting point. Review its labels, properties, and patterns against your documents. Refine it as you learn more about the domain.
 
 ---
 

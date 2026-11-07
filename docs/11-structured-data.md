@@ -4,8 +4,8 @@ Ingest CSV files, Excel worksheets, SQL query results, or any list of dicts
 into the knowledge graph. Two modes work together on the same table:
 
 1. **Direct mapping** — columns map deterministically to entities, properties,
-   and relationships via a `RowMapping`. No LLM call per row: fast, exact,
-   free.
+   and relationships via a `RowMapping`. No extraction LLM calls are needed for direct mapping.
+   Finalization can still use paid LLM and embedding services.
 2. **LLM extraction on free-text columns** — columns holding prose (a
    `notes` or `description` column) get an LLM extraction pass, and the
    extracted entities are linked back to the row's entities.
@@ -257,11 +257,9 @@ Direct entities use **label-scoped canonical keys**: `"Product:Widget"`, not
 - The same name under two labels stays two nodes — a `Company` named
   *Mercury* never collapses into a `Person` named *Mercury*.
 - Direct entities and LLM-extracted entities are **merged by entity
-  resolution during finalize**, not by id equality. Resolution is
-  label-scoped in every strategy, so an LLM-extracted `Product` named
-  *Widget* merges with the direct `Product:Widget` under the default
-  `normalized` strategy; near-matches (*Widget Pro* vs *Widget-PRO*) go
-  through `fuzzy`/`hybrid` review.
+  resolution during finalize**, not by id equality. Every resolution strategy operates within one label.
+  Under the default `normalized` strategy, an LLM-extracted `Product` named *Widget* merges with the direct `Product:Widget`.
+  Near-matches (*Widget Pro* vs *Widget-PRO*) require `fuzzy` or `hybrid` review.
 - With `perform_entity_resolution=False`, direct and LLM entities with the
   same name stay separate nodes (still connected via shared chunk and anchor
   edges).
@@ -497,9 +495,11 @@ O-2 cost zero LLM calls.
 Direct mapping (deterministic, identical on every run):
 
 - `(:Company {name: "Acme Corp"})`, `(:Company {name: "Globex"})`
-- `(:Product {name: "Widget", unit_price: 9.99})`, `(:Product {name: "Gadget", unit_price: 24.5})`
-  — Widget's description consolidates both rows' templates:
-  `"Widget, supplied by Acme Corp at 9.99 USD; Widget, supplied by Globex at 9.49 USD"`
+- `Product` observations for Widget (9.99 and 9.49) and Gadget (24.5).
+  The conflicting Widget prices create separate provisional entities during
+  assembly. Default name resolution can merge them during finalization. Do not
+  rely on a particular final scalar price or description; configure conflict
+  properties or a trusted product identity when these distinctions matter.
 - `SUPPLIES` edges: Acme→Widget, Acme→Gadget, Globex→Widget
 - 3 `(:Chunk)` nodes carrying `record_id` (`O-1`/`O-2`/`O-3`) and `region`,
   each `FROM_CHUNK`-linked to its row's entities
@@ -557,7 +557,8 @@ keeps `document_id` stable. The shared writer replaces that document's
 contribution, including removed rows/chunks, evidence, claims, descriptions and
 relationship observations; other documents' contributions survive. Replays do
 not inflate observation counts. Properties still use the existing update rules;
-this is not historical version storage or a document-wide transaction.
+this is not historical version storage. Built-in stores write each document in
+one transaction; a multi-document build is not one transaction.
 
 Direct column mappings use label-scoped candidate keys by default; declare a
 non-name `ColumnEntity.identity_property` for trusted identifiers. By contrast,
@@ -572,8 +573,8 @@ source rebuild, not an ownership guess. See [replacement and migration](05-pipel
 
 ## Scale notes
 
-- Each row becomes one `Chunk` node: a 1M-row table means 1M chunks, and — if
-  every row has notes — up to 1M LLM calls. For large tables, ingest the
+- Each row becomes one `Chunk` node. A 1M-row table means 1M chunks.
+  Each row with notes requires at least one extraction call, plus configured gleaning calls. For large tables, ingest the
   direct mapping only, or filter to the rows whose text actually matters.
 - Rows are materialized in memory (`list(rows)`) before processing. For large
   tables, each slice must have its own stable `source` or `document_id`; reusing
@@ -584,4 +585,6 @@ source rebuild, not an ownership guess. See [replacement and migration](05-pipel
 - Finish `store.create_indexes()` before concurrent ingestion. Uniqueness
   constraints prevent duplicate identities, but concurrent replacement/property
   updates are not serialized and a competing writer can receive a backend
-  conflict. No automatic retry is provided.
+  conflict. The built-in writer retries recognized transient transaction failures
+  and identity-creation races within a bounded retry limit. It does not retry
+  every backend error or serialize competing replacements.

@@ -42,12 +42,11 @@ class EntityEmbedder:
         self.model_fingerprint = embedder_fingerprint(embedder)
 
     async def embed_entities(self, batch_size: int = 500):
-        """Generate embeddings for entities without embeddings.
+        """Generate missing entity embeddings and refresh stale embeddings.
 
-        Loops until every entity has an embedding whose fingerprints match the
-        text and model in use, so changed entities are re-embedded.
-        Embeds entities concurrently up to ``self.concurrency`` at a time,
-        then batch-upserts all embeddings at once.
+        Repeat batches until stored fingerprints match the current text and model,
+        or the pass makes no progress. Embed up to ``self.concurrency`` entities
+        concurrently, then write each batch of successful vectors together.
         """
         total = 0
         semaphore = asyncio.Semaphore(self.concurrency)

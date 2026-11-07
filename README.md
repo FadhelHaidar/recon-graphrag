@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![GitHub Release](https://img.shields.io/github/v/release/FadhelHaidar/recon-graphrag)](https://github.com/FadhelHaidar/recon-graphrag/releases)
 
-Domain-agnostic GraphRAG SDK for Neo4j and Memgraph, with a pluggable graph-store backend and the [Microsoft GraphRAG](https://microsoft.github.io/graphrag/) philosophy.
+Domain-agnostic GraphRAG SDK for Neo4j and Memgraph, with interchangeable graph stores. It follows the [Microsoft GraphRAG](https://microsoft.github.io/graphrag/) philosophy.
 
 > **Work in Progress** — This project is under active development and is not yet reliable for production use. APIs may change without notice, and features may be incomplete or unstable.
 
@@ -35,17 +35,17 @@ Domain-agnostic GraphRAG SDK for Neo4j and Memgraph, with a pluggable graph-stor
 - 🔗 **Hybrid entity resolution** — Fuzzy matching with LLM-based rescue for robust deduplication
 - 🏗️ **Composable building blocks** — Use high-level pipelines or individual workflow steps
 - 🤖 **Multiple LLM providers** — OpenAI, Anthropic, Ollama, OpenRouter, and any OpenAI-compatible endpoint
-- 📊 **Citations with source metadata** — Every answer includes traceable source references
+- 📊 **Citations with source metadata** — Search results include source references when the retrieved evidence resolves to source chunks
 
 ## Architecture
 
-Recon-GraphRAG follows the two-stage approach popularized by [Microsoft GraphRAG](https://microsoft.github.io/graphrag/): first build a structured knowledge graph with hierarchical community summaries, then query it with retrieval-augmented generation.
+Recon-GraphRAG follows the two-stage approach from [Microsoft GraphRAG](https://microsoft.github.io/graphrag/). First, build a knowledge graph and community reports. Then, search the graph with retrieval-augmented generation.
 
 ```mermaid
 graph LR
     A[Unstructured Text] --> B[Entity & Relationship Extraction]
-    B --> C[Duplicate Resolution]
-    C --> D[Graph Construction]
+    B --> C[Graph Writing]
+    C --> D[Duplicate Resolution & Entity Embedding]
     D --> E[Community Detection<br/>Leiden — Hierarchical]
     E --> F[Community Summarization]
     F --> G{Search Mode}
@@ -92,12 +92,12 @@ uv add "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/recon-graphrag
 uv sync
 ```
 
-`openai`, `sentence-transformers`, and the Neo4j driver are included in the core package, so the `[all]` extra only adds the Ollama client and any remaining optional providers.
+`openai`, `sentence-transformers`, and the Neo4j driver are included in the core package, and the `[all]` extra adds Anthropic, Ollama, and Excel (`openpyxl`) support.
 
-Pin to a specific release:
+Pin to a specific release. Replace `vX.Y.Z` with an existing release tag:
 
 ```bash
-uv add git+https://github.com/FadhelHaidar/recon-graphrag.git@v0.4.0
+uv add git+https://github.com/FadhelHaidar/recon-graphrag.git@vX.Y.Z
 uv sync
 ```
 
@@ -191,7 +191,7 @@ For a step-by-step walkthrough, see [docs/02-quickstart.md](docs/02-quickstart.m
 | Anthropic | ✅ | — | `uv add "recon-graphrag[anthropic] @ git+https://github.com/FadhelHaidar/recon-graphrag.git"` |
 | Ollama | ✅ | ✅ | `uv add "recon-graphrag[ollama] @ git+https://github.com/FadhelHaidar/recon-graphrag.git"` |
 | Sentence Transformers | — | ✅ | Local embeddings, no API key needed |
-| OpenRouter | ✅ | — | Via OpenAI-compatible interface |
+| OpenRouter | ✅ | ✅ | Via OpenAI-compatible interface |
 
 ## Documentation
 
@@ -211,12 +211,12 @@ For a step-by-step walkthrough, see [docs/02-quickstart.md](docs/02-quickstart.m
 
 ## Example
 
-A complete movie industry example is available in [examples/](examples/):
+Use the movie industry example in [examples/](examples/). First, complete the dependency and environment setup in [the example guide](docs/07-example.md).
 
 ```bash
 cd examples
 python extract.py
-python ingest.py --backend all --entity-resolution-strategy hybrid --llm-provider openrouter
+python ingest.py --backend all --llm-provider openrouter
 python communities.py --backend all
 python search.py --backend neo4j
 python search.py --backend memgraph
@@ -224,15 +224,19 @@ python search.py --backend memgraph
 
 See [docs/07-example.md](docs/07-example.md) for a full walkthrough.
 
+The ingestion script uses normalized entity resolution.
+
 ### Sample Output
 
 **Question:** *"What are the key relationships between directors and genres?"*
 
 **Answer:** Based on the knowledge graph, Christopher Nolan has a strong association with the sci-fi and thriller genres through films like *Inception* (2010) and *Interstellar* (2014)...
 
-**Citations:**
-- `record_42` — entity: Christopher Nolan, confidence: 0.95
-- `record_87` — relationship: DIRECTED → Inception
+**Illustrative citation metadata:**
+- `citation.metadata["record_id"]` — source record ID, when supplied during graph building
+- `citation.chunk_id` — source chunk ID
+
+Citation fields do not include an entity confidence score.
 
 ## Acknowledgments
 

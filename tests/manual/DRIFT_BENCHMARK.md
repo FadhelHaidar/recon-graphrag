@@ -4,8 +4,9 @@ This is measurement infrastructure, **not a production latency benchmark** or an
 optimization. No providers, environment files, or databases are used. The harness
 reuses `MixedFakeGraphStore` from `tests/retrieval/test_drift.py` and
 `ExpansionStore` from `tests/retrieval/test_graph_evidence.py`; it adds no corpus.
-LLM and embedding delays are asynchronous sleeps; each synchronous DB method
-sleeps on the thread actually invoking it (defaults: 300/100/50 ms respectively).
+LLM and embedding delays use asynchronous sleeps. Each synchronous DB method
+sleeps on its invoking thread. Default LLM, embedding, and DB delays are
+300, 100, and 50 ms, respectively.
 The default DRIFT configuration here is `max_rounds=2`, `actions_per_round=2`,
 `action_concurrency=3`, with HyDE enabled. Bounded-round scheduling selects from a
 shared pending pool, so equal numbers do not mean the same work as the historical

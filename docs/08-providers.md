@@ -18,6 +18,7 @@ llm = create_llm("openai", model_name="gpt-4o", api_key="sk-...")
 | --------- | --------- | --------- |
 | OpenAI | `"openai"` | Included in core package |
 | Azure OpenAI | `"azure_openai"` | Included in core package |
+| Anthropic | `"anthropic"` | `[anthropic]` extra |
 | Ollama | `"ollama"` | `[ollama]` extra |
 | OpenRouter | `"openrouter"` | Included in core package (OpenAI-compatible API) |
 

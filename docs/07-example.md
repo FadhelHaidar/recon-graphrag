@@ -2,6 +2,22 @@
 
 The `examples/` directory contains a complete, runnable movie-industry project that demonstrates how to use Recon-GraphRAG end-to-end.
 
+## Setup
+
+Run these setup commands from the repository root:
+
+```bash
+uv sync --extra dev --group dev
+cp .env.example .env
+```
+
+Set provider credentials in `.env`. Use a disposable database. The Compose
+services expose Neo4j at `bolt://localhost:7688` and Memgraph at
+`bolt://localhost:7689`; the example helpers otherwise default to port 7687.
+Keep `NEO4J_URL` and `MEMGRAPH_URL` consistent with your database setup.
+Then run the example commands from `examples/` with the environment active,
+or prefix each Python command with `uv run`.
+
 ## Movie industry example
 
 `examples/` is a full GraphRAG application for the film domain. It shows how to:
@@ -122,7 +138,8 @@ python advanced/compare_backends.py --limit 5
 
 ### Schema highlights
 
-The movie schema includes entity types such as `Movie`, `Person`, `Studio`, `Award`, `Theme`, `Technique`, `Character`, and `Genre`, connected by relationships such as `DIRECTED`, `ACTED_IN`, `PRODUCED`, `WON_AWARD`, `NOMINATED_FOR`, `EXPLORES`, `USES_TECHNIQUE`, and `SET_IN`.
+The movie schema includes `Movie`, `Person`, `Studio`, `Award`, `Theme`, `Technique`, `Character`, and `Genre` entities.
+Relationships include `DIRECTED`, `ACTED_IN`, `PRODUCED`, `WON_AWARD`, `NOMINATED_FOR`, `EXPLORES`, `USES_TECHNIQUE`, and `SET_IN`.
 
 ### Prompt customization
 
