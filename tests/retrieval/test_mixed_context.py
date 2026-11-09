@@ -283,6 +283,163 @@ class TestMixedContextBuilder:
         assert result.included_claim_ids == []
 
 
+class OverlapGraphStore(FakeGraphStore):
+    """Store returning community rows with a per-report entity-match count."""
+
+    def __init__(self, rows):
+        super().__init__()
+        self._rows = rows
+        self.community_queries: list[str] = []
+
+    def execute_query(self, query, parameters=None):
+        if "IN_COMMUNITY" in query:
+            self.community_queries.append(query)
+            return list(self._rows)
+        return super().execute_query(query, parameters)
+
+
+def _rows() -> list[dict]:
+    return [
+        {
+            "community_id": "c-vendor",
+            "level": 0,
+            "report_text": "Vendor overview for Acme.",
+            "rating": 9.0,
+            "matches": 1,
+        },
+        {
+            "community_id": "c-incident",
+            "level": 0,
+            "report_text": "Incident report covering Acme and VendorX.",
+            "rating": 6.0,
+            "matches": 3,
+        },
+    ]
+
+
+def _build(rows, token_budget=12000):
+    store = OverlapGraphStore(rows)
+    builder = MixedContextBuilder(cast(Any, store), graph_name="entity-graph")
+    result = builder.build_context(
+        entity_matches=[{"id": "a", "score": 0.8}],
+        entity_context_rows=[
+            {
+                "title": "Alice (Person)",
+                "relationships": [],
+                "source_text": [],
+                "source_chunk_ids": [],
+                "score": 0.8,
+            }
+        ],
+        token_budget=token_budget,
+    )
+    return store, result
+
+
+class TestCommunityReportOverlapRanking:
+    def test_more_entity_matches_beats_higher_static_rating(self):
+        _, result = _build(_rows())
+
+        assert result.included_community_ids == ["c-incident", "c-vendor"]
+
+    def test_equal_matches_fall_back_to_rating_then_id(self):
+        rows = [
+            {
+                "community_id": "c-low",
+                "level": 0,
+                "report_text": "Low rated report.",
+                "rating": 2.0,
+                "matches": 2,
+            },
+            {
+                "community_id": "c-high",
+                "level": 0,
+                "report_text": "High rated report.",
+                "rating": 7.0,
+                "matches": 2,
+            },
+            {
+                "community_id": "c-mid",
+                "level": 0,
+                "report_text": "Same rating as high, later id.",
+                "rating": 7.0,
+                "matches": 2,
+            },
+        ]
+        _, result = _build(rows)
+
+        assert result.included_community_ids == ["c-high", "c-mid", "c-low"]
+
+    def test_match_count_aggregates_distinct_entity_nodes(self):
+        store, _ = _build(_rows())
+
+        assert store.community_queries
+        assert "count(DISTINCT e) AS matches" in store.community_queries[0]
+
+    def test_missing_match_count_defaults_to_zero_and_keeps_rating_order(self):
+        rows = [
+            {
+                "community_id": "c-a",
+                "level": 0,
+                "report_text": "Report A.",
+                "rating": 4.0,
+            },
+            {
+                "community_id": "c-b",
+                "level": 0,
+                "report_text": "Report B.",
+                "rating": 8.0,
+            },
+        ]
+        _, result = _build(rows)
+
+        assert result.included_community_ids == ["c-b", "c-a"]
+
+    def test_ranking_survives_a_tight_report_budget(self):
+        rows = [
+            {
+                "community_id": "c-vendor",
+                "level": 0,
+                "report_text": "word " * 60,
+                "rating": 9.0,
+                "matches": 1,
+            },
+            {
+                "community_id": "c-incident",
+                "level": 0,
+                "report_text": "Incident brief.",
+                "rating": 6.0,
+                "matches": 3,
+            },
+        ]
+        _, result = _build(rows, token_budget=400)
+
+        assert result.included_community_ids.index("c-incident") < result.included_community_ids.index("c-vendor")
+
+    def test_ranking_survives_admission_by_overflow(self):
+        # c-incident has the higher overlap but is too large for the report
+        # budget, so only later overflow can admit it.
+        rows = [
+            {
+                "community_id": "c-vendor",
+                "level": 0,
+                "report_text": "Vendor brief.",
+                "rating": 9.0,
+                "matches": 1,
+            },
+            {
+                "community_id": "c-incident",
+                "level": 0,
+                "report_text": "word " * 60,
+                "rating": 6.0,
+                "matches": 3,
+            },
+        ]
+        _, result = _build(rows, token_budget=400)
+
+        assert result.included_community_ids == ["c-incident", "c-vendor"]
+
+
 class TestLocalSearchMixedContext:
     @pytest.mark.asyncio
     async def test_mixed_context_enabled(self):

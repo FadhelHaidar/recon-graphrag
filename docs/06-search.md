@@ -82,6 +82,13 @@ It collects seed entities, relationships, text units (chunks), community reports
 It ranks these candidates and packs them into one context string within the token budget. This provides richer context
 than the default entity-subgraph-only mode.
 
+Within the community-report share of that budget, reports rank by how many of
+the retrieved seed entities belong to the community, then by stored report
+rating, then by community ID. Overlap with the seed entities is a heuristic for
+query fit, not a choice of hierarchy level: local search still reads reports at
+one requested level (default `"coarsest"`), so this ranking changes which of the
+already-eligible reports gets the limited report budget first.
+
 Local search returns citations when retrieved entities have source chunks.
 By default, citation metadata is returned after synthesis but is not shown to
 the LLM. Opt in when the answer should see source identifiers while being
@@ -99,11 +106,12 @@ result = await local_search.search(
 
 ## Global Search
 
-Global search answers broad questions from community reports. It is an
-all-report map/reduce flow over one resolved community level:
+Global search answers broad questions from community reports. Omit
+`community_level` to select reports dynamically across the hierarchy; pass a
+level to map every eligible report at that level:
 
 ```text
-resolve level
+select reports (dynamic when community_level is omitted, static per level otherwise)
   -> read all successful reports at that level (or up to max_reports)
   -> shuffle reports with random_seed
   -> pack reports into map batches using map_budget_tokens,
@@ -206,9 +214,74 @@ LLM calls:
 ```
 
 `community_level="coarsest"` resolves to level `0`. `"finest"` resolves to
-the highest level currently stored in the graph.
+the highest level currently stored in the graph. Any explicit level keeps the
+static, single-level behavior described above.
 
 Global search skips failed or empty community reports.
+
+### Dynamic community selection (default)
+
+Omitting `community_level`, or passing `None`, selects reports per query
+instead of mapping one whole level:
+
+```text
+read eligible level-0 (coarsest) reports
+  -> rate each report 0-5 for relevance to the query (LLM)
+  -> rating 1-5 keeps the report and queues its children
+  -> a kept child replaces its parent
+  -> rating 0 stops descent into that branch
+  -> if nothing was selected, rate the whole next level (up to level 2)
+  -> map/reduce the selected reports
+```
+
+Each visited report costs one additional LLM rating call, billed under the
+`retrieval.global_selection` stage and counted separately from map/reduce.
+`max_reports`, `max_map_calls`, and `max_map_tokens` still bound the map stage
+only, not the rating calls, so a broad question can rate much of the hierarchy.
+To avoid rating calls, pass an explicit level. Map limits do not cap selection cost.
+
+Selected reports can come from different levels; citations and graph evidence
+use each report's real level. The metadata carries `selection_mode`,
+`levels_visited`, `selected_report_keys`, `reports_rated`,
+`fallback_levels_attempted`, and `rating_errors` alongside the existing map and
+citation counters.
+Because selection depends on model ratings, a false negative can prune a useful
+branch; no cost or quality improvement is guaranteed.
+
+#### How a report is rated
+
+Rating is a single LLM judgment, not a computed score. The fixed prompt asks four
+evidence questions before the model answers:
+
+- **Direct support:** does the report state facts answering any requested aspect?
+- **Indirect support:** if not, does it state a concrete relationship, event,
+  mechanism, or background fact useful for answering the question?
+- **Broad synthesis:** for a question about themes or patterns, does the report
+  contribute a relevant aspect even if it does not answer the whole question?
+- **Grounding:** is that connection supported by the report itself, rather than by
+  shared names or words, outside knowledge, or content assumed to exist in child
+  communities?
+
+The model then reports the highest anchor the evidence supports: `0` no supported
+connection (unrelated content, or superficial word/name overlap only), `1` limited
+but explicit indirect connection, `2` concrete relevant background, `3` direct
+evidence answering part of the question, `4` covering most requested aspects, `5`
+sufficient to address all requested aspects. When two positive anchors both seem to
+fit, the lower one is used.
+
+Only the `0` versus positive split changes behavior: `1`-`5` all keep the report and
+queue its children, and the rating does not weight map helpfulness, the reduce
+ranking, or the token budget. The rating reason is validated as a string and is not
+exposed in metadata or logs.
+
+Prompt construction is deterministic for a given question and report text; model
+output is not. The SDK does not cache ratings, retry with a rewritten prompt, or pin
+temperature, so the same question can still rate the same report differently between
+runs. Fix the model and generation settings in the application, and use temperature
+`0` where the provider supports it, to reduce that variation without eliminating it.
+Response caching and invalidation belong in the application, not the SDK.
+A provider error or an unparsable rating keeps the report with rating `1` and
+increments `rating_errors`, so a failure is never read as a deliberate `0`.
 
 ### Scored point context (`map_strategy="scored_points"`)
 

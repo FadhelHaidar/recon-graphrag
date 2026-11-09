@@ -197,10 +197,8 @@ local_result = await local_search.search(
 
 # Broad overview using community reports
 global_search = GlobalSearchRetriever(store, llm)
-global_result = await global_search.search(
-    "What are the main themes?",
-    community_level="coarsest",
-)
+# Omitting community_level selects community reports dynamically per query.
+global_result = await global_search.search("What are the main themes?")
 
 # Hybrid detail + context
 drift_search = DriftSearchRetriever(store, llm, embedder)
