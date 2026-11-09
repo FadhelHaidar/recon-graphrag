@@ -855,7 +855,7 @@ print(result.used_tokens)    # tokens consumed
 The builder distributes the token budget across three categories:
 
 - **Text units** (50%): source chunks linked to matched entities, ranked by coverage.
-- **Community reports** (10%): reports from communities containing matched entities, ranked by rating.
+- **Community reports** (10%): reports from communities containing matched entities, ranked by how many matched entities fall in each community, then by rating.
 - **Graph facts** (40%): entity descriptions, relationships, and claims, ranked by weight/evidence.
 
 Unused tokens overflow into other categories automatically.

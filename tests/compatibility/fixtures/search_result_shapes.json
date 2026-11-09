@@ -138,6 +138,21 @@
       ],
       "metadata": {
         "selected_level": "int",
+        "selection_mode": "str",
+        "levels_visited": [
+          "int"
+        ],
+        "selected_report_keys": [
+          {
+            "community_id": "str",
+            "level": "int"
+          }
+        ],
+        "reports_rated": "int",
+        "valid_rejections": "int",
+        "rating_errors": "int",
+        "rating_error_counts": {},
+        "fallback_levels_attempted": [],
         "random_seed": "int",
         "reports_available": "int",
         "reports_used": "int",
@@ -400,6 +415,21 @@
       ],
       "metadata": {
         "selected_level": "int",
+        "selection_mode": "str",
+        "levels_visited": [
+          "int"
+        ],
+        "selected_report_keys": [
+          {
+            "community_id": "str",
+            "level": "int"
+          }
+        ],
+        "reports_rated": "int",
+        "valid_rejections": "int",
+        "rating_errors": "int",
+        "rating_error_counts": {},
+        "fallback_levels_attempted": [],
         "random_seed": "int",
         "reports_available": "int",
         "reports_used": "int",
@@ -664,6 +694,21 @@
       ],
       "metadata": {
         "selected_level": "int",
+        "selection_mode": "str",
+        "levels_visited": [
+          "int"
+        ],
+        "selected_report_keys": [
+          {
+            "community_id": "str",
+            "level": "int"
+          }
+        ],
+        "reports_rated": "int",
+        "valid_rejections": "int",
+        "rating_errors": "int",
+        "rating_error_counts": {},
+        "fallback_levels_attempted": [],
         "random_seed": "int",
         "reports_available": "int",
         "reports_used": "int",
@@ -1003,6 +1048,21 @@
       ],
       "metadata": {
         "selected_level": "int",
+        "selection_mode": "str",
+        "levels_visited": [
+          "int"
+        ],
+        "selected_report_keys": [
+          {
+            "community_id": "str",
+            "level": "int"
+          }
+        ],
+        "reports_rated": "int",
+        "valid_rejections": "int",
+        "rating_errors": "int",
+        "rating_error_counts": {},
+        "fallback_levels_attempted": [],
         "random_seed": "int",
         "reports_available": "int",
         "reports_used": "int",

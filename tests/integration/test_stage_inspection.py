@@ -389,3 +389,33 @@ async def test_stage_5_retrieval_builds_context_with_citations(scenario):
     assert global_result.metadata.get("map_batches", 0) >= 1, (
         f"global search ran no map batches: {global_result.metadata}"
     )
+    assert global_result.metadata.get("selection_mode") == "static", (
+        f"explicit level must stay static: {global_result.metadata}"
+    )
+
+    # Omitted level selects community reports dynamically across levels.
+    dynamic_result = await global_search.search(
+        "What systems and people are involved in incident response?"
+    )
+    dynamic_meta = dynamic_result.metadata
+    selected = dynamic_meta.get("selected_report_keys", [])
+    print(f"[stage 5] dynamic selection: mode={dynamic_meta.get('selection_mode')} "
+          f"visited={dynamic_meta.get('levels_visited')} "
+          f"rated={dynamic_meta.get('reports_rated')} "
+          f"errors={dynamic_meta.get('rating_errors')} selected={selected}")
+
+    assert dynamic_result.answer.strip(), "dynamic global search returned an empty answer"
+    assert dynamic_meta.get("selection_mode") == "dynamic", dynamic_meta
+    assert dynamic_meta.get("levels_visited"), dynamic_meta
+    assert dynamic_meta.get("reports_rated", 0) > 0, dynamic_meta
+    assert dynamic_meta["reports_rated"] >= len(selected), dynamic_meta
+    if not selected:
+        assert dynamic_meta["valid_rejections"] == dynamic_meta["reports_rated"], dynamic_meta
+        assert dynamic_meta["map_batches"] == 0, dynamic_meta
+
+    stored_reports = {(row["id"], row["level"])
+                      for row in community_reports(scenario.store, scenario.graph_name)}
+    for key in selected:
+        assert (key["community_id"], key["level"]) in stored_reports, (
+            f"selected report {key} is not a stored report"
+        )

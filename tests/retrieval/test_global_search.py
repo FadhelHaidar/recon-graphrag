@@ -277,7 +277,7 @@ class TestFullSearch:
         store = FakeGraphStore()
         llm = FakeLLM()
         search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
-        result = await search.search("query", community_level=None)
+        result = await search.search("query", community_level="all")
         assert "requires" in result.answer.lower()
         # No LLM call happened before this early return, so nothing was
         # recorded -- the key must be omitted, not present with value None.

@@ -70,6 +70,8 @@ class CommunityReportCandidate:
     level: int
     report_text: str
     rating: float | None
+    # Distinct retrieved entities belonging to this community.
+    matches: int = 0
 
 
 @dataclass(frozen=True)
@@ -184,7 +186,7 @@ class MixedContextBuilder:
         relationships.sort(key=lambda r: (-r.weight, r.source_id, r.target_id))
         text_units.sort(key=lambda t: (-t.coverage, t.chunk_id))
         community_reports.sort(
-            key=lambda c: (-(c.rating or 0.0), c.community_id)
+            key=lambda c: (-c.matches, -(c.rating or 0.0), c.community_id)
         )
         claims.sort(key=lambda c: (-c.evidence_count, c.claim_id))
 
@@ -250,6 +252,18 @@ class MixedContextBuilder:
             packed_tu, overflow = self._pack_overflow(packed_tu, tu_items, overflow)
             packed_gf, overflow = self._pack_overflow(packed_gf, graph_fact_items, overflow)
             packed_cr, overflow = self._pack_overflow(packed_cr, cr_items, overflow)
+            # Overflow can admit a report the report budget skipped; keep the
+            # overlap-first ranking in the final order.
+            cr_rank = {item.id: index for index, item in enumerate(cr_items)}
+            packed_cr = PackResult(
+                included=sorted(
+                    packed_cr.included, key=lambda item: cr_rank[item.id]
+                ),
+                excluded=packed_cr.excluded,
+                used_tokens=packed_cr.used_tokens,
+                max_tokens=packed_cr.max_tokens,
+                truncated_item_ids=packed_cr.truncated_item_ids,
+            )
 
         sections: list[str] = []
         if packed_gf.included:
@@ -509,12 +523,13 @@ class MixedContextBuilder:
             MATCH (e:__Entity__ {graph_name: $graph_name})-[:IN_COMMUNITY]->
                   (c:Community {graph_name: $graph_name, level: $level})
             WHERE e.id = eid OR e.canonical_key = eid OR e.human_readable_id = eid
-            WITH DISTINCT c
+            WITH c, count(DISTINCT e) AS matches
             WHERE c.report_text <> ''
             RETURN c.id AS community_id,
                    c.level AS level,
                    c.report_text AS report_text,
-                   c.rating AS rating
+                   c.rating AS rating,
+                   matches
             """,
             {
                 "entity_ids": entity_ids,
@@ -528,6 +543,7 @@ class MixedContextBuilder:
                 level=row["level"],
                 report_text=row["report_text"],
                 rating=row.get("rating"),
+                matches=int(row.get("matches") or 0),
             )
             for row in rows
         ]
