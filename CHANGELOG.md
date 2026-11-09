@@ -18,6 +18,14 @@
   label or `graph_name` filters are applied and trim to `top_k` after the
   filter, matching Memgraph behavior; result shape is unchanged.
 
+## [0.14.3](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.14.2...v0.14.3) (2026-11-09)
+
+
+### Bug Fixes
+
+* **retrieval:** align global/local selection with microsoft graphrag ([632efa9](https://github.com/FadhelHaidar/recon-graphrag/commit/632efa9568a98f16e8cea597d544d025710f54a9))
+* **retrieval:** align global/local selection with microsoft graphrag ([39101f9](https://github.com/FadhelHaidar/recon-graphrag/commit/39101f99e64eb60d7d9b9b78b6a6bfbef0ac3e0d))
+
 ## [0.14.2](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.14.1...v0.14.2) (2026-11-07)
 
 
