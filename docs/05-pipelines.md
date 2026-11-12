@@ -641,6 +641,8 @@ them to untrusted users. `CommunitySummarizer` accepts the same option, and
 | `embedder` | Embedder used to create report vectors after generation. |
 | `embed_community_reports` | Generate report vectors during `build()`; defaults to `True`. |
 
+A budgeted report reuses one child-report read for its prompt context and, when needed, its input fingerprint.
+
 Provide an `embedder` to generate community report vectors for the DRIFT primer phase.
 Without report vectors, DRIFT falls back to local-style entity search. When `embed_community_reports=True`
 (default), the pipeline embeds reports after generation. For existing graphs
