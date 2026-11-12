@@ -89,3 +89,26 @@ async def test_shared_resolver_preserves_hybrid_auto_merge_result_shape():
         "embeddings": "skipped_no_embedder",
         "llm": "used",
     }
+
+
+@pytest.mark.asyncio
+async def test_normalized_resolution_builds_groups_once(monkeypatch):
+    """Normalized resolution must not repeat the grouping pass."""
+    rows = [
+        _EntityRecord(1, "e1", "g1", "Person", "OpenAI", "openai", {}),
+        _EntityRecord(2, "e2", "g1", "Person", "openai", "openai", {}),
+    ]
+    resolver = ContractResolver(rows)
+    calls: list[int] = []
+    original = resolver._build_normalized_groups
+
+    def counting(entities):
+        calls.append(len(entities))
+        return original(entities)
+
+    monkeypatch.setattr(resolver, "_build_normalized_groups", counting)
+
+    result = await resolver.resolve_normalized(graph_name="g1", dry_run=True)
+
+    assert calls == [2]
+    assert result["merged_groups"] == 1

@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import heapq
 import json
-import hashlib
 import math
 import re
 import unicodedata
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from rapidfuzz import fuzz
 from tqdm.asyncio import tqdm_asyncio
@@ -22,7 +22,6 @@ from recon_graphrag.graphdb.entity_resolution_context import (
     conflict_for_group,
 )
 from recon_graphrag.observability import token_stage
-
 
 _ORG_SUFFIXES = [
     "corp",
@@ -208,13 +207,13 @@ class BaseEntityResolver(ABC):
         merge_threshold: float = 95.0,
         review_threshold: float = 85.0,
         max_candidates_per_entity: int = 20,
-        aliases: Optional[dict] = None,
+        aliases: dict | None = None,
         embedder=None,
         llm=None,
-        llm_guidance: Optional[str] = None,
+        llm_guidance: str | None = None,
         allow_ai_auto_merge: bool = False,
-        context_properties: Optional[dict[str, list[str]] | list[str]] = None,
-        conflict_properties: Optional[dict[str, list[str]] | list[str]] = None,
+        context_properties: dict[str, list[str]] | list[str] | None = None,
+        conflict_properties: dict[str, list[str]] | list[str] | None = None,
         context_mode: str = "safe_defaults",
     ) -> dict:
         if strategy not in ("exact", "normalized", "fuzzy", "hybrid"):
@@ -292,7 +291,6 @@ class BaseEntityResolver(ABC):
             return preflight_result
         entities = await asyncio.to_thread(self._load_entities, graph_name, resolve_property)
         groups, review_groups = self._build_normalized_groups(entities)
-        groups, review_groups = self._build_normalized_groups(entities)
         groups, review_groups = self._apply_conflict_rules(
             groups, review_groups, entities, conflict_properties
         )
@@ -343,10 +341,10 @@ class BaseEntityResolver(ABC):
         merge_threshold: float = 95.0,
         review_threshold: float = 85.0,
         max_candidates_per_entity: int = 20,
-        aliases: Optional[dict] = None,
+        aliases: dict | None = None,
         embedder=None,
         llm=None,
-        llm_guidance: Optional[str] = None,
+        llm_guidance: str | None = None,
         allow_ai_auto_merge: bool = False,
         context_properties: dict[str, list[str]] | list[str] | None = None,
         conflict_properties: dict[str, list[str]] | list[str] | None = None,
@@ -397,7 +395,7 @@ class BaseEntityResolver(ABC):
         strategy: str,
         signals: dict,
         llm=None,
-        ai_merged_review_groups: Optional[list[dict]] = None,
+        ai_merged_review_groups: list[dict] | None = None,
     ) -> dict:
         merged_nodes = 0
         if not dry_run and groups:
@@ -610,13 +608,13 @@ class BaseEntityResolver(ABC):
         merge_threshold: float,
         review_threshold: float,
         max_candidates_per_entity: int,
-        aliases: Optional[dict],
+        aliases: dict | None,
         embedder,
         llm,
-        llm_guidance: Optional[str],
+        llm_guidance: str | None,
         allow_ai_auto_merge: bool,
-        context_properties: Optional[dict[str, list[str]] | list[str]],
-        conflict_properties: Optional[dict[str, list[str]] | list[str]],
+        context_properties: dict[str, list[str]] | list[str] | None,
+        conflict_properties: dict[str, list[str]] | list[str] | None,
         context_mode: str,
     ) -> tuple[list[list[_EntityRecord]], list[dict], list[dict]]:
         groups, review_groups, dropped_pairs = self._build_fuzzy_groups(
@@ -695,7 +693,7 @@ class BaseEntityResolver(ABC):
         groups: list[list[_EntityRecord]],
         review_groups: list[dict],
         entities: list[_EntityRecord],
-        conflict_properties: Optional[dict[str, list[str]] | list[str]],
+        conflict_properties: dict[str, list[str]] | list[str] | None,
     ) -> tuple[list[list[_EntityRecord]], list[dict]]:
         if not conflict_properties:
             return groups, review_groups
@@ -786,7 +784,7 @@ class BaseEntityResolver(ABC):
         self,
         entities: list[_EntityRecord],
         merged_ids: set,
-        aliases: Optional[dict],
+        aliases: dict | None,
     ) -> tuple[list[list[_EntityRecord]], list[dict]]:
         groups: list[list[_EntityRecord]] = []
         review_groups: list[dict] = []
@@ -935,12 +933,12 @@ class BaseEntityResolver(ABC):
         self,
         review_groups: list[dict],
         llm,
-        llm_guidance: Optional[str],
-        aliases: Optional[dict],
+        llm_guidance: str | None,
+        aliases: dict | None,
         allow_ai_auto_merge: bool,
         merge_threshold: float,
         entities: list[_EntityRecord],
-        context_properties: Optional[dict[str, list[str]] | list[str]],
+        context_properties: dict[str, list[str]] | list[str] | None,
         context_mode: str,
         concurrency: int | None = None,
     ) -> list[dict]:
@@ -985,8 +983,8 @@ class BaseEntityResolver(ABC):
     @staticmethod
     def _build_llm_review_prompt(
         review_group: dict,
-        aliases: Optional[dict],
-        llm_guidance: Optional[str],
+        aliases: dict | None,
+        llm_guidance: str | None,
     ) -> str:
         payload = {
             "task": "entity_deduplication_review",

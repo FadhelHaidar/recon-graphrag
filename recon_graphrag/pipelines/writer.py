@@ -35,6 +35,8 @@ from recon_graphrag.entity_text import entity_embedding_fingerprint
 from recon_graphrag.extraction.types import GraphDocument
 from recon_graphrag.graphdb._provenance import (
     build_uid as _build_uid,
+)
+from recon_graphrag.graphdb._provenance import (
     contribution_entries,
     encode_contributions,
     raw_descriptions,
@@ -197,7 +199,10 @@ class CypherGraphWriter:
             graph_document, state, relationship_rows
         )
         # Validate removed contributions too, before the first mutation.
-        self._rebuild_entity_rows(graph_document, state, entity_rows)
+        # Reconcile reuses these rows; recompute only on a transaction retry.
+        rebuild_entities = self._rebuild_entity_rows(
+            graph_document, state, entity_rows
+        )
         self._validate_references(graph_document, state)
         documents = self._write_documents([graph_document.document])
         chunks = self._write_chunks(graph_document.chunks)
@@ -213,6 +218,7 @@ class CypherGraphWriter:
             entity_rows,
             relationship_rows,
             rebuild_relationships,
+            rebuild_entities,
         )
 
         # A receipt of what the database confirmed, not of what was submitted.
@@ -351,31 +357,33 @@ class CypherGraphWriter:
             ),
         )
 
-        state.relationships = list(
-            self.graph_store.execute_query(
-                """
-                MATCH (s:__Entity__ {graph_name: $graph_name})-[r]->(t:__Entity__ {graph_name: $graph_name})
-                WHERE r.graph_name = $graph_name
-                  AND (r.id IN $rel_ids OR any(chunk IN coalesce(r.source_chunk_ids, [])
-                                               WHERE chunk IN $chunk_ids))
-                RETURN r.id AS id, s.id AS source_id, t.id AS target_id,
-                       type(r) AS type,
-                       coalesce(r.source_chunk_ids, []) AS source_chunk_ids,
-                       r.descriptions AS descriptions,
-                       r.description_sources AS description_sources,
-                       r.description AS description,
-                       r.description_summary_status AS description_summary_status,
-                       r.strength AS strength,
-                       r.strength_sources AS strength_sources,
-                       r.properties AS properties
-                """,
-                {
-                    **params,
-                    "rel_ids": [rel.id for rel in graph_document.relationships],
-                    "chunk_ids": state.chunk_ids,
-                },
+        # Both predicate inputs empty means the read can only return nothing.
+        if state.chunk_ids or graph_document.relationships:
+            state.relationships = list(
+                self.graph_store.execute_query(
+                    """
+                    MATCH (s:__Entity__ {graph_name: $graph_name})-[r]->(t:__Entity__ {graph_name: $graph_name})
+                    WHERE r.graph_name = $graph_name
+                      AND (r.id IN $rel_ids OR any(chunk IN coalesce(r.source_chunk_ids, [])
+                                                   WHERE chunk IN $chunk_ids))
+                    RETURN r.id AS id, s.id AS source_id, t.id AS target_id,
+                           type(r) AS type,
+                           coalesce(r.source_chunk_ids, []) AS source_chunk_ids,
+                           r.descriptions AS descriptions,
+                           r.description_sources AS description_sources,
+                           r.description AS description,
+                           r.description_summary_status AS description_summary_status,
+                           r.strength AS strength,
+                           r.strength_sources AS strength_sources,
+                           r.properties AS properties
+                    """,
+                    {
+                        **params,
+                        "rel_ids": [rel.id for rel in graph_document.relationships],
+                        "chunk_ids": state.chunk_ids,
+                    },
+                )
             )
-        )
 
         entity_ids = list(
             dict.fromkeys(
@@ -576,11 +584,24 @@ class CypherGraphWriter:
         if not entities:
             return 0
 
+        grouped = self._group_by_type(entities)
+        types_by_id: dict[str, list[str]] = {}
+        for entity_type, group in grouped.items():
+            for entity in group:
+                types = types_by_id.setdefault(entity.id, [])
+                if entity_type not in types:
+                    types.append(entity_type)
+        rows_by_type: dict[str, list[dict[str, Any]]] = {
+            entity_type: [] for entity_type in grouped
+        }
+        for row in rows:
+            for entity_type in types_by_id.get(row["id"], ()):
+                rows_by_type[entity_type].append(row)
+
         written = 0
-        for entity_type, group in self._group_by_type(entities).items():
+        for entity_type, group in grouped.items():
             label = escape_cypher_identifier(entity_type)
-            group_ids = {entity.id for entity in group}
-            group_rows = [row for row in rows if row["id"] in group_ids]
+            group_rows = rows_by_type[entity_type]
             result = self.graph_store.execute_query(
                 f"""
                 UNWIND $entities AS row
@@ -883,10 +904,11 @@ class CypherGraphWriter:
         entity_rows: list[dict[str, Any]],
         relationship_rows: list[dict[str, Any]],
         rebuild_relationships: list[dict[str, Any]],
+        rebuild_entities: list[dict[str, Any]],
     ) -> None:
         """Remove what only the document's previous version contributed."""
         graph_name = graph_document.document.graph_name
-        keep_chunk_ids = [chunk.id for chunk in graph_document.chunks]
+        keep_chunk_ids = {chunk.id for chunk in graph_document.chunks}
         keep_evidence = {
             (link.chunk_id, link.entity_id)
             for link in graph_document.evidence_links
@@ -896,6 +918,7 @@ class CypherGraphWriter:
             chunk_id for chunk_id in state.chunk_ids
             if chunk_id not in keep_chunk_ids
         ]
+        removed_chunk_id_set = set(removed_chunk_ids)
 
         stale_evidence = [
             row for row in state.evidence
@@ -915,7 +938,8 @@ class CypherGraphWriter:
 
         stale_claims = [
             row["id"] for row in state.claims
-            if row["id"] not in keep_claim_ids or row.get("chunk_id") in removed_chunk_ids
+            if row["id"] not in keep_claim_ids
+            or row.get("chunk_id") in removed_chunk_id_set
         ]
         if stale_claims:
             self.graph_store.execute_query(
@@ -958,9 +982,6 @@ class CypherGraphWriter:
             )
 
         remaining_entity_ids = {row["id"] for row in entity_rows}
-        rebuild_entities = self._rebuild_entity_rows(
-            graph_document, state, entity_rows
-        )
         if rebuild_entities:
             self.graph_store.execute_query(
                 """

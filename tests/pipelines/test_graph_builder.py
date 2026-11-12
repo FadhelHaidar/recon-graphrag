@@ -48,6 +48,11 @@ class FakeGraphStore:
     def backfill_descriptions(self):
         pass
 
+    def fetch_community_member_graph(
+        self, graph_name, community_id, level, member_limit=25
+    ):
+        return []
+
     async def resolve_entities_exact(self, graph_name="entity-graph", resolve_property="name", dry_run=False, **kwargs):
         self.resolve_kwargs = {"strategy": "exact", "graph_name": graph_name, **kwargs}
         return {"skipped": False, "merged_groups": 0, "strategy": "exact"}
@@ -2155,7 +2160,9 @@ async def test_text_pipeline_retains_falsy_identity_and_normalizes_description(
 async def test_description_summarization_failure_stops_embedding_and_validation(
     fake_llm, fake_embedder, fake_writer, failed_stage,
 ):
-    from recon_graphrag.extraction.description_summarizer import DescriptionSummarizationError
+    from recon_graphrag.extraction.description_summarizer import (
+        DescriptionSummarizationError,
+    )
 
     store = FakeGraphStore()
     candidate = {"id": "bad", "descriptions": ["original"]}
