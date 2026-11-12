@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, cast
 
@@ -473,6 +474,33 @@ async def test_generate_all_orders_results_when_workers_finish_out_of_order():
 
 
 @pytest.mark.asyncio
+async def test_generate_all_cancellation_stops_workers():
+    started = asyncio.Event()
+    never = asyncio.Event()
+
+    class BlockingLLM(FakeValidReportLLM):
+        async def ainvoke(self, prompt) -> LLMResponse:
+            started.set()
+            await never.wait()
+            raise AssertionError("cancelled worker resumed")
+
+    store = MultiCommunityStore(2)
+    summarizer = CommunitySummarizer(
+        cast(Any, store), llm=cast(Any, BlockingLLM()), concurrency=2
+    )
+    before = asyncio.all_tasks()
+    task = asyncio.create_task(summarizer.generate_all(level=0))
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    remaining = asyncio.all_tasks() - before - {task}
+    assert remaining == set()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("include_error_details", [False, True])
 async def test_generate_all_continues_after_json_repair_failure(include_error_details):
     valid = (await FakeValidReportLLM().ainvoke("")).content
@@ -820,6 +848,28 @@ async def test_skip_existing_leaf_regeneration_reads_children_once():
     _results, stats = await summarizer.generate_all(skip_existing=True)
 
     assert stats.succeeded == 1
+    assert store.child_reads == 1
+
+
+@pytest.mark.asyncio
+async def test_skip_existing_regenerates_when_child_fingerprint_changes():
+    store = CountingChildStore(CHILD_REPORTS)
+    llm = FakeValidReportLLM()
+    summarizer = CommunitySummarizer(
+        cast(Any, store), cast(Any, llm), max_context_tokens=200
+    )
+    context = summarizer._fetch_community_context_obj("community:1", 0)
+    store.existing_fingerprint = summarizer._report_input_fingerprint(
+        context, "community:1", 0
+    )
+    store.children = [dict(CHILD_REPORTS[0], input_fingerprint="fp-changed")]
+    store.child_reads = 0
+
+    _results, stats = await summarizer.generate_all(skip_existing=True)
+
+    assert stats.succeeded == 1
+    assert stats.skipped == 0
+    assert llm.calls == 1
     assert store.child_reads == 1
 
 
