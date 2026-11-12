@@ -7,7 +7,12 @@ from typing import cast
 
 import pytest
 
-from recon_graphrag.extraction.types import EntityRecord
+from recon_graphrag.extraction.types import (
+    ChunkRecord,
+    DocumentRecord,
+    EntityRecord,
+    GraphDocument,
+)
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.pipelines import writer as writer_module
 from recon_graphrag.pipelines.writer import CypherGraphWriter
@@ -304,3 +309,110 @@ def test_relationship_evidence_canonical_ids_and_weight_normalization():
         "source_canonical_key": "person:1",
         "target_canonical_key": "movie:1",
     }
+
+
+def test_entity_type_partition_preserves_duplicate_and_cross_type_rows(
+    writer_cls,
+):
+    """Per-type entity queries filter by ID, not by row type."""
+    document = GraphDocument(
+        document=DocumentRecord(id="doc:1", text_hash="hash"),
+        chunks=[ChunkRecord(id="doc:1:c0", document_id="doc:1", text="hi", index=0)],
+        entities=[
+            EntityRecord(id="e1", type="Person", properties={"name": "Alice"}),
+            EntityRecord(id="e2", type="Person", properties={"name": "Bob"}),
+            EntityRecord(id="e2", type="Organization", properties={"name": "BobCorp"}),
+        ],
+        relationships=[],
+        evidence_links=[],
+        claims=[],
+    )
+    store = FakeGraphStore()
+    writer = writer_cls(store)
+
+    writer.write_graph_document(document)
+
+    entity_queries = [
+        (query, params["entities"])
+        for query, params in zip(store.queries, store.params, strict=False)
+        if "UNWIND $entities AS row" in query
+    ]
+    assert len(entity_queries) == 2
+
+    person_query, person_rows = entity_queries[0]
+    assert ":`Person` " in person_query
+    assert [(row["id"], row["type"], row["properties"]["name"]) for row in person_rows] == [
+        ("e1", "Person", "Alice"),
+        ("e2", "Person", "Bob"),
+        ("e2", "Organization", "BobCorp"),
+    ]
+
+    organization_query, organization_rows = entity_queries[1]
+    assert ":`Organization` " in organization_query
+    assert [
+        (row["id"], row["type"], row["properties"]["name"])
+        for row in organization_rows
+    ] == [
+        ("e2", "Person", "Bob"),
+        ("e2", "Organization", "BobCorp"),
+    ]
+
+
+def test_relationship_state_read_skipped_when_both_inputs_empty(writer_cls):
+    store = StatefulFakeGraphStore()
+    writer = writer_cls(store)
+
+    writer.write_graph_document(
+        GraphDocument(
+            document=DocumentRecord(id="doc:empty", text_hash="hash"),
+            chunks=[],
+            entities=[],
+            relationships=[],
+            evidence_links=[],
+            claims=[],
+        )
+    )
+
+    assert not [query for query in store.queries if "type(r) AS type" in query]
+
+
+def test_relationship_state_read_runs_when_relationship_ids_exist(writer_cls):
+    store = StatefulFakeGraphStore()
+    writer = writer_cls(store)
+
+    writer.write_graph_document(make_graph_document())
+
+    assert [query for query in store.queries if "type(r) AS type" in query]
+
+
+def test_relationship_state_read_runs_when_previous_chunks_exist(writer_cls):
+    store = StatefulFakeGraphStore()
+    writer = writer_cls(store)
+    writer.write_graph_document(
+        GraphDocument(
+            document=DocumentRecord(id="doc:1", text_hash="hash"),
+            chunks=[ChunkRecord(id="doc:1:c0", document_id="doc:1", text="hi", index=0)],
+            entities=[],
+            relationships=[],
+            evidence_links=[],
+            claims=[],
+        )
+    )
+    queries_before = len(store.queries)
+
+    writer.write_graph_document(
+        GraphDocument(
+            document=DocumentRecord(id="doc:1", text_hash="hash"),
+            chunks=[],
+            entities=[],
+            relationships=[],
+            evidence_links=[],
+            claims=[],
+        )
+    )
+
+    assert [
+        query
+        for query in store.queries[queries_before:]
+        if "type(r) AS type" in query
+    ]

@@ -543,3 +543,95 @@ async def test_implicit_typed_row_identity_matches_llm_identity(fake_writer):
     assert entity.canonical_key == "Thing:1"
     assert entity.properties["record_key"] == 1
     assert len(entity.description_observations) == 2
+
+
+@pytest.mark.asyncio
+async def test_row_text_serialization_matches_structured_values_and_ids(fake_writer):
+    """Chunk text and hash-derived IDs must use the exact same serialization."""
+    from datetime import datetime
+
+    from recon_graphrag.extraction.structured import row_text as serialize_row
+
+    rows = [
+        {
+            "name": "Widget",
+            "tags": ["a", "b"],
+            "meta": {"k": 1},
+            "flag": True,
+            "when": datetime(2024, 1, 2, 3, 4, 5),
+            "empty": "  ",
+            "none": None,
+        },
+        {
+            "name": " x ",
+            "tags": [],
+            "meta": {},
+            "flag": False,
+            "when": "2024-01-02",
+            "empty": "",
+            "none": None,
+        },
+    ]
+    mapping = RowMapping(
+        entities=[ColumnEntity(label="Thing", identity_column="name")]
+    )
+    pipeline = _make_pipeline(MagicMock(), fake_writer)
+
+    await pipeline.build_from_rows([dict(row) for row in rows], mapping)
+
+    doc = fake_writer.write_graph_document.call_args.args[0]
+    expected_texts = [serialize_row(row) for row in rows]
+    assert [chunk.text for chunk in doc.chunks] == expected_texts
+    assert [chunk.id for chunk in doc.chunks] == [
+        f"{doc.document.id}:row:{index}" for index in range(len(rows))
+    ]
+    assert doc.document.id == _hashed_doc_id("\n\n".join(expected_texts))
+
+
+class _StatefulCell:
+    """Non-string cell whose formatting changes between calls."""
+
+    def __init__(self, values):
+        self.values = list(values)
+        self.calls = 0
+
+    def __str__(self):
+        value = self.values[self.calls]
+        self.calls += 1
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+
+@pytest.mark.asyncio
+async def test_unmapped_stateful_cell_is_formatted_for_text_and_chunk(
+    fake_writer,
+):
+    """Both serializations are observable; reuse would change existing behavior."""
+    cell = _StatefulCell(["first", "second"])
+    mapping = RowMapping(
+        entities=[ColumnEntity(label="Thing", identity_column="name")]
+    )
+    pipeline = _make_pipeline(MagicMock(), fake_writer)
+
+    await pipeline.build_from_rows([{"name": "Widget", "extra": cell}], mapping)
+
+    doc = fake_writer.write_graph_document.call_args.args[0]
+    assert cell.calls == 2
+    assert doc.chunks[0].text == "name: Widget\nextra: second"
+    assert doc.document.id == _hashed_doc_id("name: Widget\nextra: first")
+
+
+@pytest.mark.asyncio
+async def test_stateful_cell_second_format_failure_prevents_writes(fake_writer):
+    cell = _StatefulCell(["first", ValueError("cannot format twice")])
+    mapping = RowMapping(
+        entities=[ColumnEntity(label="Thing", identity_column="name")]
+    )
+    pipeline = _make_pipeline(MagicMock(), fake_writer)
+
+    with pytest.raises(ValueError, match="cannot format twice"):
+        await pipeline.build_from_rows([{"name": "Widget", "extra": cell}], mapping)
+
+    assert cell.calls == 2
+    fake_writer.write_graph_document.assert_not_called()

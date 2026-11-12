@@ -944,3 +944,24 @@ async def test_neo4j_resolver_normalized_without_conflict_properties_merges():
     result = await resolver.resolve_normalized(graph_name="g1", dry_run=True)
 
     assert result["merged_groups"] == 1
+
+
+@pytest.mark.asyncio
+async def test_neo4j_resolver_normalized_builds_groups_once(monkeypatch):
+    """Normalized resolution must not repeat the grouping pass."""
+    rows = [_entity_row("4:a", "e1"), _entity_row("4:b", "e2")]
+    store = FakeGraphStore(apoc_available=True, rows=rows)
+    resolver = _Neo4jEntityResolver(store)
+    calls: list[int] = []
+    original = resolver._build_normalized_groups
+
+    def counting(entities):
+        calls.append(len(entities))
+        return original(entities)
+
+    monkeypatch.setattr(resolver, "_build_normalized_groups", counting)
+
+    result = await resolver.resolve_normalized(graph_name="g1", dry_run=True)
+
+    assert calls == [2]
+    assert result["merged_groups"] == 1
