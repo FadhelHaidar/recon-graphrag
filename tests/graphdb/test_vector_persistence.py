@@ -4,7 +4,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from recon_graphrag.entity_text import entity_embedding_fingerprint
+from recon_graphrag.entity_text import (
+    entity_embedding_fingerprint,
+    text_fingerprint,
+)
 from recon_graphrag.graphdb.memgraph.store import MemgraphGraphStore
 from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
 
@@ -71,3 +74,100 @@ def test_vector_lengths_validated_before_queries(store, vectors, fingerprints, m
 def test_empty_vector_batch_does_not_query(store):
     store.upsert_vectors([], "embedding", [], content_fingerprints=[])
     store.execute_query.assert_not_called()
+
+
+def test_legacy_entity_with_own_text_property_certifies_entity_fingerprint(store):
+    """An entity may keep a ``text`` property; only a Chunk label means chunk."""
+    snapshot = {
+        "id": "1",
+        "labels": ["__Entity__", "Person"],
+        "name": "Alice",
+        "description": "Alice leads Acme.",
+        "text": "free-form note",
+        "type": "Person",
+    }
+    fingerprint = entity_embedding_fingerprint(
+        labels=["__Entity__", "Person"],
+        name="Alice",
+        description="Alice leads Acme.",
+        entity_type="Person",
+    )
+    store.execute_query.side_effect = [[snapshot], []]
+
+    store.upsert_vectors(
+        ["1"],
+        "embedding",
+        [[0.1]],
+        content_fingerprints=[fingerprint],
+        model_fingerprint="model",
+    )
+
+    read, write = store.execute_query.call_args_list
+    row = {"id": "1", "vector": [0.1], "content_fingerprint": fingerprint}
+    row["legacy_input"] = snapshot
+    assert write.args[1]["rows"] == [row]
+
+
+def test_legacy_chunk_attaches_the_text_it_was_built_from(store):
+    snapshot = {
+        "id": "1",
+        "labels": ["Chunk"],
+        "name": None,
+        "description": None,
+        "text": "hello",
+        "type": None,
+    }
+    fingerprint = text_fingerprint("hello")
+    store.execute_query.side_effect = [[snapshot], []]
+
+    store.upsert_vectors(
+        ["1"],
+        "embedding",
+        [[0.1]],
+        content_fingerprints=[fingerprint],
+        model_fingerprint="model",
+    )
+
+    read, write = store.execute_query.call_args_list
+    row = {"id": "1", "vector": [0.1], "content_fingerprint": fingerprint}
+    row["legacy_chunk_text"] = "hello"
+    assert write.args[1]["rows"] == [row]
+
+
+def test_legacy_entity_fingerprint_uses_the_recorded_type(store):
+    """A retained label must not outrank the recorded entity type."""
+    snapshot = {
+        "id": "1",
+        "labels": ["__Entity__", "Organization", "Person"],
+        "name": "Alice",
+        "description": "Alice leads Acme.",
+        "text": None,
+        "type": "Person",
+    }
+    fingerprint = entity_embedding_fingerprint(
+        labels=["__Entity__", "Person"],
+        name="Alice",
+        description="Alice leads Acme.",
+        entity_type="Person",
+    )
+    store.execute_query.side_effect = [[snapshot], []]
+
+    store.upsert_vectors(
+        ["1"],
+        "embedding",
+        [[0.1]],
+        content_fingerprints=[fingerprint],
+        model_fingerprint="model",
+    )
+
+    read, write = store.execute_query.call_args_list
+    row = {"id": "1", "vector": [0.1], "content_fingerprint": fingerprint}
+    row["legacy_input"] = snapshot
+    assert write.args[1]["rows"] == [row]
+
+
+def test_legacy_entity_write_rechecks_null_safe_type(store):
+    store.upsert_vectors(["1"], "embedding", [[0.1]])
+    query = store.execute_query.call_args.args[0]
+    assert "n.type = row.legacy_input.type" in query
+    assert "n.type IS NULL AND row.legacy_input.type IS NULL" in query

@@ -33,7 +33,7 @@ class ConfirmedCountStore(StatefulFakeGraphStore):
 
     def execute_query(self, query: str, parameters: dict | None = None):
         result = super().execute_query(query, parameters)
-        if "MERGE (e:__Entity__:" in query:
+        if "UNWIND $entities AS row" in query:
             return [{"written": self.entity_written}]
         return result
 

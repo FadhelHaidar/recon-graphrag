@@ -83,8 +83,13 @@ SEEDS = {
 }
 
 
-def _seed_graph(store, graph: str) -> None:
-    """Seed chunks, entities, owned, parallel, unrelated, and foreign rows."""
+def _seed_graph(store, graph: str, *, include_null_id: bool = True) -> None:
+    """Seed chunks, entities, owned, parallel, unrelated, and foreign rows.
+
+    ``include_null_id`` seeds the owned relationship without an id property. The
+    reader must return it, but a replacement write rejects it (B05). Write
+    differentials therefore seed without it.
+    """
     params = {"graph_name": graph}
     store.execute_query(
         "CREATE (:Document {id: 'seed-doc', graph_name: $graph_name, text_hash: 'h'})",
@@ -92,7 +97,8 @@ def _seed_graph(store, graph: str) -> None:
     )
     store.execute_query(
         "UNWIND range(0, $chunks - 1) AS i "
-        "CREATE (:Chunk {id: 'seed-chunk-' + toString(i), graph_name: $graph_name})",
+        "CREATE (:Chunk {id: 'seed-chunk-' + toString(i), graph_name: $graph_name, "
+        "text: 'kept ' + toString(i), index: i})",
         {**params, "chunks": CHUNK_COUNT},
     )
     store.execute_query(
@@ -173,13 +179,14 @@ def _seed_graph(store, graph: str) -> None:
     # Owned relationship without an id property. 'shadow-chunk' is not one of
     # the document's chunks, so a replacement never empties this row's
     # ownership list (the writer cannot remove an id-less row by id).
-    store.execute_query(
-        "MATCH (s:__Entity__ {id: 'seed-e-2', graph_name: $graph_name}) "
-        "MATCH (t:__Entity__ {id: 'seed-e-3', graph_name: $graph_name}) "
-        "CREATE (s)-[:RELATES {graph_name: $graph_name, "
-        "source_chunk_ids: ['seed-chunk-0', 'shadow-chunk']}]->(t)",
-        params,
-    )
+    if include_null_id:
+        store.execute_query(
+            "MATCH (s:__Entity__ {id: 'seed-e-2', graph_name: $graph_name}) "
+            "MATCH (t:__Entity__ {id: 'seed-e-3', graph_name: $graph_name}) "
+            "CREATE (s)-[:RELATES {graph_name: $graph_name, "
+            "source_chunk_ids: ['seed-chunk-0', 'shadow-chunk']}]->(t)",
+            params,
+        )
     # Relationship with an id but no ownership list.
     store.execute_query(
         "MATCH (s:__Entity__ {id: 'seed-e-4', graph_name: $graph_name}) "
@@ -456,6 +463,39 @@ def _replacement_document(graph: str) -> GraphDocument:
     )
 
 
+def _seed_write_state(store, graph: str) -> None:
+    """Seed one edge per logical key: a state a replacement write accepts."""
+    store.execute_query(
+        "UNWIND range(0, $entities - 1) AS i "
+        "CREATE (:__Entity__:Person {id: 'seed-e-' + toString(i), "
+        "graph_name: $graph_name, name: 'S' + toString(i)})",
+        {"graph_name": graph, "entities": ENTITY_COUNT},
+    )
+    store.execute_query(
+        "CREATE (d:Document {id: 'seed-doc', graph_name: $graph_name, text_hash: 'h'}) "
+        "WITH d "
+        "UNWIND range(0, $chunks - 1) AS i "
+        "CREATE (c:Chunk {id: 'seed-chunk-' + toString(i), graph_name: $graph_name, "
+        "text: 'kept ' + toString(i), index: i}) "
+        "CREATE (c)-[:PART_OF]->(d)",
+        {"graph_name": graph, "chunks": 2},
+    )
+    store.execute_query(
+        "UNWIND range(0, $pairs - 1) AS j "
+        "MATCH (s:__Entity__ {id: 'seed-e-' + toString(j % $entities), graph_name: $graph_name}) "
+        "MATCH (t:__Entity__ {id: 'seed-e-' + toString((j + 5) % $entities), graph_name: $graph_name}) "
+        "CREATE (s)-[:RELATES {graph_name: $graph_name, id: 'seed-par-' + toString(j) + '-a', "
+        "source_chunk_ids: ['seed-chunk-' + toString(j % $chunks)], strength: 1000.0 + j, "
+        "strength_sources: ['[\"seed-doc\", ' + toString(1000.0 + j) + ']']}]->(t)",
+        {
+            "graph_name": graph,
+            "pairs": PARALLEL_PAIRS,
+            "entities": ENTITY_COUNT,
+            "chunks": 2,
+        },
+    )
+
+
 def test_relationship_state_read_differential_on_seeded_state(perf_graph):
     """Production reader rows and full writes match the baseline reader."""
     store, _backend, graph = perf_graph
@@ -504,11 +544,15 @@ def test_relationship_state_read_differential_on_seeded_state(perf_graph):
     # Write differential: identical replacement documents written by both
     # writers on identically seeded graphs. Receipts and final graphs must
     # match, including which parallel-edge row survives the last-wins rebuild.
+    graph_prod = f"{graph}-prod"
     graph_baseline = f"{graph}-baseline"
     try:
-        _seed_graph(store, graph_baseline)
+        # The write phases need a state that relationship identity accepts:
+        # one stored edge per logical key, see B02.
+        _seed_write_state(store, graph_prod)
+        _seed_write_state(store, graph_baseline)
         production_receipt = writer.write_graph_document(
-            _replacement_document(graph)
+            _replacement_document(graph_prod)
         )
         baseline_receipt = baseline_writer.write_graph_document(
             _replacement_document(graph_baseline)
@@ -519,8 +563,10 @@ def test_relationship_state_read_differential_on_seeded_state(perf_graph):
         # every existing rel on the endpoint pair), so they exceed the row
         # count when parallel edges share endpoints. Equality between the two
         # writers is the contract under test; the dump equality pins rows.
-        assert _dump_graph(store, graph) == _dump_graph(store, graph_baseline)
+        assert _dump_graph(store, graph_prod) == _dump_graph(store, graph_baseline)
     finally:
+        cleanup_graph(store, graph_prod)
+        cleanup_graph(store, graph_prod + "-foreign")
         cleanup_graph(store, graph_baseline)
         cleanup_graph(store, graph_baseline + "-foreign")
 

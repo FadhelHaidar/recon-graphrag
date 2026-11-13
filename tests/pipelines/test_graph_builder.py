@@ -23,6 +23,7 @@ from recon_graphrag.graphdb.memgraph.store import MemgraphGraphStore
 from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.observability import UsageTrackingLLM, track_usage
+from recon_graphrag.entity_text import text_fingerprint
 from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
 from recon_graphrag.pipelines.writer import CypherGraphWriter
 
@@ -1845,7 +1846,8 @@ async def test_embed_chunks_flag_stores_normalized_chunk_vectors(
     assert property_name == "embedding"
     # Unit length is what makes the portable dot product a cosine similarity.
     assert abs(sum(value * value for value in vectors[0]) - 1.0) < 1e-9
-    assert "content_fingerprints" not in kwargs
+    # The vector records the embedded text so a later text change invalidates it.
+    assert kwargs["content_fingerprints"] == [text_fingerprint("chunk text")]
 
 
 @pytest.mark.asyncio

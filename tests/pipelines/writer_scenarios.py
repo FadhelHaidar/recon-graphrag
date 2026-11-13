@@ -59,11 +59,20 @@ class StatefulFakeGraphStore:
             return self._rebuild_entities(params["entities"], params["graph_name"])
         if "UNWIND $entities AS row" in query:
             return self._write_entities(params["entities"])
+        if "UNWIND $relationship_keys AS row" in query:
+            return self._read_relationship_targets(params)
+        if "UNWIND $relationship_ids AS id" in query:
+            return self._read_relationship_ids(params)
         if "UNWIND $relationships AS row" in query:
             if "MERGE (source)-[r:" in query:
-                label = re.search(r"MERGE \(source\)-\[r:`?(\w+)`?\]", query)
+                label = re.search(
+                    r"MERGE \(source\)-\[r:(?:`([^`]+)`|(\w+))", query
+                )
+                rel_type = next(
+                    (value for value in label.groups() if value), None
+                ) if label else None
                 return self._write_relationships(
-                    params["relationships"], label.group(1) if label else "RELATED_TO"
+                    params["relationships"], rel_type or "RELATED_TO"
                 )
             return self._rebuild_relationships(
                 params["relationships"], params["graph_name"]
@@ -73,6 +82,10 @@ class StatefulFakeGraphStore:
                 return self._delete_evidence(params["links"], params["graph_name"])
             return self._write_evidence(params["links"], None)
         if "UNWIND $claims AS row" in query:
+            # The claim row holds one subject and source; link replacement must
+            # precede the new endpoint matches in the production query.
+            assert "DELETE old" in query
+            assert "WITH DISTINCT c, row" in query
             return self._write_claims(params["claims"])
         if "UNWIND $claim_ids AS id" in query:
             return self._delete_claims(params["claim_ids"], params["graph_name"])
@@ -107,7 +120,14 @@ class StatefulFakeGraphStore:
         for row in rows:
             key = (row["graph_name"], row["id"])
             chunk = self._chunks.setdefault(key, {})
+            previous_text = chunk.get("text")
             chunk.update(row)
+            if previous_text != row["text"]:
+                # Mirror the write query: changed text clears the vector and its
+                # certification, so the chunk becomes eligible for re-embedding.
+                chunk["embedding"] = None
+                chunk["embedding_content_fingerprint"] = None
+                chunk["embedding_model_fingerprint"] = None
         return []
 
     def _write_entities(self, rows: list[dict]) -> list:
@@ -177,6 +197,45 @@ class StatefulFakeGraphStore:
             if row["descriptions_changed"]:
                 rel["description_summary_status"] = None
         return []
+
+    def _read_relationship_ids(self, params: dict) -> list:
+        """Graph-scoped edges that carry one of the requested ids."""
+        wanted = set(params["relationship_ids"])
+        rows: list[dict] = []
+        for (graph, source, target, stored_type), rel in self._relationships.items():
+            if graph != params["graph_name"] or rel.get("id") not in wanted:
+                continue
+            rows.append(
+                {
+                    "id": rel.get("id"),
+                    "source_id": source,
+                    "target_id": target,
+                    "type": stored_type,
+                }
+            )
+        return rows
+
+    def _read_relationship_targets(self, params: dict) -> list:
+        """Stored edges for the requested endpoint pairs, at any graph scope."""
+        rows: list[dict] = []
+        for request in params["relationship_keys"]:
+            for (_, source, target, stored_type), rel in self._relationships.items():
+                if (source, target, stored_type) != (
+                    request["source_id"],
+                    request["target_id"],
+                    params["rel_type"],
+                ):
+                    continue
+                rows.append(
+                    {
+                        "source_id": source,
+                        "target_id": target,
+                        "type": stored_type,
+                        "id": rel.get("id"),
+                        "rel_graph_name": rel.get("graph_name"),
+                    }
+                )
+        return rows
 
     def _rebuild_relationships(self, rows: list[dict], graph_name: str) -> list:
         by_id = {
@@ -308,6 +367,7 @@ class StatefulFakeGraphStore:
     def _read_entities(self, entity_ids: list[str], graph_name: str) -> list[dict]:
         fields = (
             "id",
+            "type",
             "descriptions",
             "description_sources",
             "description",

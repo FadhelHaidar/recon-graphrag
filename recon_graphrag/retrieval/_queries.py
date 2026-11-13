@@ -29,14 +29,18 @@ _REL_ORDER = (
 # Source-chunk selection. Ranked mode scores each candidate against the query
 # vector with a portable dot product; chunk vectors are stored L2-normalized at
 # ingestion, so dot == cosine. Candidates with no vector, a dimension mismatch,
-# or no query vector score 0.0, which falls back to id ordering because the
-# tie-break stays ``chunk.id ASC``.
+# a vector built from different text, or no query vector score 0.0, which falls
+# back to id ordering because the tie-break stays ``chunk.id ASC``.
 _SOURCE_SELECT_UNRANKED = "    WITH DISTINCT chunk\n    ORDER BY chunk.id ASC\n"
 _SOURCE_SELECT_RANKED = """    WITH DISTINCT chunk
     WITH chunk,
          CASE WHEN $query_vector IS NULL
                    OR chunk.embedding IS NULL
                    OR size(chunk.embedding) <> size($query_vector)
+                   OR (chunk.embedding_input_fingerprint IS NOT NULL
+                       AND chunk.embedding_content_fingerprint IS NOT NULL
+                       AND chunk.embedding_input_fingerprint
+                           <> chunk.embedding_content_fingerprint)
               THEN 0.0
               ELSE reduce(d = 0.0, i IN range(0, size($query_vector) - 1)
                           | d + $query_vector[i] * chunk.embedding[i])
@@ -50,6 +54,7 @@ CALL (node) {
     OPTIONAL MATCH (node)-[r]->(neighbor)
     WHERE NOT neighbor:Chunk AND NOT neighbor:Document AND NOT neighbor:Community
       AND neighbor.graph_name = node.graph_name
+      AND r.graph_name = node.graph_name
     WITH node, r, neighbor
     ORDER BY WEIGHT_PLACEHOLDER
     LIMIT $rel_limit
@@ -58,9 +63,9 @@ CALL (node) {
         source_name: coalesce(node.name, node.description, node.id),
         target_id: coalesce(neighbor.human_readable_id, neighbor.canonical_key, neighbor.id),
         target_name: coalesce(neighbor.name, neighbor.description, neighbor.id),
-        entity: labels(node)[-1] + ': ' + coalesce(node.name, node.description, ''),
+        entity: coalesce(CASE WHEN node.type <> '' THEN node.type ELSE null END, head([label IN labels(node) WHERE label <> '__Entity__']), 'Entity') + ': ' + coalesce(node.name, node.description, ''),
         rel: type(r),
-        neighbor: labels(neighbor)[-1] + ': ' + coalesce(neighbor.name, neighbor.description, ''),
+        neighbor: coalesce(CASE WHEN neighbor.type <> '' THEN neighbor.type ELSE null END, head([label IN labels(neighbor) WHERE label <> '__Entity__']), 'Entity') + ': ' + coalesce(neighbor.name, neighbor.description, ''),
         description: coalesce(r.description, ''),
         weight: coalesce(r.weight, r.observation_count, r.strength, 1.0),
         dir: 'out'
@@ -69,6 +74,7 @@ CALL (node) {
     OPTIONAL MATCH (node)<-[r]-(neighbor)
     WHERE NOT neighbor:Chunk AND NOT neighbor:Document AND NOT neighbor:Community
       AND neighbor.graph_name = node.graph_name
+      AND r.graph_name = node.graph_name
     WITH node, r, neighbor
     ORDER BY WEIGHT_PLACEHOLDER
     LIMIT $rel_limit
@@ -77,9 +83,9 @@ CALL (node) {
         source_name: coalesce(neighbor.name, neighbor.description, neighbor.id),
         target_id: coalesce(node.human_readable_id, node.canonical_key, node.id),
         target_name: coalesce(node.name, node.description, node.id),
-        entity: labels(node)[-1] + ': ' + coalesce(node.name, node.description, ''),
+        entity: coalesce(CASE WHEN node.type <> '' THEN node.type ELSE null END, head([label IN labels(node) WHERE label <> '__Entity__']), 'Entity') + ': ' + coalesce(node.name, node.description, ''),
         rel: type(r),
-        neighbor: labels(neighbor)[-1] + ': ' + coalesce(neighbor.name, neighbor.description, ''),
+        neighbor: coalesce(CASE WHEN neighbor.type <> '' THEN neighbor.type ELSE null END, head([label IN labels(neighbor) WHERE label <> '__Entity__']), 'Entity') + ': ' + coalesce(neighbor.name, neighbor.description, ''),
         description: coalesce(r.description, ''),
         weight: coalesce(r.weight, r.observation_count, r.strength, 1.0),
         dir: 'in'
@@ -87,14 +93,15 @@ CALL (node) {
 }
 WITH node, score, connections
 CALL (node) {
-    OPTIONAL MATCH (node)<-[:FROM_CHUNK]-(chunk:Chunk)
+    OPTIONAL MATCH (node)<-[source_rel:FROM_CHUNK]-(chunk:Chunk)
     WHERE chunk.graph_name = node.graph_name
+      AND (source_rel.graph_name IS NULL OR source_rel.graph_name = node.graph_name)
     WITH DISTINCT chunk
     ORDER BY chunk.id ASC
     LIMIT $source_limit
     RETURN collect(chunk) AS selected_chunks
 }
-RETURN node.name + ' (' + labels(node)[-1] + ')' AS title,
+RETURN node.name + ' (' + coalesce(CASE WHEN node.type <> '' THEN node.type ELSE null END, head([label IN labels(node) WHERE label <> '__Entity__']), 'Entity') + ')' AS title,
        coalesce(node.human_readable_id, node.canonical_key, node.id) AS entity_id,
        coalesce(node.name, node.id) AS entity_name,
        labels(node) AS entity_labels,
@@ -116,6 +123,7 @@ CALL (node) {
     OPTIONAL MATCH (node)-[r]->(neighbor)
     WHERE NOT neighbor:Chunk AND NOT neighbor:Document AND NOT neighbor:Community
       AND neighbor.graph_name = node.graph_name
+      AND r.graph_name = node.graph_name
     WITH node, r, neighbor
     ORDER BY WEIGHT_PLACEHOLDER
     LIMIT $rel_limit
@@ -124,9 +132,9 @@ CALL (node) {
         source_name: coalesce(node.name, node.description, node.id),
         target_id: coalesce(neighbor.human_readable_id, neighbor.canonical_key, neighbor.id),
         target_name: coalesce(neighbor.name, neighbor.description, neighbor.id),
-        entity: labels(node)[-1] + ': ' + coalesce(node.name, node.description, ''),
+        entity: coalesce(CASE WHEN node.type <> '' THEN node.type ELSE null END, head([label IN labels(node) WHERE label <> '__Entity__']), 'Entity') + ': ' + coalesce(node.name, node.description, ''),
         rel: type(r),
-        neighbor: labels(neighbor)[-1] + ': ' + coalesce(neighbor.name, neighbor.description, ''),
+        neighbor: coalesce(CASE WHEN neighbor.type <> '' THEN neighbor.type ELSE null END, head([label IN labels(neighbor) WHERE label <> '__Entity__']), 'Entity') + ': ' + coalesce(neighbor.name, neighbor.description, ''),
         description: coalesce(r.description, ''),
         weight: coalesce(r.weight, r.observation_count, r.strength, 1.0),
         dir: 'out'
@@ -135,6 +143,7 @@ CALL (node) {
     OPTIONAL MATCH (node)<-[r]-(neighbor)
     WHERE NOT neighbor:Chunk AND NOT neighbor:Document AND NOT neighbor:Community
       AND neighbor.graph_name = node.graph_name
+      AND r.graph_name = node.graph_name
     WITH node, r, neighbor
     ORDER BY WEIGHT_PLACEHOLDER
     LIMIT $rel_limit
@@ -143,9 +152,9 @@ CALL (node) {
         source_name: coalesce(neighbor.name, neighbor.description, neighbor.id),
         target_id: coalesce(node.human_readable_id, node.canonical_key, node.id),
         target_name: coalesce(node.name, node.description, node.id),
-        entity: labels(node)[-1] + ': ' + coalesce(node.name, node.description, ''),
+        entity: coalesce(CASE WHEN node.type <> '' THEN node.type ELSE null END, head([label IN labels(node) WHERE label <> '__Entity__']), 'Entity') + ': ' + coalesce(node.name, node.description, ''),
         rel: type(r),
-        neighbor: labels(neighbor)[-1] + ': ' + coalesce(neighbor.name, neighbor.description, ''),
+        neighbor: coalesce(CASE WHEN neighbor.type <> '' THEN neighbor.type ELSE null END, head([label IN labels(neighbor) WHERE label <> '__Entity__']), 'Entity') + ': ' + coalesce(neighbor.name, neighbor.description, ''),
         description: coalesce(r.description, ''),
         weight: coalesce(r.weight, r.observation_count, r.strength, 1.0),
         dir: 'in'
@@ -153,15 +162,17 @@ CALL (node) {
 }
 WITH node, score, connections
 CALL (node) {
-    OPTIONAL MATCH (node)<-[:FROM_CHUNK]-(chunk:Chunk)
+    OPTIONAL MATCH (node)<-[source_rel:FROM_CHUNK]-(chunk:Chunk)
     WHERE chunk.graph_name = node.graph_name
+      AND (source_rel.graph_name IS NULL OR source_rel.graph_name = node.graph_name)
     WITH DISTINCT chunk
     ORDER BY chunk.id ASC
     LIMIT $source_limit
     RETURN collect(chunk) AS selected_chunks
 }
-OPTIONAL MATCH (node)-[:IN_COMMUNITY]->(c:Community)
+OPTIONAL MATCH (node)-[community_rel:IN_COMMUNITY]->(c:Community)
 WHERE c.graph_name = node.graph_name
+  AND (community_rel.graph_name IS NULL OR community_rel.graph_name = node.graph_name)
 WITH node, score, connections, selected_chunks,
      collect(DISTINCT {
         id: c.id,
@@ -169,7 +180,7 @@ WITH node, score, connections, selected_chunks,
         graph_name: c.graph_name,
         report_text: c.report_text
      }) AS communities
-RETURN node.name + ' (' + labels(node)[-1] + ')' AS title,
+RETURN node.name + ' (' + coalesce(CASE WHEN node.type <> '' THEN node.type ELSE null END, head([label IN labels(node) WHERE label <> '__Entity__']), 'Entity') + ')' AS title,
        coalesce(node.human_readable_id, node.canonical_key, node.id) AS entity_id,
        coalesce(node.name, node.id) AS entity_name,
        labels(node) AS entity_labels,
@@ -188,12 +199,13 @@ RETURN node.name + ' (' + labels(node)[-1] + ')' AS title,
 
 # Community reporting — child report context (level > 0). Identical per backend.
 COMMUNITY_CHILD_REPORT_QUERY = """
-MATCH (child:Community)-[:PARENT_COMMUNITY]->(c:Community {
+MATCH (child:Community)-[parent_rel:PARENT_COMMUNITY]->(c:Community {
     graph_name: $graph_name,
     id: $cid,
     level: $level
 })
-WHERE child.graph_name = $graph_name
+WHERE (parent_rel.graph_name IS NULL OR parent_rel.graph_name = $graph_name)
+  AND child.graph_name = $graph_name
   AND child.level = $child_level
   AND child.report_text IS NOT NULL
 RETURN child.id AS id,
@@ -228,16 +240,24 @@ MATCH (c:Community {
     graph_name: $graph_name,
     id: $cid,
     level: $level
-})<-[:IN_COMMUNITY]-(e:__Entity__)
+})<-[membership:IN_COMMUNITY]-(e:__Entity__)
+WHERE e.graph_name = $graph_name
+  AND (membership.graph_name IS NULL OR membership.graph_name = $graph_name)
 OPTIONAL MATCH (e)-[r]-(other:__Entity__)
-WHERE (other)-[:IN_COMMUNITY]->(c)
+WHERE e.graph_name = $graph_name AND other.graph_name = $graph_name
+  AND r.graph_name = $graph_name
+  AND size([(other)-[other_membership:IN_COMMUNITY]->(c)
+    WHERE other_membership.graph_name IS NULL OR other_membership.graph_name = $graph_name
+    | other_membership]) > 0
   AND __IDFUNC__(e) < __IDFUNC__(other)
 WITH e, r, other,
-     SIZE([(e)-[r1]-()
-       WHERE NOT type(r1) IN ['IN_COMMUNITY', 'FROM_CHUNK', 'SOURCED_FROM']
+     SIZE([(e)-[r1]-(degree_neighbor)
+       WHERE r1.graph_name = $graph_name AND degree_neighbor.graph_name = $graph_name
+         AND NOT type(r1) IN ['IN_COMMUNITY', 'FROM_CHUNK', 'SOURCED_FROM']
      | r1]) AS e_degree,
-     SIZE([(other)-[r2]-()
-       WHERE NOT type(r2) IN ['IN_COMMUNITY', 'FROM_CHUNK', 'SOURCED_FROM']
+     SIZE([(other)-[r2]-(other_degree_neighbor)
+       WHERE r2.graph_name = $graph_name AND other_degree_neighbor.graph_name = $graph_name
+         AND NOT type(r2) IN ['IN_COMMUNITY', 'FROM_CHUNK', 'SOURCED_FROM']
      | r2]) AS other_degree
 RETURN coalesce(e.human_readable_id, e.canonical_key, e.id) AS e_id,
        coalesce(e.name, e.id) AS e_name,
@@ -267,10 +287,12 @@ MATCH (c:Community {
     graph_name: $graph_name,
     id: $community_id,
     level: $level
-})<-[:IN_COMMUNITY]-(e:__Entity__)
+})<-[membership:IN_COMMUNITY]-(e:__Entity__)
 WHERE e.graph_name = $graph_name
-WITH e, SIZE([(e)-[r1]-()
-       WHERE NOT type(r1) IN ['IN_COMMUNITY', 'FROM_CHUNK', 'SOURCED_FROM']
+  AND (membership.graph_name IS NULL OR membership.graph_name = $graph_name)
+WITH e, SIZE([(e)-[r1]-(degree_neighbor)
+       WHERE r1.graph_name = $graph_name AND degree_neighbor.graph_name = $graph_name
+         AND NOT type(r1) IN ['IN_COMMUNITY', 'FROM_CHUNK', 'SOURCED_FROM']
      | r1]) AS degree
 ORDER BY degree DESC,
          coalesce(e.human_readable_id, e.canonical_key, e.id) ASC
@@ -292,6 +314,7 @@ UNWIND member_rows AS member_row
 WITH members, member_ids, member_row.node AS member
 OPTIONAL MATCH (member)-[r]->(neighbor:__Entity__)
 WHERE neighbor.graph_name = $graph_name
+  AND r.graph_name = $graph_name
   AND coalesce(neighbor.human_readable_id, neighbor.canonical_key, neighbor.id) IN member_ids
   AND NOT neighbor:Community
   AND NOT neighbor:Chunk

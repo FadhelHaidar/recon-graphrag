@@ -15,7 +15,7 @@ import math
 from tqdm.asyncio import tqdm_asyncio
 
 from recon_graphrag.embeddings.base import BaseEmbedder
-from recon_graphrag.entity_text import embedder_fingerprint
+from recon_graphrag.entity_text import embedder_fingerprint, text_fingerprint
 from recon_graphrag.graphdb.base import GraphStore
 
 logger = logging.getLogger(__name__)
@@ -48,11 +48,15 @@ class ChunkEmbedder:
         self.model_fingerprint = embedder_fingerprint(embedder)
 
     async def embed_chunks(self, batch_size: int = 500):
-        """Generate embeddings for chunks that have none for the current model.
+        """Generate embeddings for chunks whose stored vector is missing or stale.
 
-        Chunk text is immutable once written, so only a missing vector or a
-        changed embedding model triggers work. Embeds concurrently up to
-        ``self.concurrency`` at a time, then batch-upserts all vectors at once.
+        Chunk text can change: a replacement document keeps the chunk ID and
+        writes new text. The writer clears the vector and records the expected
+        text fingerprint, so a changed text becomes eligible again. The embedder
+        also records the fingerprint of the text it embedded, and the store only
+        accepts a vector whose fingerprint still matches the stored text.
+        Embeds concurrently up to ``self.concurrency`` at a time, then
+        batch-upserts all vectors at once.
         """
         total = 0
         semaphore = asyncio.Semaphore(self.concurrency)
@@ -96,7 +100,7 @@ class ChunkEmbedder:
                 disable=None,
             )
 
-            ids, embeddings = [], []
+            ids, embeddings, fingerprints = [], [], []
             for chunk, result in zip(chunks, results, strict=True):
                 if isinstance(result, Exception):
                     logger.warning(
@@ -112,6 +116,9 @@ class ChunkEmbedder:
                 elif result is not None:
                     ids.append(result[0])
                     embeddings.append(result[1])
+                    # Fingerprint the exact text sent to the embedder; a
+                    # replaced chunk text must not accept this vector.
+                    fingerprints.append(text_fingerprint(chunk["text"]))
 
             if ids:
                 await asyncio.to_thread(
@@ -119,6 +126,7 @@ class ChunkEmbedder:
                     ids,
                     "embedding",
                     embeddings,
+                    content_fingerprints=fingerprints,
                     model_fingerprint=model_fingerprint,
                 )
                 total += len(ids)
