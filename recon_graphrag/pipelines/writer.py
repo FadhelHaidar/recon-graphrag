@@ -359,13 +359,29 @@ class CypherGraphWriter:
 
         # Both predicate inputs empty means the read can only return nothing.
         if state.chunk_ids or graph_document.relationships:
+            rel_ids = [rel.id for rel in graph_document.relationships]
+            # An empty input list makes the other predicate false, so the
+            # specialized predicate returns exactly the rows the combined OR
+            # predicate returns, with the same envelope and projection.
+            if state.chunk_ids and rel_ids:
+                predicate = (
+                    "(r.id IN $rel_ids "
+                    "OR any(chunk IN coalesce(r.source_chunk_ids, [])"
+                    " WHERE chunk IN $chunk_ids))"
+                )
+            elif rel_ids:
+                predicate = "r.id IN $rel_ids"
+            else:
+                predicate = (
+                    "any(chunk IN coalesce(r.source_chunk_ids, [])"
+                    " WHERE chunk IN $chunk_ids)"
+                )
             state.relationships = list(
                 self.graph_store.execute_query(
-                    """
-                    MATCH (s:__Entity__ {graph_name: $graph_name})-[r]->(t:__Entity__ {graph_name: $graph_name})
+                    f"""
+                    MATCH (s:__Entity__ {{graph_name: $graph_name}})-[r]->(t:__Entity__ {{graph_name: $graph_name}})
                     WHERE r.graph_name = $graph_name
-                      AND (r.id IN $rel_ids OR any(chunk IN coalesce(r.source_chunk_ids, [])
-                                                   WHERE chunk IN $chunk_ids))
+                      AND {predicate}
                     RETURN r.id AS id, s.id AS source_id, t.id AS target_id,
                            type(r) AS type,
                            coalesce(r.source_chunk_ids, []) AS source_chunk_ids,
@@ -379,7 +395,7 @@ class CypherGraphWriter:
                     """,
                     {
                         **params,
-                        "rel_ids": [rel.id for rel in graph_document.relationships],
+                        "rel_ids": rel_ids,
                         "chunk_ids": state.chunk_ids,
                     },
                 )

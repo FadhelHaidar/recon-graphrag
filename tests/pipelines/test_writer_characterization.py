@@ -12,6 +12,7 @@ from recon_graphrag.extraction.types import (
     DocumentRecord,
     EntityRecord,
     GraphDocument,
+    RelationshipRecord,
 )
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.pipelines import writer as writer_module
@@ -383,6 +384,130 @@ def test_relationship_state_read_runs_when_relationship_ids_exist(writer_cls):
     writer.write_graph_document(make_graph_document())
 
     assert [query for query in store.queries if "type(r) AS type" in query]
+
+
+def _relationship_predicate_cases(writer_cls):
+    """Run writes for each input-presence cell; return (queries, params)."""
+    store = StatefulFakeGraphStore()
+    writer = writer_cls(store)
+    document_id = "doc:1"
+
+    def document(chunks, relationships, entities=()):
+        return GraphDocument(
+            document=DocumentRecord(id=document_id, text_hash="hash"),
+            chunks=[
+                ChunkRecord(
+                    id=chunk_id,
+                    document_id=document_id,
+                    text="hi",
+                    index=index,
+                )
+                for index, chunk_id in enumerate(chunks)
+            ],
+            entities=list(entities),
+            relationships=list(relationships),
+            evidence_links=[],
+            claims=[],
+        )
+
+    relationship = RelationshipRecord(
+        id="doc:1:alice:R:acme",
+        source_id="alice",
+        target_id="acme",
+        type="R",
+    )
+    entities = [
+        EntityRecord(id="alice", type="Person", properties={"name": "Alice"}),
+        EntityRecord(id="acme", type="Organization", properties={"name": "Acme"}),
+    ]
+    return store, writer, document, relationship, entities
+
+
+def test_relationship_state_read_predicate_matches_available_inputs(writer_cls):
+    """The relationship read narrows its predicate to the available inputs."""
+    store, writer, document, relationship, entities = _relationship_predicate_cases(
+        writer_cls
+    )
+
+    # Both inputs present: previous chunks survive, incoming relationships exist.
+    writer.write_graph_document(document(["doc:1:c0"], [], entities))
+    writer.write_graph_document(document([], [relationship], entities))
+
+    # Relationship ids only: no previous chunks were read.
+    store_rel_only = StatefulFakeGraphStore()
+    writer_cls(store_rel_only).write_graph_document(document([], [relationship], entities))
+
+    # Chunk ids only: no incoming relationships.
+    store_chunk_only = StatefulFakeGraphStore()
+    store_chunk_only_writer = writer_cls(store_chunk_only)
+    store_chunk_only_writer.write_graph_document(document(["doc:1:c0"], []))
+    store_chunk_only_writer.write_graph_document(document([], []))
+
+    def state_read_queries(candidate_store):
+        return [
+            (query, candidate_store.params[index])
+            for index, query in enumerate(candidate_store.queries)
+            if "type(r) AS type" in query
+        ]
+
+    both_reads = state_read_queries(store)
+    rel_only_reads = state_read_queries(store_rel_only)
+    chunk_only_reads = state_read_queries(store_chunk_only)
+
+    assert len(both_reads) == len(rel_only_reads) == len(chunk_only_reads) == 1
+    (both_query, both_params) = both_reads[0]
+    (rel_only_query, rel_only_params) = rel_only_reads[0]
+    (chunk_only_query, chunk_only_params) = chunk_only_reads[0]
+
+    assert "r.id IN $rel_ids" in both_query
+    assert "any(chunk IN coalesce(r.source_chunk_ids, [])" in both_query
+    assert both_params == {
+        "graph_name": "entity-graph",
+        "document_id": "doc:1",
+        "rel_ids": ["doc:1:alice:R:acme"],
+        "chunk_ids": ["doc:1:c0"],
+    }
+
+    assert "AND r.id IN $rel_ids" in rel_only_query
+    assert "any(chunk" not in rel_only_query
+    assert rel_only_params["rel_ids"] == ["doc:1:alice:R:acme"]
+    assert rel_only_params["chunk_ids"] == []
+
+    assert "any(chunk IN coalesce(r.source_chunk_ids, [])" in chunk_only_query
+    assert "r.id IN" not in chunk_only_query
+    assert chunk_only_params["rel_ids"] == []
+    assert chunk_only_params["chunk_ids"] == ["doc:1:c0"]
+
+    # Every cell keeps the graph-scoping envelope, the full projection, and
+    # both parameter keys, so a specialized predicate cannot drop scope or
+    # columns silently.
+    envelope = (
+        "MATCH (s:__Entity__ {graph_name: $graph_name})-[r]->"
+        "(t:__Entity__ {graph_name: $graph_name})"
+    )
+    projection_aliases = (
+        "id",
+        "source_id",
+        "target_id",
+        "type",
+        "source_chunk_ids",
+        "descriptions",
+        "description_sources",
+        "description",
+        "description_summary_status",
+        "strength",
+        "strength_sources",
+        "properties",
+    )
+    for query in (both_query, rel_only_query, chunk_only_query):
+        assert envelope in query
+        assert "WHERE r.graph_name = $graph_name" in query
+        for alias in projection_aliases:
+            assert f"AS {alias}" in query
+    assert (
+        "(r.id IN $rel_ids OR any(chunk IN coalesce(r.source_chunk_ids, [])"
+        " WHERE chunk IN $chunk_ids))"
+    ) in both_query
 
 
 def test_relationship_state_read_runs_when_previous_chunks_exist(writer_cls):
