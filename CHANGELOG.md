@@ -18,6 +18,22 @@
   label or `graph_name` filters are applied and trim to `top_k` after the
   filter, matching Memgraph behavior; result shape is unchanged.
 
+## [0.14.4](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.14.3...v0.14.4) (2026-11-13)
+
+
+### Bug Fixes
+
+* **writer:** close seven scan findings and four plumbing gaps ([9ea3f67](https://github.com/FadhelHaidar/recon-graphrag/commit/9ea3f67244d076257147994830543e2424912dc3))
+* **writer:** close seven scan findings and four plumbing gaps ([ac5366a](https://github.com/FadhelHaidar/recon-graphrag/commit/ac5366a77632120a55b3ec20d126146330efed80))
+
+
+### Performance Improvements
+
+* **communities:** reuse prepared report context and dedup endpoints ([1e7a084](https://github.com/FadhelHaidar/recon-graphrag/commit/1e7a0840a94c42cca4d0240e4afe6f6119f6020d))
+* **ingestion:** remove redundant resolution and replacement work ([53ef644](https://github.com/FadhelHaidar/recon-graphrag/commit/53ef644ec8a86172cc918997e47ccc761cd53d4f))
+* pipeline logical optimizations and writer hardening ([26ea0c6](https://github.com/FadhelHaidar/recon-graphrag/commit/26ea0c68134b27d840b8321aaecaa6899eccddb8))
+* **writer:** specialize relationship state read predicates ([13f6d35](https://github.com/FadhelHaidar/recon-graphrag/commit/13f6d3594214a58ec41b5fe4f2b36d6cb1431099))
+
 ## [0.14.3](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.14.2...v0.14.3) (2026-11-09)
 
 
