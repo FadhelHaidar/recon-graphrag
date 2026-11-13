@@ -341,7 +341,10 @@ def test_entity_type_partition_preserves_duplicate_and_cross_type_rows(
     assert len(entity_queries) == 2
 
     person_query, person_rows = entity_queries[0]
-    assert ":`Person` " in person_query
+    # B04: identity is (graph_name, id) under __Entity__; the domain label is
+    # added with SET so an existing node without that label is reused.
+    assert "MERGE (e:__Entity__ {id: row.id, graph_name: row.graph_name})" in person_query
+    assert "SET e:`Person`," in person_query
     assert [(row["id"], row["type"], row["properties"]["name"]) for row in person_rows] == [
         ("e1", "Person", "Alice"),
         ("e2", "Person", "Bob"),
@@ -349,7 +352,9 @@ def test_entity_type_partition_preserves_duplicate_and_cross_type_rows(
     ]
 
     organization_query, organization_rows = entity_queries[1]
-    assert ":`Organization` " in organization_query
+    assert "MERGE (e:__Entity__ {id: row.id, graph_name: row.graph_name})" in organization_query
+    assert "SET e:`Organization`," in organization_query
+    assert ":__Entity__:`Person`" not in organization_query
     assert [
         (row["id"], row["type"], row["properties"]["name"])
         for row in organization_rows
@@ -448,6 +453,8 @@ def test_relationship_state_read_predicate_matches_available_inputs(writer_cls):
             (query, candidate_store.params[index])
             for index, query in enumerate(candidate_store.queries)
             if "type(r) AS type" in query
+            and "$relationship_keys" not in query
+            and "$relationship_ids" not in query
         ]
 
     both_reads = state_read_queries(store)

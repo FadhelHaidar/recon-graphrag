@@ -25,6 +25,9 @@ class FakeGraphStore:
         if "MATCH (e:__Entity__)" in query and "id(e) AS node_id" in query:
             return self._rows
 
+        if "AS scope_type" in query:
+            return []
+
         if "properties(r) AS rel_props" in query:
             return []
 

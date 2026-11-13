@@ -74,10 +74,41 @@ def reject_mixed_ownership(records: list[dict]) -> None:
 def preflight_merge_ownership(
     graph_store: GraphStore, groups: list[list[_EntityRecord]], node_id_function: str
 ) -> None:
-    """Check only nodes and coincident incident domain edges in these groups."""
+    """Validate incident graph scope and coincident contribution ownership before merging."""
     merged_node_ids = {
         entity.node_id: group[0].node_id for group in groups for entity in group
     }
+    # Check every group before either backend can change nodes or relationships.
+    for group in groups:
+        rows = graph_store.execute_query(
+            f"""
+            MATCH (s)-[r]->(t)
+            WHERE {node_id_function}(s) IN $node_ids OR {node_id_function}(t) IN $node_ids
+            RETURN s.graph_name AS source_graph, t.graph_name AS target_graph,
+                   labels(s) AS source_labels, labels(t) AS target_labels,
+                   type(r) AS scope_type, r.graph_name AS relationship_graph
+            """,
+            {"graph_name": group[0].graph_name, "node_ids": [e.node_id for e in group]},
+        )
+        for row in rows:
+            graph = group[0].graph_name
+            structural = any(
+                row["scope_type"] == rel_type
+                and source_label in row["source_labels"]
+                and target_label in row["target_labels"]
+                for rel_type, source_label, target_label in (
+                    ("FROM_CHUNK", "Chunk", "__Entity__"),
+                    ("SUBJECT_OF", "Claim", "__Entity__"),
+                    ("IN_COMMUNITY", "__Entity__", "Community"),
+                )
+            )
+            if (row["source_graph"] != graph or row["target_graph"] != graph
+                    or (row["relationship_graph"] != graph
+                        and not (structural and row["relationship_graph"] is None))):
+                raise ValueError(
+                    "Cannot resolve entities with foreign or unscoped incident relationships; "
+                    "re-ingest the affected documents before resolution."
+                )
     for group in groups:
         reject_mixed_ownership([entity.properties for entity in group])
         node_ids = [entity.node_id for entity in group]

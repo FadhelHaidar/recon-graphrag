@@ -93,8 +93,9 @@ def test_query_bounds_both_expansion_directions(build, order_by_score):
 def test_sources_are_limited_in_a_correlated_subquery(build):
     query = build(order_by_score=False)
     assert """CALL (node) {
-    OPTIONAL MATCH (node)<-[:FROM_CHUNK]-(chunk:Chunk)
+    OPTIONAL MATCH (node)<-[source_rel:FROM_CHUNK]-(chunk:Chunk)
     WHERE chunk.graph_name = node.graph_name
+      AND (source_rel.graph_name IS NULL OR source_rel.graph_name = node.graph_name)
     WITH DISTINCT chunk
     ORDER BY chunk.id ASC
     LIMIT $source_limit
@@ -278,3 +279,24 @@ async def test_drift_search_limits_are_configurable():
     assert store.context_params
     for params in store.context_params:
         assert _caps(params) == {"rel_limit": 6, "source_limit": 1}
+
+
+def test_ranked_source_selection_ignores_a_vector_built_from_other_text() -> None:
+    """B07 defense in depth: a mismatched text fingerprint cannot rank.
+
+    The writer clears a changed chunk's vector, so a mismatch is only reachable
+    through external writes. When both fingerprints exist and disagree, the
+    stored vector no longer represents the chunk text.
+    """
+    ranked_local = local_retrieval_query(order_by_score=True, rank_sources=True)
+    ranked_drift = drift_retrieval_query(order_by_score=True, rank_sources=True)
+    guard = (
+        "chunk.embedding_input_fingerprint\n"
+        "                           <> chunk.embedding_content_fingerprint"
+    )
+    assert guard in ranked_local
+    assert guard in ranked_drift
+    # Uncertified legacy vectors keep their current scoring, so ranking does not
+    # shift until the chunk is embedded again.
+    assert "chunk.embedding_content_fingerprint IS NOT NULL" in ranked_local
+    assert guard not in local_retrieval_query(order_by_score=True)
