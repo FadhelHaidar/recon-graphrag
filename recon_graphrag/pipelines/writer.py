@@ -26,15 +26,17 @@ from __future__ import annotations
 
 import logging
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from copy import copy
 from dataclasses import dataclass, field
 from typing import Any
 
-from recon_graphrag.entity_text import entity_embedding_fingerprint
-from recon_graphrag.extraction.types import GraphDocument
+from recon_graphrag.entity_text import entity_embedding_fingerprint, text_fingerprint
+from recon_graphrag.extraction.types import DocumentRecord, GraphDocument
 from recon_graphrag.graphdb._provenance import (
     build_uid as _build_uid,
+)
+from recon_graphrag.graphdb._provenance import (
     contribution_entries,
     encode_contributions,
     raw_descriptions,
@@ -189,7 +191,22 @@ class CypherGraphWriter:
 
     def _write_document(self, graph_document: GraphDocument) -> dict[str, int]:
         self._reject_reserved_keys(graph_document)
+        self._validate_document_scope(graph_document)
+        self._validate_incoming_relationship_ids(graph_document)
         state = self._read_document_state(graph_document)
+        self._reject_reference_entity_ambiguity(graph_document, state)
+        targets = self._read_relationship_targets(graph_document)
+        self._reject_duplicate_relationship_identities(
+            graph_document, state, targets
+        )
+        self._adopt_key_relationships(
+            graph_document.document.graph_name, state, targets
+        )
+        self._validate_stored_relationship_ids(
+            graph_document.document.graph_name, state
+        )
+        id_rows = self._read_relationship_ids(graph_document, state)
+        self._reject_relationship_id_collisions(graph_document, id_rows)
         entity_rows = self._entity_rows(graph_document, state)
         relationship_rows = self._relationship_rows(graph_document, state)
 
@@ -197,7 +214,10 @@ class CypherGraphWriter:
             graph_document, state, relationship_rows
         )
         # Validate removed contributions too, before the first mutation.
-        self._rebuild_entity_rows(graph_document, state, entity_rows)
+        # Reconcile reuses these rows; recompute only on a transaction retry.
+        rebuild_entities = self._rebuild_entity_rows(
+            graph_document, state, entity_rows
+        )
         self._validate_references(graph_document, state)
         documents = self._write_documents([graph_document.document])
         chunks = self._write_chunks(graph_document.chunks)
@@ -213,6 +233,7 @@ class CypherGraphWriter:
             entity_rows,
             relationship_rows,
             rebuild_relationships,
+            rebuild_entities,
         )
 
         # A receipt of what the database confirmed, not of what was submitted.
@@ -248,6 +269,325 @@ class CypherGraphWriter:
                     "as 'external_id' or 'employee_id', then resubmit."
                 )
 
+    def _validate_document_scope(self, graph_document: GraphDocument) -> None:
+        """Fail before any query when a child record leaves the document scope.
+
+        Child rows persist their own graph name, while state reads and
+        reconciliation use the document graph. A mismatched child would write
+        outside the replaced graph, so the boundary rejects it.
+        """
+        document = graph_document.document
+        for chunk in graph_document.chunks:
+            self._require_document_graph(
+                "ChunkRecord", chunk.id, chunk.graph_name, document
+            )
+            if chunk.document_id != document.id:
+                raise ValueError(
+                    f"ChunkRecord {chunk.id!r} belongs to Document "
+                    f"{chunk.document_id!r}, but this write targets Document "
+                    f"{document.id!r}. Submit chunks that belong to the document."
+                )
+        for entity in graph_document.entities:
+            self._require_document_graph(
+                "EntityRecord", entity.id, entity.graph_name, document
+            )
+        for relationship in graph_document.relationships:
+            self._require_document_graph(
+                "RelationshipRecord",
+                relationship.id,
+                relationship.graph_name,
+                document,
+            )
+        for link in graph_document.evidence_links:
+            self._require_document_graph(
+                "EvidenceLink",
+                f"{link.chunk_id}->{link.entity_id}",
+                link.graph_name,
+                document,
+            )
+        for claim in graph_document.claims:
+            self._require_document_graph(
+                "ClaimRecord", claim.id, claim.graph_name, document
+            )
+            if claim.source.document_id != document.id:
+                raise ValueError(
+                    f"ClaimRecord {claim.id!r} cites Document "
+                    f"{claim.source.document_id!r}, but this write targets "
+                    f"Document {document.id!r}. Claim sources must belong to the "
+                    "document."
+                )
+
+    @staticmethod
+    def _require_document_graph(
+        record_kind: str,
+        record_id: str,
+        graph_name: str,
+        document: DocumentRecord,
+    ) -> None:
+        if graph_name == document.graph_name:
+            return
+        raise ValueError(
+            f"{record_kind} {record_id!r} targets graph {graph_name!r}, but "
+            f"Document {document.id!r} targets graph {document.graph_name!r}. "
+            "Child records must use the document graph name; the writer does "
+            "not copy records into another graph."
+        )
+
+    def _validate_incoming_relationship_ids(
+        self, graph_document: GraphDocument
+    ) -> None:
+        """Fail before any query when a submitted relationship id is unusable."""
+        graph_name = graph_document.document.graph_name
+        for relationship in graph_document.relationships:
+            self._require_relationship_id(
+                relationship.id,
+                graph_name=graph_name,
+                source_id=relationship.source_id,
+                rel_type=relationship.type,
+                target_id=relationship.target_id,
+                origin="submitted relationship",
+            )
+
+    def _validate_stored_relationship_ids(
+        self, graph_name: str, state: _DocumentState
+    ) -> None:
+        """Fail before mutation when an affected stored edge has no usable id.
+
+        State reads cover only edges this document contributed, so unrelated
+        graphs and documents are not inspected.
+        """
+        for row in state.relationships:
+            self._require_relationship_id(
+                row.get("id"),
+                graph_name=graph_name,
+                source_id=row.get("source_id"),
+                rel_type=row.get("type"),
+                target_id=row.get("target_id"),
+                origin="stored relationship",
+            )
+
+    def _read_relationship_targets(
+        self, graph_document: GraphDocument
+    ) -> list[dict[str, Any]]:
+        """Read stored edges for the submitted logical keys, whatever their scope.
+
+        The lookup is narrow: endpoints by identity and a fixed relationship
+        type. It returns every edge between those endpoints, so duplicate and
+        foreign-scoped edges stay visible instead of collapsing into one row.
+        Ownership and id reads cannot find an edge whose stored id differs from
+        the submitted id, so this read supplies the stored identity.
+        """
+        graph_name = graph_document.document.graph_name
+        targets: list[dict[str, Any]] = []
+        for rel_type, group in self._group_by_type(
+            graph_document.relationships
+        ).items():
+            rel_label = escape_cypher_identifier(rel_type)
+            rows = self.graph_store.execute_query(
+                f"""
+                UNWIND $relationship_keys AS row
+                MATCH (s:__Entity__ {{id: row.source_id, graph_name: $graph_name}})
+                MATCH (t:__Entity__ {{id: row.target_id, graph_name: $graph_name}})
+                MATCH (s)-[r:{rel_label}]->(t)
+                RETURN row.source_id AS source_id,
+                       row.target_id AS target_id,
+                       $rel_type AS type,
+                       r.id AS id,
+                       r.graph_name AS rel_graph_name,
+                       coalesce(r.source_chunk_ids, []) AS source_chunk_ids,
+                       r.descriptions AS descriptions,
+                       r.description_sources AS description_sources,
+                       r.description AS description,
+                       r.description_summary_status AS description_summary_status,
+                       r.strength AS strength,
+                       r.strength_sources AS strength_sources,
+                       r.properties AS properties
+                """,
+                {
+                    "graph_name": graph_name,
+                    "rel_type": rel_type,
+                    # One request per key: a repeated incoming key must not
+                    # return the same stored edge more than once.
+                    "relationship_keys": [
+                        {"source_id": source_id, "target_id": target_id}
+                        for source_id, target_id in dict.fromkeys(
+                            (rel.source_id, rel.target_id) for rel in group
+                        )
+                    ],
+                },
+            )
+            targets.extend(rows or [])
+        return targets
+
+    def _reject_duplicate_relationship_identities(
+        self,
+        graph_document: GraphDocument,
+        state: _DocumentState,
+        targets: list[dict[str, Any]],
+    ) -> None:
+        """Fail rather than collapse two stored edges for one logical key.
+
+        Relationship identity is ``(graph_name, source_id, type, target_id)``.
+        Two stored edges for one key leave no safe write target, so the writer
+        stops before any mutation. Owned rows appear here through their previous
+        chunk, so an omitted duplicate is caught as well. Foreign and unscoped
+        edges never count.
+        """
+        graph_name = graph_document.document.graph_name
+        # Count physical edges, not distinct ids: two stored edges may share
+        # both the logical key and the id, and a MERGE would then match both.
+        # The two reads overlap on owned keys, so the larger count wins instead
+        # of adding them. An unscoped edge never counts against a stored one.
+        owned = Counter(_relationship_key(row) for row in state.relationships)
+        keyed = Counter(
+            _relationship_key(row)
+            for row in targets
+            if row.get("rel_graph_name") == graph_name
+        )
+        counts = {
+            key: max(owned.get(key, 0), keyed.get(key, 0))
+            for key in dict.fromkeys([*owned, *keyed])
+        }
+        keys = list(
+            dict.fromkeys(
+                [*counts]
+                + [
+                    _relationship_key(rel)
+                    for rel in graph_document.relationships
+                ]
+            )
+        )
+        ambiguous = [key for key in keys if counts.get(key, 0) > 1]
+        if not ambiguous:
+            return
+        shown = ", ".join(
+            f"({key[0]})-[{key[2]}]->({key[1]}) ({counts[key]} edges)"
+            for key in ambiguous[:5]
+        )
+        remainder = len(ambiguous) - 5
+        more = f" and {remainder} more" if remainder > 0 else ""
+        raise ValueError(
+            f"Relationship identity is ambiguous in graph {graph_name!r}: "
+            f"{shown}{more}. The writer does not merge duplicate relationships. "
+            "Rebuild or deduplicate the affected relationships, then retry."
+        )
+
+    def _adopt_key_relationships(
+        self,
+        graph_name: str,
+        state: _DocumentState,
+        targets: list[dict[str, Any]],
+    ) -> None:
+        """Add graph-scoped key matches to the state so the stored id survives.
+
+        Only edges owned by this graph join the state. A foreign or unscoped
+        edge stays untouched, and the write never targets it.
+        """
+        seen = {_relationship_row_identity(row) for row in state.relationships}
+        for row in targets:
+            if row.get("rel_graph_name") != graph_name:
+                continue
+            identity = _relationship_row_identity(row)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            state.relationships.append(row)
+
+    def _read_relationship_ids(
+        self, graph_document: GraphDocument, state: _DocumentState
+    ) -> list[dict[str, Any]]:
+        """Read the edges that rebuild and cleanup can reach by id.
+
+        Rebuild and cleanup select by ``r.id`` inside this graph, without an
+        endpoint condition. The read therefore returns every such edge for an
+        affected id, whatever its endpoints, so a shared id stays visible.
+        """
+        graph_name = graph_document.document.graph_name
+        ids = sorted(
+            {
+                row["id"]
+                for row in state.relationships
+                if isinstance(row.get("id"), str)
+            }
+            | {rel.id for rel in graph_document.relationships}
+        )
+        if not ids:
+            return []
+        # Every relationship type, not only the submitted ones: cleanup selects
+        # by id alone, so an id shared with an unsubmitted type stays reachable.
+        rows = list(
+            self.graph_store.execute_query(
+                """
+                UNWIND $relationship_ids AS id
+                MATCH (s:__Entity__ {graph_name: $graph_name})-[r]->(t:__Entity__ {graph_name: $graph_name})
+                WHERE r.graph_name = $graph_name AND r.id = id
+                RETURN r.id AS id, s.id AS source_id, t.id AS target_id,
+                       type(r) AS type
+                """,
+                {"graph_name": graph_name, "relationship_ids": ids},
+            )
+        )
+        return rows
+
+    def _reject_relationship_id_collisions(
+        self, graph_document: GraphDocument, id_rows: list[dict[str, Any]]
+    ) -> None:
+        """Fail when one id identifies more than one logical edge in scope.
+
+        Rebuild and cleanup select edges by id. An id shared by two logical
+        keys, or by two physical edges of one key, would update or delete the
+        wrong edge, so the writer stops first.
+        """
+        graph_name = graph_document.document.graph_name
+        counts_by_id = Counter(row["id"] for row in id_rows)
+        keys_by_id: dict[str, set[tuple[str, str, str]]] = {}
+        for row in id_rows:
+            keys_by_id.setdefault(row["id"], set()).add(_relationship_key(row))
+        incoming: dict[str, set[tuple[str, str, str]]] = {}
+        for rel in graph_document.relationships:
+            incoming.setdefault(rel.id, set()).add(_relationship_key(rel))
+        clashes = [
+            rel.id
+            for rel in graph_document.relationships
+            if any(
+                key != _relationship_key(rel)
+                for key in keys_by_id.get(rel.id, ())
+            )
+            or len(incoming.get(rel.id, ())) > 1
+        ]
+        clashes.extend(
+            rel_id for rel_id, count in counts_by_id.items() if count > 1
+        )
+        if not clashes:
+            return
+        shown_ids = ", ".join(repr(rel_id) for rel_id in dict.fromkeys(clashes))
+        raise ValueError(
+            f"Relationship id is ambiguous in graph {graph_name!r}: "
+            f"{shown_ids} already identifies more than one stored relationship. "
+            "The writer does not reassign relationship ids. Repair or reimport "
+            "the affected relationships, then retry."
+        )
+
+    @staticmethod
+    def _require_relationship_id(
+        value: object,
+        *,
+        graph_name: str,
+        source_id: object,
+        rel_type: object,
+        target_id: object,
+        origin: str,
+    ) -> None:
+        if isinstance(value, str) and value.strip():
+            return
+        raise ValueError(
+            f"Relationship ({source_id})-[{rel_type}]->({target_id}) in graph "
+            f"{graph_name!r} has an unusable id from a {origin}: {value!r}. "
+            "Reconciling a document replacement needs a nonempty string "
+            "relationship id. Repair or reimport the affected data; the writer "
+            "does not assign relationship ids."
+        )
+
     def _validate_references(
         self, graph_document: GraphDocument, state: _DocumentState
     ) -> None:
@@ -255,10 +595,10 @@ class CypherGraphWriter:
 
         The write queries MATCH their endpoints, so a record naming a missing
         entity or chunk is dropped without an error. Endpoints owned by other
-        documents resolve against the graph.
+        documents resolve against the graph. Chunk references must name a chunk
+        in this replacement; a previous chunk is deleted by reconciliation.
         """
         chunk_ids = {chunk.id for chunk in graph_document.chunks}
-        chunk_ids.update(state.chunk_ids)
         entity_ids = {entity.id for entity in graph_document.entities}
         entity_ids.update(state.entities)
 
@@ -292,6 +632,12 @@ class CypherGraphWriter:
             f"{' and '.join(missing)}; relationships, evidence links, and claims "
             "are only written when their endpoints exist. Include the referenced "
             "records in the document, or write them first."
+            + (
+                " A chunk reference must name a chunk in this document version;"
+                " replacement removes omitted chunks."
+                if missing_chunks
+                else ""
+            )
         )
 
     def _existing_entity_ids(
@@ -351,49 +697,77 @@ class CypherGraphWriter:
             ),
         )
 
-        state.relationships = list(
-            self.graph_store.execute_query(
-                """
-                MATCH (s:__Entity__ {graph_name: $graph_name})-[r]->(t:__Entity__ {graph_name: $graph_name})
-                WHERE r.graph_name = $graph_name
-                  AND (r.id IN $rel_ids OR any(chunk IN coalesce(r.source_chunk_ids, [])
-                                               WHERE chunk IN $chunk_ids))
-                RETURN r.id AS id, s.id AS source_id, t.id AS target_id,
-                       type(r) AS type,
-                       coalesce(r.source_chunk_ids, []) AS source_chunk_ids,
-                       r.descriptions AS descriptions,
-                       r.description_sources AS description_sources,
-                       r.description AS description,
-                       r.description_summary_status AS description_summary_status,
-                       r.strength AS strength,
-                       r.strength_sources AS strength_sources,
-                       r.properties AS properties
-                """,
-                {
-                    **params,
-                    "rel_ids": [rel.id for rel in graph_document.relationships],
-                    "chunk_ids": state.chunk_ids,
-                },
+        # Both predicate inputs empty means the read can only return nothing.
+        if state.chunk_ids or graph_document.relationships:
+            rel_ids = [rel.id for rel in graph_document.relationships]
+            # An empty input list makes the other predicate false, so the
+            # specialized predicate returns exactly the rows the combined OR
+            # predicate returns, with the same envelope and projection.
+            if state.chunk_ids and rel_ids:
+                predicate = (
+                    "(r.id IN $rel_ids "
+                    "OR any(chunk IN coalesce(r.source_chunk_ids, [])"
+                    " WHERE chunk IN $chunk_ids))"
+                )
+            elif rel_ids:
+                predicate = "r.id IN $rel_ids"
+            else:
+                predicate = (
+                    "any(chunk IN coalesce(r.source_chunk_ids, [])"
+                    " WHERE chunk IN $chunk_ids)"
+                )
+            state.relationships = list(
+                self.graph_store.execute_query(
+                    f"""
+                    MATCH (s:__Entity__ {{graph_name: $graph_name}})-[r]->(t:__Entity__ {{graph_name: $graph_name}})
+                    WHERE r.graph_name = $graph_name
+                      AND {predicate}
+                    RETURN r.id AS id, s.id AS source_id, t.id AS target_id,
+                           type(r) AS type,
+                           coalesce(r.source_chunk_ids, []) AS source_chunk_ids,
+                           r.descriptions AS descriptions,
+                           r.description_sources AS description_sources,
+                           r.description AS description,
+                           r.description_summary_status AS description_summary_status,
+                           r.strength AS strength,
+                           r.strength_sources AS strength_sources,
+                           r.properties AS properties
+                    """,
+                    {
+                        **params,
+                        "rel_ids": rel_ids,
+                        "chunk_ids": state.chunk_ids,
+                    },
+                )
             )
-        )
 
-        entity_ids = list(
-            dict.fromkeys(
+        entity_ids = [
+            entity_id
+            for entity_id in dict.fromkeys(
                 [entity.id for entity in graph_document.entities]
-                + [row.get("entity_id") for row in state.evidence if row.get("entity_id")]
-                + [row.get("entity_id") for row in state.claims if row.get("entity_id")]
+                + [
+                    row.get("entity_id")
+                    for row in state.evidence
+                    if row.get("entity_id")
+                ]
+                + [
+                    row.get("entity_id")
+                    for row in state.claims
+                    if row.get("entity_id")
+                ]
                 + [row.get("source_id") for row in state.relationships]
                 + [row.get("target_id") for row in state.relationships]
             )
-        )
+            if isinstance(entity_id, str)
+        ]
         if entity_ids:
-            state.entities = {
-                row["id"]: row
-                for row in self.graph_store.execute_query(
+            entity_rows = list(
+                self.graph_store.execute_query(
                     """
                     UNWIND $entity_ids AS id
                     MATCH (e:__Entity__ {id: id, graph_name: $graph_name})
                     RETURN e.id AS id,
+                           e.type AS type,
                            e.descriptions AS descriptions,
                            e.description_sources AS description_sources,
                            e.description AS description,
@@ -404,8 +778,80 @@ class CypherGraphWriter:
                     """,
                     {"graph_name": document.graph_name, "entity_ids": entity_ids},
                 )
-            }
+            )
+            self._reject_ambiguous_entity_identities(
+                document.graph_name, entity_ids, entity_rows
+            )
+            state.entities = {row["id"]: row for row in entity_rows}
         return state
+
+    def _reject_ambiguous_entity_identities(
+        self, graph_name: str, entity_ids: list[str], rows: list[dict[str, Any]]
+    ) -> None:
+        """Fail rather than merge when one identity has several stored nodes.
+
+        Entity identity is ``(graph_name, id)``. Legacy data may hold several
+        nodes for one identity, for example after a domain label change. A
+        label-only write cannot tell which node is authoritative, so the
+        writer stops before any mutation. The check covers affected IDs only.
+        """
+        counts = Counter(row["id"] for row in rows)
+        ambiguous = [
+            entity_id for entity_id in entity_ids if counts.get(entity_id, 0) > 1
+        ]
+        if not ambiguous:
+            return
+        shown = ", ".join(
+            f"'{entity_id}' ({counts[entity_id]} nodes)" for entity_id in ambiguous[:5]
+        )
+        remainder = len(ambiguous) - 5
+        more = f" and {remainder} more" if remainder > 0 else ""
+        raise ValueError(
+            f"Entity identity is ambiguous in graph '{graph_name}': "
+            f"{shown}{more}. The writer does not merge duplicate entity nodes. "
+            "Rebuild or deduplicate the affected entities, then retry."
+        )
+
+    def _reject_reference_entity_ambiguity(
+        self, graph_document: GraphDocument, state: _DocumentState
+    ) -> None:
+        """Check identities that only a reference names, not an entity record.
+
+        A relationship endpoint, evidence link, or claim can address an entity
+        that this document does not submit and that its previous version does
+        not own. The write still matches every stored node for that identity,
+        so the multiplicity check covers those ids too. Shared state ids are
+        already checked by the state read and stay out of this query.
+        """
+        graph_name = graph_document.document.graph_name
+        entity_ids = [
+            entity_id
+            for entity_id in dict.fromkeys(
+                [rel.source_id for rel in graph_document.relationships]
+                + [rel.target_id for rel in graph_document.relationships]
+                + [link.entity_id for link in graph_document.evidence_links]
+                + [claim.entity_id for claim in graph_document.claims]
+                + [
+                    claim.object_entity_id
+                    for claim in graph_document.claims
+                    if claim.object_entity_id
+                ]
+            )
+            if isinstance(entity_id, str) and entity_id not in state.entities
+        ]
+        if not entity_ids:
+            return
+        rows = list(
+            self.graph_store.execute_query(
+                """
+                UNWIND $entity_ids AS id
+                MATCH (e:__Entity__ {id: id, graph_name: $graph_name})
+                RETURN e.id AS id
+                """,
+                {"graph_name": graph_name, "entity_ids": entity_ids},
+            )
+        )
+        self._reject_ambiguous_entity_identities(graph_name, entity_ids, rows)
 
     def _entity_rows(
         self, graph_document: GraphDocument, state: _DocumentState
@@ -458,6 +904,7 @@ class CypherGraphWriter:
                         labels=[entity.type, "__Entity__"],
                         name=name,
                         description=final_description,
+                        entity_type=entity.type,
                     ),
                     "properties": properties,
                 }
@@ -499,7 +946,9 @@ class CypherGraphWriter:
             changed = descriptions != stored_descriptions
             rows.append(
                 {
-                    "id": rel.id,
+                    # An existing logical edge keeps its stored id; the incoming
+                    # id only names a new edge.
+                    "id": stored.get("id") or rel.id,
                     "type": rel.type,
                     "source_id": rel.source_id,
                     "target_id": rel.target_id,
@@ -557,12 +1006,23 @@ class CypherGraphWriter:
             UNWIND $chunks AS row
             MATCH (d:Document {id: row.document_id, graph_name: row.graph_name})
             MERGE (c:Chunk {id: row.id, graph_name: row.graph_name})
+            WITH c, d, row, c.text AS previous_text
             SET c.text = row.text,
                 c.index = row.index,
                 c.uid = row.uid,
                 c += row.metadata,
                 c.updated = timestamp(),
-                c.created = coalesce(c.created, timestamp())
+                c.created = coalesce(c.created, timestamp()),
+                c.embedding_input_fingerprint = row.embedding_input_fingerprint,
+                c.embedding = CASE
+                    WHEN previous_text = row.text THEN c.embedding
+                END,
+                c.embedding_content_fingerprint = CASE
+                    WHEN previous_text = row.text THEN c.embedding_content_fingerprint
+                END,
+                c.embedding_model_fingerprint = CASE
+                    WHEN previous_text = row.text THEN c.embedding_model_fingerprint
+                END
             MERGE (c)-[:PART_OF]->(d)
             RETURN count(*) AS written
             """,
@@ -576,16 +1036,30 @@ class CypherGraphWriter:
         if not entities:
             return 0
 
+        grouped = self._group_by_type(entities)
+        types_by_id: dict[str, list[str]] = {}
+        for entity_type, group in grouped.items():
+            for entity in group:
+                types = types_by_id.setdefault(entity.id, [])
+                if entity_type not in types:
+                    types.append(entity_type)
+        rows_by_type: dict[str, list[dict[str, Any]]] = {
+            entity_type: [] for entity_type in grouped
+        }
+        for row in rows:
+            for entity_type in types_by_id.get(row["id"], ()):
+                rows_by_type[entity_type].append(row)
+
         written = 0
-        for entity_type, group in self._group_by_type(entities).items():
+        for entity_type in grouped:
             label = escape_cypher_identifier(entity_type)
-            group_ids = {entity.id for entity in group}
-            group_rows = [row for row in rows if row["id"] in group_ids]
+            group_rows = rows_by_type[entity_type]
             result = self.graph_store.execute_query(
                 f"""
                 UNWIND $entities AS row
-                MERGE (e:__Entity__:{label} {{id: row.id, graph_name: row.graph_name}})
-                SET e.uid = row.uid,
+                MERGE (e:__Entity__ {{id: row.id, graph_name: row.graph_name}})
+                SET e:{label},
+                    e.uid = row.uid,
                     e += row.properties,
                     e.type = row.type,
                     e.canonical_key = coalesce(row.canonical_key, row.properties.canonical_key),
@@ -665,7 +1139,7 @@ class CypherGraphWriter:
                 UNWIND $relationships AS row
                 MATCH (source:__Entity__ {{id: row.source_id, graph_name: row.graph_name}})
                 MATCH (target:__Entity__ {{id: row.target_id, graph_name: row.graph_name}})
-                MERGE (source)-[r:{rel_label}]->(target)
+                MERGE (source)-[r:{rel_label} {{graph_name: row.graph_name}}]->(target)
                 SET r.id = row.id,
                     r += row.properties,
                     r.graph_name = row.graph_name,
@@ -749,7 +1223,11 @@ class CypherGraphWriter:
         if not claims:
             return 0
 
-        rows = self._claim_rows(claims)
+        # Keep each input occurrence distinct when deletion fans out over old links.
+        rows = [
+            {**row, "input_ordinal": ordinal}
+            for ordinal, row in enumerate(self._claim_rows(claims))
+        ]
         result = self.graph_store.execute_query(
             """
             UNWIND $claims AS row
@@ -765,11 +1243,16 @@ class CypherGraphWriter:
                 c.updated = timestamp(),
                 c.created = coalesce(c.created, timestamp())
             WITH c, row
+            OPTIONAL MATCH (c)-[old:SUBJECT_OF|SOURCED_FROM]->(endpoint)
+            WHERE endpoint.graph_name = row.graph_name
+              AND (old.graph_name IS NULL OR old.graph_name = row.graph_name)
+            DELETE old
+            WITH DISTINCT c, row
             MATCH (e:__Entity__ {id: row.entity_id, graph_name: row.graph_name})
-            MERGE (c)-[:SUBJECT_OF]->(e)
+            MERGE (c)-[:SUBJECT_OF {graph_name: row.graph_name}]->(e)
             WITH c, row
             MATCH (ch:Chunk {id: row.chunk_id, graph_name: row.graph_name})
-            MERGE (c)-[:SOURCED_FROM]->(ch)
+            MERGE (c)-[:SOURCED_FROM {graph_name: row.graph_name}]->(ch)
             RETURN count(*) AS written
             """,
             {"claims": rows},
@@ -871,6 +1354,7 @@ class CypherGraphWriter:
                         labels=stored.get("labels"),
                         name=stored.get("name") or stored["id"],
                         description=description_text,
+                        entity_type=stored.get("type"),
                     ),
                 }
             )
@@ -883,10 +1367,11 @@ class CypherGraphWriter:
         entity_rows: list[dict[str, Any]],
         relationship_rows: list[dict[str, Any]],
         rebuild_relationships: list[dict[str, Any]],
+        rebuild_entities: list[dict[str, Any]],
     ) -> None:
         """Remove what only the document's previous version contributed."""
         graph_name = graph_document.document.graph_name
-        keep_chunk_ids = [chunk.id for chunk in graph_document.chunks]
+        keep_chunk_ids = {chunk.id for chunk in graph_document.chunks}
         keep_evidence = {
             (link.chunk_id, link.entity_id)
             for link in graph_document.evidence_links
@@ -913,9 +1398,12 @@ class CypherGraphWriter:
                 {"graph_name": graph_name, "links": stale_evidence},
             )
 
+        # Select by identity only. A retained claim whose source moved is
+        # already rewritten by _write_claims; its previous row still names the
+        # removed chunk, so matching on that chunk deletes the new claim.
         stale_claims = [
             row["id"] for row in state.claims
-            if row["id"] not in keep_claim_ids or row.get("chunk_id") in removed_chunk_ids
+            if row["id"] not in keep_claim_ids
         ]
         if stale_claims:
             self.graph_store.execute_query(
@@ -958,9 +1446,6 @@ class CypherGraphWriter:
             )
 
         remaining_entity_ids = {row["id"] for row in entity_rows}
-        rebuild_entities = self._rebuild_entity_rows(
-            graph_document, state, entity_rows
-        )
         if rebuild_entities:
             self.graph_store.execute_query(
                 """
@@ -1041,6 +1526,7 @@ class CypherGraphWriter:
                 "graph_name": chunk.graph_name,
                 "uid": _build_uid(chunk.graph_name, chunk.id),
                 "metadata": chunk.metadata,
+                "embedding_input_fingerprint": text_fingerprint(chunk.text),
             }
             for chunk in chunks
         ]
@@ -1110,6 +1596,16 @@ def _relationship_key(rel: Any) -> tuple[str, str, str]:
             str(rel.get("type") or ""),
         )
     return (str(rel.source_id), str(rel.target_id), str(rel.type))
+
+
+def _relationship_row_identity(row: dict[str, Any]) -> tuple:
+    """Identity of one stored edge row, used to deduplicate read results."""
+    return (
+        row.get("id"),
+        row.get("source_id"),
+        row.get("target_id"),
+        row.get("type"),
+    )
 
 
 def _confirmed(result: Any, submitted: int) -> int:

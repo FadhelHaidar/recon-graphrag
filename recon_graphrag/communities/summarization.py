@@ -156,10 +156,12 @@ class CommunitySummarizer:
                 # Fingerprint-based resume
                 report_context: CommunityContext | None = None
                 input_fingerprint: str | None = None
+                child_rows: list[dict] | None = None
                 if skip_existing:
                     report_context = self._fetch_community_context_obj(cid, level)
+                    child_rows = self._fetch_child_report_rows(cid, level)
                     input_fingerprint = self._report_input_fingerprint(
-                        report_context, cid, level
+                        report_context, cid, level, child_rows=child_rows
                     )
                     if self._has_existing_report(cid, level, input_fingerprint):
                         stats.skipped += 1
@@ -171,12 +173,22 @@ class CommunitySummarizer:
                     cid, comm.get("entity_count", 0),
                 )
                 try:
-                    report = await self.generate_report(
-                        cid,
-                        level,
-                        context=report_context,
-                        input_fingerprint=input_fingerprint,
-                    )
+                    if skip_existing and not self._overrides_generate_report():
+                        assert report_context is not None
+                        report = await self._generate_report_prepared(
+                            cid,
+                            level,
+                            report_context,
+                            input_fingerprint,
+                            child_rows,
+                        )
+                    else:
+                        report = await self.generate_report(
+                            cid,
+                            level,
+                            context=report_context,
+                            input_fingerprint=input_fingerprint,
+                        )
                     report_text = report_to_text(report)
                     self.graph_store.store_community_report(report, self.graph_name)
                     stats.succeeded += 1
@@ -202,7 +214,7 @@ class CommunitySummarizer:
             # Fixed workers over an iterator: pending tasks are bounded by
             # self.concurrency instead of one task per community. Outcomes are
             # written back by input position, so report order stays deterministic.
-            pending_communities = iter(list(enumerate(communities)))
+            pending_communities = iter(enumerate(communities))
 
             async def _community_worker(bar) -> None:
                 for position, comm in pending_communities:
@@ -248,6 +260,13 @@ class CommunitySummarizer:
             stats.output_tokens = delta_totals.get("output_tokens", 0)
             return results, stats
 
+    def _overrides_generate_report(self) -> bool:
+        """Return True when a subclass or instance replaced report generation."""
+        return (
+            "generate_report" in self.__dict__
+            or type(self).generate_report is not CommunitySummarizer.generate_report
+        )
+
     def _has_existing_report(
         self,
         community_id: str,
@@ -281,11 +300,31 @@ class CommunitySummarizer:
         Fetches context, builds a structured prompt, parses the LLM response,
         validates references, and attempts one repair on failure.
         """
-        # Fetch context with claims
         context = context or self._fetch_community_context_obj(community_id, level)
-        input_fingerprint = input_fingerprint or self._report_input_fingerprint(
-            context, community_id, level
+        child_rows: list[dict] | None = None
+        if not input_fingerprint:
+            # Fingerprinting needs child rows even for an empty context.
+            child_rows = self._fetch_child_report_rows(community_id, level)
+        elif self.max_context_tokens is not None and (context.edges or context.entities):
+            # Budgeted prompts need child rows; empty reports return first.
+            child_rows = self._fetch_child_report_rows(community_id, level)
+        return await self._generate_report_prepared(
+            community_id, level, context, input_fingerprint, child_rows
         )
+
+    async def _generate_report_prepared(
+        self,
+        community_id: str,
+        level: int,
+        context: CommunityContext,
+        input_fingerprint: str | None,
+        child_rows: list[dict] | None,
+    ) -> CommunityReport:
+        """Generate one report from already prepared context and child rows."""
+        if not input_fingerprint:
+            input_fingerprint = self._report_input_fingerprint(
+                context, community_id, level, child_rows=child_rows
+            )
         if not context.edges and not context.entities:
             report = CommunityReport(
                 id=f"report:{community_id}:{level}",
@@ -297,15 +336,11 @@ class CommunitySummarizer:
             report.version.input_fingerprint = input_fingerprint
             return report
 
-        # Build reference allowlist
-        reference_ids = build_reference_ids(context)
-        valid_ids = set(reference_ids)
-
         # Render context text (packed if budget is set)
         context_tokens_used: int | None = None
         context_truncated = False
         if self.max_context_tokens is not None:
-            child_rows = self._fetch_child_report_rows(community_id, level)
+            assert child_rows is not None
             if child_rows:
                 (
                     context_text,
@@ -313,7 +348,6 @@ class CommunitySummarizer:
                     context_truncated,
                     reference_ids,
                 ) = self._build_parent_context(context, child_rows, self.max_context_tokens)
-                valid_ids = set(reference_ids)
             else:
                 packed = pack_community_context(
                     context,
@@ -326,9 +360,10 @@ class CommunitySummarizer:
                 # Use allowlist from packed context so findings can only
                 # reference items the LLM actually saw.
                 reference_ids = build_packed_reference_ids(context, packed)
-                valid_ids = set(reference_ids)
         else:
             context_text = render_community_context(context)
+            reference_ids = build_reference_ids(context)
+        valid_ids = set(reference_ids)
 
         # Build prompt
         prompt = build_report_prompt(
@@ -502,9 +537,14 @@ class CommunitySummarizer:
         context: CommunityContext,
         community_id: str,
         level: int,
+        child_rows: list[dict] | None = None,
     ) -> str:
         """Fingerprint direct context plus the child reports a parent consumes."""
-        children = self._fetch_child_report_rows(community_id, level)
+        children = (
+            self._fetch_child_report_rows(community_id, level)
+            if child_rows is None
+            else child_rows
+        )
         if not children:
             return self._context_fingerprint(context)
         payload = {
@@ -554,10 +594,13 @@ class CommunitySummarizer:
 
         # Enrich with claims
         entity_ids = [e.id for e in context.entities]
+        seen_ids = set(entity_ids)
         for edge in context.edges:
-            if edge.source.id not in entity_ids:
+            if edge.source.id not in seen_ids:
+                seen_ids.add(edge.source.id)
                 entity_ids.append(edge.source.id)
-            if edge.target.id not in entity_ids:
+            if edge.target.id not in seen_ids:
+                seen_ids.add(edge.target.id)
                 entity_ids.append(edge.target.id)
 
         if entity_ids:

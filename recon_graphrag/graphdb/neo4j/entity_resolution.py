@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from recon_graphrag.entity_text import entity_domain_type
 from recon_graphrag.graphdb._provenance import (
     build_uid,
     preflight_merge_ownership,
@@ -57,8 +58,10 @@ class _Neo4jEntityResolver(BaseEntityResolver):
         entities = []
         for row in rows:
             labels = row.get("labels", [])
-            domain_labels = [label for label in labels if label != "__Entity__"]
-            domain_label = domain_labels[0] if domain_labels else "__Entity__"
+            domain_label = entity_domain_type(
+                labels=labels, entity_type=row.get("properties", {}).get("type"),
+                fallback="__Entity__",
+            )
             resolve_value = row.get("resolve_value", "")
             entities.append(
                 _EntityRecord(

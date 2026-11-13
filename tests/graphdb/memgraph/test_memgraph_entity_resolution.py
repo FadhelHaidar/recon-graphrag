@@ -25,6 +25,9 @@ class FakeGraphStore:
         if "MATCH (e:__Entity__)" in query and "id(e) AS node_id" in query:
             return self._rows
 
+        if "AS scope_type" in query:
+            return []
+
         if "properties(r) AS rel_props" in query:
             return []
 
@@ -395,3 +398,40 @@ async def test_memgraph_resolver_hybrid_auto_merges_llm_approved_review():
     merge_query_text = "\n".join(query for query, _ in store.queries)
     assert "WHERE id(n) IN $other_ids" in merge_query_text
     assert "DELETE n" in merge_query_text
+
+
+@pytest.mark.asyncio
+async def test_memgraph_resolver_normalized_builds_groups_once(monkeypatch):
+    """Normalized resolution must not repeat the grouping pass."""
+    rows = [
+        {
+            "node_id": 1,
+            "entity_id": "e1",
+            "graph_name": "g1",
+            "resolve_value": "OpenAI",
+            "labels": ["__Entity__", "Organization"],
+            "properties": {},
+        },
+        {
+            "node_id": 2,
+            "entity_id": "e2",
+            "graph_name": "g1",
+            "resolve_value": "openai",
+            "labels": ["__Entity__", "Organization"],
+            "properties": {},
+        },
+    ]
+    resolver = _MemgraphEntityResolver(FakeGraphStore(rows=rows))
+    calls: list[int] = []
+    original = resolver._build_normalized_groups
+
+    def counting(entities):
+        calls.append(len(entities))
+        return original(entities)
+
+    monkeypatch.setattr(resolver, "_build_normalized_groups", counting)
+
+    result = await resolver.resolve(strategy="normalized", dry_run=True)
+
+    assert calls == [2]
+    assert result["merged_groups"] == 1

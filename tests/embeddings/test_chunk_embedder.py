@@ -8,6 +8,7 @@ import pytest
 
 from recon_graphrag.embeddings import ChunkEmbedder
 from recon_graphrag.embeddings.chunks import _normalize
+from recon_graphrag.entity_text import text_fingerprint
 from recon_graphrag.graphdb.base import GraphStore
 
 
@@ -69,8 +70,9 @@ async def test_embed_chunks_stores_normalized_vectors(fake_embedder):
     assert ids == ["c1"]
     assert property_name == "embedding"
     assert vectors == [[0.6, 0.8]]
-    # Chunk text is immutable, so no content fingerprint is needed to detect drift.
-    assert "content_fingerprints" not in kwargs
+    # The vector records the text it was built from, so a later text change
+    # cannot be certified by this vector.
+    assert kwargs["content_fingerprints"] == [text_fingerprint("alpha")]
     assert kwargs["model_fingerprint"] is not None
     assert set(store.graph_names) == {"entity-graph"}
 
@@ -94,9 +96,22 @@ async def test_embed_chunks_keeps_successes_when_one_chunk_fails(fake_embedder):
 
     await ChunkEmbedder(cast(GraphStore, store), fake_embedder).embed_chunks(batch_size=500)
 
-    ids, _, vectors, _ = store.upserts[0]
+    ids, _, vectors, kwargs = store.upserts[0]
     assert ids == ["c2"]
     assert vectors == [[0.0, 1.0]]
+    # Only the successful chunk contributes a fingerprint: the lists stay aligned.
+    assert kwargs["content_fingerprints"] == [text_fingerprint("beta")]
+
+
+@pytest.mark.asyncio
+async def test_embed_chunks_fingerprints_the_text_it_embedded(fake_embedder):
+    store = FakeChunkStore(chunks=[{"id": "c1", "chunk_id": "doc:0:0", "text": "new text"}])
+
+    await ChunkEmbedder(cast(GraphStore, store), fake_embedder).embed_chunks()
+
+    _, _, _, kwargs = store.upserts[0]
+    assert kwargs["content_fingerprints"] == [text_fingerprint("new text")]
+    assert kwargs["content_fingerprints"] != [text_fingerprint("old text")]
 
 
 @pytest.mark.asyncio

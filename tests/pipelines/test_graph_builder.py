@@ -23,6 +23,7 @@ from recon_graphrag.graphdb.memgraph.store import MemgraphGraphStore
 from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.observability import UsageTrackingLLM, track_usage
+from recon_graphrag.entity_text import text_fingerprint
 from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
 from recon_graphrag.pipelines.writer import CypherGraphWriter
 
@@ -47,6 +48,11 @@ class FakeGraphStore:
 
     def backfill_descriptions(self):
         pass
+
+    def fetch_community_member_graph(
+        self, graph_name, community_id, level, member_limit=25
+    ):
+        return []
 
     async def resolve_entities_exact(self, graph_name="entity-graph", resolve_property="name", dry_run=False, **kwargs):
         self.resolve_kwargs = {"strategy": "exact", "graph_name": graph_name, **kwargs}
@@ -1840,7 +1846,8 @@ async def test_embed_chunks_flag_stores_normalized_chunk_vectors(
     assert property_name == "embedding"
     # Unit length is what makes the portable dot product a cosine similarity.
     assert abs(sum(value * value for value in vectors[0]) - 1.0) < 1e-9
-    assert "content_fingerprints" not in kwargs
+    # The vector records the embedded text so a later text change invalidates it.
+    assert kwargs["content_fingerprints"] == [text_fingerprint("chunk text")]
 
 
 @pytest.mark.asyncio
@@ -2155,7 +2162,9 @@ async def test_text_pipeline_retains_falsy_identity_and_normalizes_description(
 async def test_description_summarization_failure_stops_embedding_and_validation(
     fake_llm, fake_embedder, fake_writer, failed_stage,
 ):
-    from recon_graphrag.extraction.description_summarizer import DescriptionSummarizationError
+    from recon_graphrag.extraction.description_summarizer import (
+        DescriptionSummarizationError,
+    )
 
     store = FakeGraphStore()
     candidate = {"id": "bad", "descriptions": ["original"]}

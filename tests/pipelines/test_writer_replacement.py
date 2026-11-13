@@ -30,6 +30,7 @@ def build_document(
     document_id: str = "doc:1",
     graph_name: str = "entity-graph",
     evidence: list[tuple[str, str]] | None = None,
+    entity_type: str = "Person",
 ) -> GraphDocument:
     """Build a document. Entities: (id, name, description). Relationships:
     (type, source, target, description). Claims: (id, entity_id, chunk_id)."""
@@ -55,7 +56,7 @@ def build_document(
         entities=[
             EntityRecord(
                 id=entity_id,
-                type="Person",
+                type=entity_type,
                 properties={
                     "name": name,
                     **({"description": description} if description else {}),
@@ -322,6 +323,7 @@ def test_stored_descriptions_without_provenance_fail_loudly() -> None:
     legacy_node = store.get_node("e1")
     assert legacy_node is not None
     legacy_node["description_sources"] = None
+    queries_before = len(store.queries)
 
     with pytest.raises(ValueError, match="re-ingest"):
         writer.write_graph_document(
@@ -329,6 +331,15 @@ def test_stored_descriptions_without_provenance_fail_loudly() -> None:
                 chunks=["a:c0"], entities=[("e1", "Alice", "Replacement fact.")]
             )
         )
+
+    attempted = store.queries[queries_before:]
+    assert not [query for query in attempted if "UNWIND $documents AS row" in query]
+    assert not [query for query in attempted if "UNWIND $chunks AS row" in query]
+    assert not [query for query in attempted if "MERGE (e:__Entity__" in query]
+    assert not [query for query in attempted if "UNWIND $links AS row" in query]
+    legacy_node = store.get_node("e1")
+    assert legacy_node is not None
+    assert legacy_node["descriptions"] == ["Legacy fact."]
 
 
 def test_uid_written_for_document_chunk_and_entity() -> None:
@@ -356,3 +367,393 @@ def test_uid_is_a_reserved_property_key() -> None:
 
     with pytest.raises(ValueError, match="uid"):
         writer.write_graph_document(document)
+
+
+def _reconciliation_params(store: StatefulFakeGraphStore, marker: str) -> dict:
+    matches = [
+        params
+        for query, params in zip(store.queries, store.params, strict=False)
+        if marker in query
+    ]
+    assert len(matches) == 1, store.queries
+    return matches[0]
+
+
+def _seed_document_with_claims(store: StatefulFakeGraphStore) -> CypherGraphWriter:
+    writer = make_writer(store)
+    writer.write_graph_document(
+        build_document(
+            chunks=["doc:1:c0", "doc:1:c1", "doc:1:c2"],
+            entities=[("e1", "Alice", "Alice leads Acme.")],
+            evidence=[
+                ("doc:1:c0", "e1"),
+                ("doc:1:c1", "e1"),
+                ("doc:1:c2", "e1"),
+            ],
+            claims=[
+                ("claim:0", "e1", "doc:1:c0"),
+                ("claim:1", "e1", "doc:1:c1"),
+                ("claim:2", "e1", "doc:1:c2"),
+            ],
+        )
+    )
+    return writer
+
+
+def test_overlapping_reingestion_keeps_removal_order() -> None:
+    """Removed chunks stay in stored order; stale claims are sorted and unique."""
+    store = StatefulFakeGraphStore()
+    writer = _seed_document_with_claims(store)
+
+    writer.write_graph_document(
+        build_document(
+            chunks=["doc:1:c0"],
+            entities=[("e1", "Alice", "Alice leads Acme.")],
+            evidence=[("doc:1:c0", "e1")],
+            claims=[("claim:0", "e1", "doc:1:c0"), ("claim:9", "e1", "doc:1:c0")],
+        )
+    )
+
+    chunk_params = _reconciliation_params(store, "UNWIND $chunk_ids AS id")
+    assert chunk_params["chunk_ids"] == ["doc:1:c1", "doc:1:c2"]
+    assert chunk_params["graph_name"] == "entity-graph"
+    claim_params = _reconciliation_params(store, "UNWIND $claim_ids AS id")
+    assert claim_params["claim_ids"] == ["claim:1", "claim:2"]
+
+
+def test_disjoint_reingestion_removes_all_previous_chunks() -> None:
+    store = StatefulFakeGraphStore()
+    writer = _seed_document_with_claims(store)
+
+    writer.write_graph_document(
+        build_document(
+            chunks=["doc:1:d0"],
+            entities=[("e1", "Alice", "Alice leads Acme.")],
+            evidence=[("doc:1:d0", "e1")],
+            claims=[("claim:9", "e1", "doc:1:d0")],
+        )
+    )
+
+    chunk_params = _reconciliation_params(store, "UNWIND $chunk_ids AS id")
+    assert chunk_params["chunk_ids"] == ["doc:1:c0", "doc:1:c1", "doc:1:c2"]
+    claim_params = _reconciliation_params(store, "UNWIND $claim_ids AS id")
+    assert claim_params["claim_ids"] == ["claim:0", "claim:1", "claim:2"]
+
+
+def test_empty_reingestion_removes_all_previous_chunks() -> None:
+    store = StatefulFakeGraphStore()
+    writer = _seed_document_with_claims(store)
+
+    writer.write_graph_document(
+        build_document(chunks=[], evidence=[], claims=[])
+    )
+
+    chunk_params = _reconciliation_params(store, "UNWIND $chunk_ids AS id")
+    assert chunk_params["chunk_ids"] == ["doc:1:c0", "doc:1:c1", "doc:1:c2"]
+    claim_params = _reconciliation_params(store, "UNWIND $claim_ids AS id")
+    assert claim_params["claim_ids"] == ["claim:0", "claim:1", "claim:2"]
+
+
+def test_duplicate_chunk_ids_in_replacement_preserve_removal_order() -> None:
+    store = StatefulFakeGraphStore()
+    writer = _seed_document_with_claims(store)
+
+    writer.write_graph_document(
+        build_document(
+            chunks=["doc:1:c0", "doc:1:c0"],
+            entities=[("e1", "Alice", "Alice leads Acme.")],
+            evidence=[("doc:1:c0", "e1")],
+            claims=[("claim:0", "e1", "doc:1:c0"), ("claim:9", "e1", "doc:1:c0")],
+        )
+    )
+
+    chunk_params = _reconciliation_params(store, "UNWIND $chunk_ids AS id")
+    assert chunk_params["chunk_ids"] == ["doc:1:c1", "doc:1:c2"]
+    claim_params = _reconciliation_params(store, "UNWIND $claim_ids AS id")
+    assert claim_params["claim_ids"] == ["claim:1", "claim:2"]
+
+
+def test_omitted_entity_without_provenance_fails_before_writes() -> None:
+    """Removed entities are rebuilt during preflight, before any mutation."""
+    store = StatefulFakeGraphStore()
+    writer = make_writer(store)
+    writer.write_graph_document(
+        build_document(
+            document_id="doc:a",
+            chunks=["a:c0"],
+            entities=[("e1", "Alice", "Legacy fact.")],
+        )
+    )
+    legacy_node = store.get_node("e1")
+    assert legacy_node is not None
+    legacy_node["description_sources"] = None
+    queries_before = len(store.queries)
+
+    with pytest.raises(ValueError, match="re-ingest"):
+        writer.write_graph_document(
+            build_document(
+                document_id="doc:a",
+                chunks=["a:c0"],
+                entities=[("e2", "Bob", "New fact.")],
+                evidence=[("a:c0", "e2")],
+            )
+        )
+
+    attempted = store.queries[queries_before:]
+    for marker in (
+        "UNWIND $documents AS row",
+        "UNWIND $chunks AS row",
+        "MERGE (e:__Entity__",
+        "UNWIND $links AS row",
+        "UNWIND $claim_ids AS id",
+        "UNWIND $chunk_ids AS id",
+    ):
+        assert not [query for query in attempted if marker in query]
+    assert legacy_node["descriptions"] == ["Legacy fact."]
+
+
+# B03: a retained claim must survive its source chunk being replaced.
+# `_write_claims` MERGEs the claim and its new SOURCED_FROM edge before
+# `_reconcile` runs, so reconciliation must select stale claims by identity
+# only. Selecting them because the previous row named a removed chunk deletes
+# a claim the replacement still declares.
+
+
+def _claim_document(
+    chunks: list[str],
+    claims: Sequence[tuple[str, str, str]],
+    *,
+    document_id: str = "doc:1",
+    graph_name: str = "entity-graph",
+) -> GraphDocument:
+    return build_document(
+        chunks=chunks,
+        entities=[("e1", "Alice", "Alice leads Acme.")],
+        evidence=[(chunk_id, "e1") for chunk_id in chunks],
+        claims=claims,
+        document_id=document_id,
+        graph_name=graph_name,
+    )
+
+
+def test_retained_claim_survives_source_chunk_replacement() -> None:
+    store = StatefulFakeGraphStore()
+    writer = make_writer(store)
+    writer.write_graph_document(
+        _claim_document(
+            ["doc:1:c0", "doc:1:c1"], [("claim:stable", "e1", "doc:1:c0")]
+        )
+    )
+
+    receipt = writer.write_graph_document(
+        _claim_document(["doc:1:c1"], [("claim:stable", "e1", "doc:1:c1")])
+    )
+
+    assert receipt["claims"] == 1
+    claim = store.get_claim("claim:stable")
+    assert claim is not None
+    assert claim["chunk_id"] == "doc:1:c1"
+    assert store.chunk_ids == {"doc:1:c1"}
+
+
+def test_omitted_claim_is_deleted_during_replacement() -> None:
+    store = StatefulFakeGraphStore()
+    writer = make_writer(store)
+    writer.write_graph_document(
+        _claim_document(
+            ["doc:1:c0", "doc:1:c1"], [("claim:stable", "e1", "doc:1:c0")]
+        )
+    )
+    assert store.get_claim("claim:stable") is not None
+
+    receipt = writer.write_graph_document(_claim_document(["doc:1:c1"], []))
+
+    assert receipt["claims"] == 0
+    assert store.get_claim("claim:stable") is None
+
+
+def test_retained_claim_survives_multiple_previous_source_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = StatefulFakeGraphStore()
+    writer = make_writer(store)
+    writer.write_graph_document(
+        _claim_document(
+            ["doc:1:c0", "doc:1:c1"], [("claim:stable", "e1", "doc:1:c0")]
+        )
+    )
+    # A claim with two SOURCED_FROM edges returns one state row per edge.
+    original = store._read_claims
+
+    def repeated(params):
+        return original(params) * 2
+
+    monkeypatch.setattr(store, "_read_claims", repeated)
+
+    writer.write_graph_document(
+        _claim_document(["doc:1:c1"], [("claim:stable", "e1", "doc:1:c1")])
+    )
+
+    claim = store.get_claim("claim:stable")
+    assert claim is not None
+    assert claim["chunk_id"] == "doc:1:c1"
+
+
+def test_claim_replacement_does_not_touch_other_graph() -> None:
+    store = StatefulFakeGraphStore()
+    writer = make_writer(store)
+    writer.write_graph_document(
+        _claim_document(
+            ["doc:1:c0"],
+            [("claim:stable", "e1", "doc:1:c0")],
+            graph_name="other-graph",
+        )
+    )
+    writer.write_graph_document(
+        _claim_document(
+            ["doc:1:c0", "doc:1:c1"], [("claim:stable", "e1", "doc:1:c0")]
+        )
+    )
+
+    writer.write_graph_document(_claim_document(["doc:1:c1"], []))
+
+    assert ("entity-graph", "claim:stable") not in store._claims
+    assert store._claims[("other-graph", "claim:stable")]["chunk_id"] == "doc:1:c0"
+    delete_params = [
+        params
+        for query, params in zip(store.queries, store.params, strict=True)
+        if "UNWIND $claim_ids AS id" in query
+    ]
+    assert delete_params
+    assert {params["graph_name"] for params in delete_params} == {"entity-graph"}
+
+
+# B06: references must resolve against the replacement's final chunks. Accepting
+# the previous chunk set lets a claim or evidence link point at a chunk that
+# reconciliation then deletes, leaving a source that no longer exists.
+
+
+def _mutation_queries(store: StatefulFakeGraphStore) -> list[str]:
+    markers = (
+        "UNWIND $documents AS row",
+        "UNWIND $chunks AS row",
+        "MERGE (e:__Entity__",
+        "UNWIND $links AS row",
+        "UNWIND $claim_ids AS id",
+        "UNWIND $chunk_ids AS id",
+        "UNWIND $relationships AS row",
+        "SET e.description_sources = row.description_sources",
+    )
+    return [query for query in store.queries if any(m in query for m in markers)]
+
+
+def test_claim_cannot_reference_removed_previous_chunk() -> None:
+    store = StatefulFakeGraphStore()
+    writer = make_writer(store)
+    writer.write_graph_document(
+        _claim_document(["doc:1:c0", "doc:1:c1"], [])
+    )
+    queries_before = list(store.queries)
+
+    with pytest.raises(ValueError, match="doc:1:c0"):
+        writer.write_graph_document(
+            build_document(
+                chunks=["doc:1:c1"],
+                entities=[("e1", "Alice", "Alice leads Acme.")],
+                evidence=[("doc:1:c1", "e1")],
+                claims=[("claim:1", "e1", "doc:1:c0")],
+            )
+        )
+
+    assert store.queries[len(queries_before):] == [
+        query for query in store.queries[len(queries_before):]
+        if query not in _mutation_queries(store)
+    ]
+    assert store.chunk_ids == {"doc:1:c0", "doc:1:c1"}
+    assert store.get_claim("claim:1") is None
+
+
+def test_evidence_cannot_reference_removed_previous_chunk() -> None:
+    store = StatefulFakeGraphStore()
+    writer = make_writer(store)
+    writer.write_graph_document(_claim_document(["doc:1:c0", "doc:1:c1"], []))
+
+    with pytest.raises(ValueError, match="chunk"):
+        writer.write_graph_document(
+            build_document(
+                chunks=["doc:1:c1"],
+                entities=[("e1", "Alice", "Alice leads Acme.")],
+                evidence=[("doc:1:c0", "e1")],
+            )
+        )
+
+    assert store.evidence == {
+        ("entity-graph", "doc:1:c0", "e1"),
+        ("entity-graph", "doc:1:c1", "e1"),
+    }
+
+
+def test_references_to_retained_and_new_chunks_are_valid() -> None:
+    store = StatefulFakeGraphStore()
+    writer = make_writer(store)
+    writer.write_graph_document(_claim_document(["doc:1:c0", "doc:1:c1"], []))
+
+    receipt = writer.write_graph_document(
+        build_document(
+            chunks=["doc:1:c1", "doc:1:c2"],
+            entities=[("e1", "Alice", "Alice leads Acme.")],
+            evidence=[("doc:1:c1", "e1"), ("doc:1:c2", "e1")],
+            claims=[("claim:1", "e1", "doc:1:c2")],
+        )
+    )
+
+    assert receipt["claims"] == 1
+    assert store.chunk_ids == {"doc:1:c1", "doc:1:c2"}
+    assert store.evidence == {
+        ("entity-graph", "doc:1:c1", "e1"),
+        ("entity-graph", "doc:1:c2", "e1"),
+    }
+
+
+def test_shared_entity_reference_remains_valid() -> None:
+    store = StatefulFakeGraphStore()
+    writer = make_writer(store)
+    writer.write_graph_document(
+        build_document(
+            document_id="doc:other",
+            chunks=["other:c0"],
+            entities=[("e1", "Alice", None)],
+        )
+    )
+
+    receipt = writer.write_graph_document(
+        build_document(
+            chunks=["doc:1:c0"],
+            entities=[],
+            evidence=[("doc:1:c0", "e1")],
+            claims=[("claim:1", "e1", "doc:1:c0")],
+        )
+    )
+
+    assert receipt["evidence_links"] == 1
+    assert receipt["claims"] == 1
+    assert ("entity-graph", "doc:1:c0", "e1") in store.evidence
+
+
+def test_empty_replacement_rejects_remaining_chunk_references() -> None:
+    store = StatefulFakeGraphStore()
+    writer = make_writer(store)
+    writer.write_graph_document(_claim_document(["doc:1:c0"], []))
+
+    with pytest.raises(ValueError, match="doc:1:c0"):
+        writer.write_graph_document(
+            build_document(
+                chunks=[],
+                entities=[("e1", "Alice", "Alice leads Acme.")],
+                evidence=[],
+                claims=[("claim:1", "e1", "doc:1:c0")],
+            )
+        )
+
+    assert store.chunk_ids == {"doc:1:c0"}
+    assert store.get_claim("claim:1") is None

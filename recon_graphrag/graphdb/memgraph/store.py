@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, LiteralString, Optional, cast
 if TYPE_CHECKING:
     import neo4j
 
-from recon_graphrag.entity_text import entity_embedding_fingerprint
+from recon_graphrag.entity_text import entity_embedding_fingerprint, text_fingerprint
 from recon_graphrag.extraction.types import GraphDocument
 from recon_graphrag.graphdb.cypher import (
     cypher_string_literal,
@@ -291,17 +291,31 @@ class MemgraphGraphStore(BaseGraphStore):
                 WHERE id(n) IN $node_ids
                   AND n.embedding_input_fingerprint IS NULL
                 RETURN id(n) AS id, labels(n) AS labels,
-                       n.name AS name, n.description AS description
+                       n.name AS name, n.description AS description,
+                       n.text AS text, n.type AS type
                 """,
                 {"node_ids": node_ids},
             )
             snapshots = {node["id"]: node for node in legacy_inputs}
             for row in rows:
                 snapshot = snapshots.get(row["id"])
-                if snapshot is not None and entity_embedding_fingerprint(
+                if snapshot is None:
+                    continue
+                # Chunks carry text, not an entity name/description pair: certify
+                # a legacy chunk vector against the text it was built from. The
+                # label decides, because an entity may keep its own ``text``.
+                if "Chunk" in snapshot["labels"]:
+                    legacy_text = snapshot.get("text")
+                    if legacy_text is not None and (
+                        text_fingerprint(legacy_text) == row["content_fingerprint"]
+                    ):
+                        row["legacy_chunk_text"] = legacy_text
+                    continue
+                if entity_embedding_fingerprint(
                     labels=snapshot["labels"],
                     name=snapshot["name"],
                     description=snapshot["description"],
+                    entity_type=snapshot.get("type"),
                 ) == row["content_fingerprint"]:
                     row["legacy_input"] = snapshot
 
@@ -315,10 +329,15 @@ class MemgraphGraphStore(BaseGraphStore):
                    OR (n.embedding_input_fingerprint IS NULL
                        AND row.legacy_input IS NOT NULL
                        AND labels(n) = row.legacy_input.labels
+                       AND (n.type = row.legacy_input.type
+                            OR (n.type IS NULL AND row.legacy_input.type IS NULL))
                        AND (n.name = row.legacy_input.name
                             OR (n.name IS NULL AND row.legacy_input.name IS NULL))
                        AND (n.description = row.legacy_input.description
-                            OR (n.description IS NULL AND row.legacy_input.description IS NULL))))
+                            OR (n.description IS NULL AND row.legacy_input.description IS NULL)))
+                   OR (n.embedding_input_fingerprint IS NULL
+                       AND row.legacy_chunk_text IS NOT NULL
+                       AND n.text = row.legacy_chunk_text))
             SET n.{escape_cypher_identifier(embedding_property)} = row.vector,
                 n.embedding_content_fingerprint = row.content_fingerprint,
                 n.embedding_input_fingerprint = coalesce(n.embedding_input_fingerprint, row.content_fingerprint),
@@ -530,6 +549,7 @@ class MemgraphGraphStore(BaseGraphStore):
            OR ($model_fingerprint IS NOT NULL
                AND coalesce(e.embedding_model_fingerprint, '') <> $model_fingerprint)
         RETURN id(e) AS id, labels(e) AS labels,
+               e.type AS type,
                e.name AS name,
                CASE WHEN e.description IS NOT NULL THEN e.description ELSE '' END AS description,
                e.embedding_content_fingerprint AS embedding_content_fingerprint,
@@ -553,7 +573,10 @@ class MemgraphGraphStore(BaseGraphStore):
         WHERE c.text IS NOT NULL
           AND (c.embedding IS NULL
                OR ($model_fingerprint IS NOT NULL
-                   AND coalesce(c.embedding_model_fingerprint, '') <> $model_fingerprint))
+                   AND coalesce(c.embedding_model_fingerprint, '') <> $model_fingerprint)
+               OR c.embedding_content_fingerprint IS NULL
+               OR (c.embedding_input_fingerprint IS NOT NULL
+                   AND c.embedding_content_fingerprint <> c.embedding_input_fingerprint))
         RETURN id(c) AS id,
                c.id AS chunk_id,
                c.text AS text

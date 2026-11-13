@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, cast
 
 import pytest
 
-from recon_graphrag.llm.base import LLMResponse
-from recon_graphrag.communities.summarization import BuildStats, CommunitySummarizer
 from recon_graphrag.communities.reports import ReportRubric, ReportValidationError
+from recon_graphrag.communities.summarization import BuildStats, CommunitySummarizer
+from recon_graphrag.llm.base import LLMResponse
 
 
 class FakeReportGraphStore:
     def __init__(self):
         self.stored_reports = []
         self.failed_reports = []
-        self.existing_fingerprint = None
+        self.existing_fingerprint: str | None = None
 
     def get_communities(self, graph_name, level=None):
         return [{"id": "community:1", "level": 0, "entity_count": 2}]
@@ -162,7 +163,7 @@ async def test_report_generation_failure_is_marked_not_stored(include_error_deta
 async def test_report_generation_stores_input_fingerprint():
     store = FakeReportGraphStore()
     llm = FakeValidReportLLM()
-    summarizer = CommunitySummarizer(store, llm=llm)
+    summarizer = CommunitySummarizer(cast(Any, store), llm=cast(Any, llm))
 
     results, stats = await summarizer.generate_all(level=0)
 
@@ -177,7 +178,7 @@ async def test_report_generation_stores_input_fingerprint():
 async def test_report_skip_existing_requires_matching_fingerprint():
     store = FakeReportGraphStore()
     llm = FakeValidReportLLM()
-    summarizer = CommunitySummarizer(store, llm=llm)
+    summarizer = CommunitySummarizer(cast(Any, store), llm=cast(Any, llm))
     context = summarizer._fetch_community_context_obj("community:1", 0)
     store.existing_fingerprint = summarizer._context_fingerprint(context)
 
@@ -209,7 +210,7 @@ async def test_parent_report_substitutes_child_reports_when_direct_context_trunc
             }]
 
     llm = CapturingValidReportLLM()
-    summarizer = CommunitySummarizer(ParentStore(), llm=llm, max_context_tokens=200)
+    summarizer = CommunitySummarizer(cast(Any, ParentStore()), llm=cast(Any, llm), max_context_tokens=200)
 
     report = await summarizer.generate_report("community:1", level=0)
 
@@ -222,8 +223,8 @@ async def test_custom_report_prompt_appears_in_llm_prompt():
     store = FakeReportGraphStore()
     llm = CapturingValidReportLLM()
     summarizer = CommunitySummarizer(
-        store,
-        llm=llm,
+        cast(Any, store),
+        llm=cast(Any, llm),
         report_prompt="You are a security analyst. Identify risks in this community.",
     )
 
@@ -438,6 +439,68 @@ async def test_generate_report_does_not_repair_provider_errors():
 
 
 @pytest.mark.asyncio
+async def test_generate_all_orders_results_when_workers_finish_out_of_order():
+    import re
+
+    class OutOfOrderLLM(FakeValidReportLLM):
+        def __init__(self):
+            super().__init__()
+            self.finished: list[int] = []
+
+        async def ainvoke(self, prompt):
+            import asyncio
+
+            match = re.search(r"community:(\d+)", prompt)
+            assert match is not None
+            index = int(match.group(1))
+            await asyncio.sleep({0: 0.03, 1: 0.0, 2: 0.01}[index])
+            self.finished.append(index)
+            return await super().ainvoke(prompt)
+
+    llm = OutOfOrderLLM()
+    summarizer = CommunitySummarizer(
+        cast(Any, MultiCommunityStore(3)), llm=cast(Any, llm), concurrency=3
+    )
+
+    results, stats = await summarizer.generate_all(level=0)
+
+    assert stats.succeeded == 3
+    assert llm.finished == [1, 2, 0]
+    assert [result["id"] for result in results] == [
+        "community:0",
+        "community:1",
+        "community:2",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_generate_all_cancellation_stops_workers():
+    started = asyncio.Event()
+    never = asyncio.Event()
+
+    class BlockingLLM(FakeValidReportLLM):
+        async def ainvoke(self, prompt) -> LLMResponse:
+            started.set()
+            await never.wait()
+            raise AssertionError("cancelled worker resumed")
+
+    store = MultiCommunityStore(2)
+    summarizer = CommunitySummarizer(
+        cast(Any, store), llm=cast(Any, BlockingLLM()), concurrency=2
+    )
+    before = asyncio.all_tasks()
+    task = asyncio.create_task(summarizer.generate_all(level=0))
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    remaining = asyncio.all_tasks() - before - {task}
+    assert remaining == set()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("include_error_details", [False, True])
 async def test_generate_all_continues_after_json_repair_failure(include_error_details):
     valid = (await FakeValidReportLLM().ainvoke("")).content
@@ -583,3 +646,280 @@ async def test_structured_report_repair_remains_bounded():
     with pytest.raises(json.JSONDecodeError):
         await summarizer.generate_report("community:1")
     assert len(llm.kwargs) == 2
+
+
+CHILD_REPORTS = [
+    {
+        "id": "child:2",
+        "level": 1,
+        "report_text": "Second child report.",
+        "input_fingerprint": "fp-2",
+        "context_tokens_used": 300,
+    },
+    {
+        "id": "child:1",
+        "level": 1,
+        "report_text": "First child report.",
+        "input_fingerprint": "fp-1",
+        "context_tokens_used": 120,
+    },
+]
+
+
+class CountingChildStore(FakeReportGraphStore):
+    def __init__(self, children=None):
+        super().__init__()
+        self.children = [] if children is None else children
+        self.child_reads = 0
+        self.child_error: Exception | None = None
+
+    def get_child_community_reports(
+        self, graph_name, community_id, level, child_level
+    ):
+        self.child_reads += 1
+        if self.child_error is not None:
+            raise self.child_error
+        return self.children
+
+
+@pytest.mark.asyncio
+async def test_budgeted_generate_report_reads_children_once():
+    store = CountingChildStore(CHILD_REPORTS)
+    summarizer = CommunitySummarizer(
+        cast(Any, store), cast(Any, FakeValidReportLLM()), max_context_tokens=200
+    )
+
+    await summarizer.generate_report("community:1")
+
+    assert store.child_reads == 1
+
+
+@pytest.mark.asyncio
+async def test_budgeted_leaf_generate_report_reads_children_once():
+    store = CountingChildStore()
+    summarizer = CommunitySummarizer(
+        cast(Any, store), cast(Any, FakeValidReportLLM()), max_context_tokens=200
+    )
+
+    await summarizer.generate_report("community:1")
+
+    assert store.child_reads == 1
+
+
+@pytest.mark.asyncio
+async def test_unbudgeted_fingerprint_reads_children_once():
+    store = CountingChildStore(CHILD_REPORTS)
+    summarizer = CommunitySummarizer(cast(Any, store), cast(Any, FakeValidReportLLM()))
+
+    await summarizer.generate_report("community:1")
+
+    assert store.child_reads == 1
+
+
+@pytest.mark.asyncio
+async def test_supplied_fingerprint_without_budget_skips_child_read():
+    store = CountingChildStore(CHILD_REPORTS)
+    summarizer = CommunitySummarizer(cast(Any, store), cast(Any, FakeValidReportLLM()))
+
+    report = await summarizer.generate_report(
+        "community:1", input_fingerprint="supplied"
+    )
+
+    assert store.child_reads == 0
+    assert report.version.input_fingerprint == "supplied"
+
+
+@pytest.mark.asyncio
+async def test_supplied_fingerprint_with_budget_reads_children_once():
+    store = CountingChildStore(CHILD_REPORTS)
+    summarizer = CommunitySummarizer(
+        cast(Any, store), cast(Any, FakeValidReportLLM()), max_context_tokens=200
+    )
+
+    await summarizer.generate_report("community:1", input_fingerprint="supplied")
+
+    assert store.child_reads == 1
+
+
+@pytest.mark.asyncio
+async def test_supplied_context_unbudgeted_reads_children_once():
+    store = CountingChildStore(CHILD_REPORTS)
+    summarizer = CommunitySummarizer(cast(Any, store), cast(Any, FakeValidReportLLM()))
+    context = summarizer._fetch_community_context_obj("community:1", 0)
+
+    await summarizer.generate_report("community:1", context=context)
+
+    assert store.child_reads == 1
+
+
+@pytest.mark.asyncio
+async def test_empty_context_with_supplied_fingerprint_skips_child_read():
+    class EmptyCountingStore(FakeReportGraphStore):
+        def __init__(self):
+            self.child_reads = 0
+
+        def get_community_ranked_context(self, graph_name, community_id, level=0):
+            return []
+
+        def get_child_community_reports(
+            self, graph_name, community_id, level=0, child_level=None, top_k=5
+        ):
+            self.child_reads += 1
+            return []
+
+    store = EmptyCountingStore()
+    llm = FakeValidReportLLM()
+    summarizer = CommunitySummarizer(
+        cast(Any, store), llm=cast(Any, llm), max_context_tokens=200
+    )
+
+    report = await summarizer.generate_report("community:1", input_fingerprint="supplied")
+
+    assert report.title == "Empty community"
+    assert report.version.input_fingerprint == "supplied"
+    assert store.child_reads == 0
+    assert llm.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_empty_context_keeps_early_return():
+    class EmptyStore(FakeReportGraphStore):
+        def get_community_ranked_context(self, graph_name, community_id, level=0):
+            return []
+
+    store = EmptyStore()
+    llm = FakeValidReportLLM()
+    summarizer = CommunitySummarizer(
+        cast(Any, store), cast(Any, llm), max_context_tokens=200
+    )
+
+    report = await summarizer.generate_report("community:1")
+
+    assert llm.calls == 0
+    assert report.title == "Empty community"
+
+
+@pytest.mark.asyncio
+async def test_skip_existing_resume_reads_children_once():
+    store = CountingChildStore(CHILD_REPORTS)
+    llm = FakeValidReportLLM()
+    summarizer = CommunitySummarizer(
+        cast(Any, store), cast(Any, llm), max_context_tokens=200
+    )
+    context = summarizer._fetch_community_context_obj("community:1", 0)
+    store.existing_fingerprint = summarizer._report_input_fingerprint(
+        context, "community:1", 0
+    )
+    store.child_reads = 0
+
+    results, stats = await summarizer.generate_all(skip_existing=True)
+
+    assert results == []
+    assert stats.skipped == 1
+    assert llm.calls == 0
+    assert store.child_reads == 1
+
+
+@pytest.mark.asyncio
+async def test_skip_existing_regeneration_reads_children_once():
+    store = CountingChildStore(CHILD_REPORTS)
+    llm = FakeValidReportLLM()
+    summarizer = CommunitySummarizer(
+        cast(Any, store), cast(Any, llm), max_context_tokens=200
+    )
+    store.existing_fingerprint = "stale"
+
+    _results, stats = await summarizer.generate_all(skip_existing=True)
+
+    assert stats.succeeded == 1
+    assert llm.calls == 1
+    assert store.child_reads == 1
+
+
+@pytest.mark.asyncio
+async def test_skip_existing_leaf_regeneration_reads_children_once():
+    store = CountingChildStore()
+    llm = FakeValidReportLLM()
+    summarizer = CommunitySummarizer(
+        cast(Any, store), cast(Any, llm), max_context_tokens=200
+    )
+    store.existing_fingerprint = "stale"
+
+    _results, stats = await summarizer.generate_all(skip_existing=True)
+
+    assert stats.succeeded == 1
+    assert store.child_reads == 1
+
+
+@pytest.mark.asyncio
+async def test_skip_existing_regenerates_when_child_fingerprint_changes():
+    store = CountingChildStore(CHILD_REPORTS)
+    llm = FakeValidReportLLM()
+    summarizer = CommunitySummarizer(
+        cast(Any, store), cast(Any, llm), max_context_tokens=200
+    )
+    context = summarizer._fetch_community_context_obj("community:1", 0)
+    store.existing_fingerprint = summarizer._report_input_fingerprint(
+        context, "community:1", 0
+    )
+    store.children = [dict(CHILD_REPORTS[0], input_fingerprint="fp-changed")]
+    store.child_reads = 0
+
+    _results, stats = await summarizer.generate_all(skip_existing=True)
+
+    assert stats.succeeded == 1
+    assert stats.skipped == 0
+    assert llm.calls == 1
+    assert store.child_reads == 1
+
+
+@pytest.mark.asyncio
+async def test_skip_existing_child_error_is_a_preparation_failure():
+    store = CountingChildStore(CHILD_REPORTS)
+    store.child_error = RuntimeError("child query failed")
+    summarizer = CommunitySummarizer(
+        cast(Any, store), cast(Any, FakeValidReportLLM()), max_context_tokens=200
+    )
+
+    results, stats = await summarizer.generate_all(skip_existing=True)
+
+    assert results == []
+    assert stats.failed == 1
+    assert stats.errors == [{
+        "community_id": "community:1",
+        "error_type": "RuntimeError",
+        "message": "Community report preparation failed.",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_overridden_generate_report_still_receives_prepared_inputs():
+    class RecordingSummarizer(CommunitySummarizer):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.calls = []
+
+        async def generate_report(
+            self, community_id, level=0, context=None, input_fingerprint=None
+        ):
+            self.calls.append((context, input_fingerprint))
+            return await super().generate_report(
+                community_id,
+                level,
+                context=context,
+                input_fingerprint=input_fingerprint,
+            )
+
+    store = CountingChildStore(CHILD_REPORTS)
+    store.existing_fingerprint = "stale"
+    summarizer = RecordingSummarizer(
+        cast(Any, store), cast(Any, FakeValidReportLLM()), max_context_tokens=200
+    )
+
+    _results, stats = await summarizer.generate_all(skip_existing=True)
+
+    assert stats.succeeded == 1
+    assert len(summarizer.calls) == 1
+    context, fingerprint = summarizer.calls[0]
+    assert context is not None
+    assert fingerprint

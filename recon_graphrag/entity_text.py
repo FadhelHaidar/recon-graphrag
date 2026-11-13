@@ -30,12 +30,29 @@ def value_to_text(value: Any) -> str:
     return str(value)
 
 
-def entity_embedding_text(
-    *, labels: list[str] | None, name: Any, description: Any
+def entity_domain_type(
+    *, labels: list[str] | None, entity_type: Any = None, fallback: str = "Entity"
 ) -> str:
-    """Build the exact string embedded for one entity."""
-    label = [lbl for lbl in (labels or []) if lbl != "__Entity__"]
-    label = label[0] if label else "Entity"
+    """Prefer the recorded type; use the first domain label for legacy entities."""
+    if isinstance(entity_type, str) and entity_type:
+        return entity_type
+    return next((label for label in (labels or []) if label != "__Entity__"), fallback)
+
+
+def entity_embedding_text(
+    *,
+    labels: list[str] | None,
+    name: Any,
+    description: Any,
+    entity_type: Any = None,
+) -> str:
+    """Build the exact string embedded for one entity.
+
+    The writer stores the domain type as the ``type`` property and as a label.
+    Labels have no guaranteed order, and a label change keeps the old label, so
+    an explicit ``entity_type`` wins. Without one, the first domain label decides.
+    """
+    label = entity_domain_type(labels=labels, entity_type=entity_type)
     parts = [f"{label}: {value_to_text(name)}"]
     desc = value_to_text(description)
     if desc:
@@ -48,10 +65,19 @@ def text_fingerprint(text: str) -> str:
 
 
 def entity_embedding_fingerprint(
-    *, labels: list[str] | None, name: Any, description: Any
+    *,
+    labels: list[str] | None,
+    name: Any,
+    description: Any,
+    entity_type: Any = None,
 ) -> str:
     return text_fingerprint(
-        entity_embedding_text(labels=labels, name=name, description=description)
+        entity_embedding_text(
+            labels=labels,
+            name=name,
+            description=description,
+            entity_type=entity_type,
+        )
     )
 
 
@@ -90,6 +116,7 @@ def _model_name(model: Any) -> str | None:
 
 __all__ = [
     "embedder_fingerprint",
+    "entity_domain_type",
     "entity_embedding_fingerprint",
     "entity_embedding_text",
     "text_fingerprint",

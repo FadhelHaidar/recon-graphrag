@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Any, cast
 
 import pytest
 
 from recon_graphrag.graphdb.memgraph.store import MemgraphGraphStore
 from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
-from tests.pipelines.writer_scenarios import make_graph_document
+from tests.pipelines.writer_scenarios import (
+    StatefulFakeGraphStore,
+    make_graph_document,
+)
 
 
 class FakeTransaction:
@@ -225,3 +229,64 @@ def test_unrelated_constraint_error_is_not_retried():
         store.write_graph_document(make_graph_document())
 
     assert len(session.transactions) == 1
+
+
+class DeadlockRetryError(Exception):
+    """Stand-in for a retryable Neo4j deadlock."""
+
+    code = "Neo.TransientError.Transaction.DeadlockDetected"
+
+
+class RetryOnceStatefulStore(StatefulFakeGraphStore):
+    """Fails the first entity write, emulating a rollback-safe retry."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures = 0
+
+    def execute_query(self, query: str, parameters: dict | None = None):
+        if self.failures and "MERGE (e:__Entity__" in query:
+            self.failures -= 1
+            raise DeadlockRetryError("DeadlockDetected: would form a cycle")
+        return super().execute_query(query, parameters)
+
+    @contextmanager
+    def _transaction(self):
+        yield self
+
+
+def test_replacement_rows_are_rebuilt_for_every_attempt():
+    from recon_graphrag.pipelines.writer import CypherGraphWriter
+    from tests.pipelines.test_writer_replacement import build_document
+
+    store = RetryOnceStatefulStore()
+    writer = CypherGraphWriter(cast(Any, store))
+    writer.write_graph_document(
+        build_document(chunks=["a:c0"], entities=[("e1", "Alice", "Old fact.")])
+    )
+    store.failures = 1
+
+    calls: list[tuple[Any, list[dict[str, Any]]]] = []
+    original = writer._rebuild_entity_rows
+
+    def counting(graph_document, state, retained_rows):
+        rows = original(graph_document, state, retained_rows)
+        calls.append((state, rows))
+        return rows
+
+    writer._rebuild_entity_rows = counting
+    writer.write_graph_document(
+        build_document(chunks=["a:c0"], entities=[("e2", "Bob", "New fact.")])
+    )
+
+    assert len(calls) == 2, (
+        "each attempt must rebuild replacement rows exactly once"
+    )
+    assert calls[0][0] is not calls[1][0], (
+        "each attempt must read its own pre-write document state"
+    )
+    assert [row["id"] for row in calls[0][1]] == ["e1"]
+    assert calls[0][1] == calls[1][1], (
+        "the retry must recompute the same rows from unchanged state"
+    )
+    assert calls[1][0].entities["e1"]["descriptions"] == ["Old fact."]

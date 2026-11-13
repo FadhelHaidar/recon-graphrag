@@ -436,6 +436,12 @@ Description ownership (`description_sources`) and optional relationship strength
 
 Changed description inputs invalidate summaries and vectors. Removing an observation rebuilds raw text from the surviving contributions rather than retaining an obsolete summary. The embedding pass checks both input and provider/model fingerprints; changing a model refreshes vectors even when text is unchanged. Stale in-flight embedding results cannot certify newer input. Low-level vector writes without fingerprints remain supported but clear freshness certification and need a normal embedding pass before strict completion.
 
+An entity keeps one identity across domain-type changes, so the type is a label and not part of the identity.
+The embedding text and the vector fingerprint use the recorded entity type, not the label order.
+A retained older label therefore cannot change the fingerprint, and a certified vector stays valid.
+
+A replaced chunk keeps its chunk ID and takes the new text. When the text changes, the writer clears the chunk vector and its fingerprints in the same write, so the chunk becomes eligible for embedding again. When the text is the same, the writer preserves the vector. The chunk embedding pass records the fingerprint of the text that it embedded. The store accepts a chunk vector only when that fingerprint still matches the stored text, so a stale in-flight result cannot certify newer text. The chunk selection also returns chunks without a text fingerprint, so legacy chunk vectors refresh once.
+
 Replacement of one document runs in **one database transaction** on Neo4j and Memgraph, through `session.begin_transaction()`.
 The writer commits after the last write. If a statement fails, it rolls back the transaction, preserving the document's previous state.
 
@@ -454,8 +460,27 @@ Custom writers must define their own guarantees.
 
 `write_stats` gives database-confirmed write counts for each record kind, not submitted input counts.
 Before writing, the writer checks references to relationship endpoints, evidence entities, and claim entities or chunks.
-A reference absent from both the document and graph raises `ValueError` before the first write.
+A missing entity reference raises `ValueError` before the first write, unless the graph already stores the entity.
+A chunk reference must name a chunk in the submitted document version. Replacement removes chunks that the version omits.
 The writer requires both endpoints before writing a relationship.
+
+Relationship identity is the `r.id` property, a nonempty string.
+The default writer rejects a missing or malformed ID before the first write.
+The check covers submitted relationships and affected stored relationships.
+The writer never assigns relationship IDs. Repair or reimport the affected data.
+
+A child record must use the document's graph name. The default writer rejects a chunk, entity, relationship, evidence link, or claim in another graph before the first write. A chunk must belong to the document, and a claim source must name the document. Shared entities remain valid: a document can reference an entity that another document created.
+
+A stored relationship keeps its identity when a later document submits the same logical edge under a different ID. Relationship identity for replacement is `(graph_name, source_id, type, target_id)`.
+The writer reads the stored ID for each submitted key and keeps it, so a contribution joins the existing edge instead of renaming it.
+The writer rejects three pre-existing states before the first write: two stored edges for one key, one stored ID for a different key, and a duplicate ID in the submitted document.
+It counts physical edges, so two stored edges that share an ID also stop the write.
+The ID check covers every relationship type in the graph, because cleanup selects by ID alone.
+The entity ambiguity check also covers an identity that only a relationship, evidence link, or claim names.
+It never adopts, renames, or deletes an edge whose `graph_name` differs or is missing.
+Concurrent writes that create the same key can still produce two edges on a backend without a conflict abort. A later write to that key then stops with the ambiguity error instead of merging the edges.
+
+Entity identity is `(graph_name, id)` on the `__Entity__` label. A domain type is an added label, not part of the identity. Writing an existing identity adds the incoming label and keeps the stored node, its edges, and its description contributions. A new type label therefore reuses the node instead of creating a second one. If the graph already stores several nodes for one identity, the writer stops before writing and reports the affected IDs. It does not merge those nodes; rebuild or deduplicate them, then retry.
 
 Blocking database calls in pipeline writes/backfill/validation, description summarization, entity embedding, and resolver preflight/load/merge run through `asyncio.to_thread`. Cancellation does not terminate an in-flight database call or undo its writes.
 
@@ -641,6 +666,8 @@ them to untrusted users. `CommunitySummarizer` accepts the same option, and
 | `embedder` | Embedder used to create report vectors after generation. |
 | `embed_community_reports` | Generate report vectors during `build()`; defaults to `True`. |
 
+A budgeted report reuses one child-report read for its prompt context and, when needed, its input fingerprint.
+
 Provide an `embedder` to generate community report vectors for the DRIFT primer phase.
 Without report vectors, DRIFT falls back to local-style entity search. When `embed_community_reports=True`
 (default), the pipeline embeds reports after generation. For existing graphs
@@ -783,3 +810,21 @@ documented in [structured ingestion](11-structured-data.md#in-memory-conflicts-b
 Default normalized database resolution can undo in-memory separation: configure
 conflict properties, disable resolution, or inspect with `finalize=False` on
 row/document builds. No database resolver policy changes are implied.
+
+### Type and relationship scope after replacement
+
+The writer keeps old domain labels when an entity type changes.
+Embedding, entity resolution, and local or DRIFT retrieval use the recorded `type` property first.
+For legacy entities without a recorded type, these components use the first domain label.
+Legacy vector writes compare the stored type again before accepting a fingerprint-certified vector.
+
+Before merging entities, both database resolvers check all incident relationships across all candidate groups.
+Resolvers reject foreign or unscoped domain relationships before changing graph data.
+They also reject relationships whose endpoints belong to different graphs.
+Legacy structural relationships remain valid only with the expected endpoint labels, direction, and graph scope.
+These structural roles are `Chunk` to entity, `Claim` to entity, and entity to `Community`.
+Local, DRIFT, and community retrieval exclude domain relationships without matching `graph_name` ownership.
+
+When a claim ID remains in a replacement, the writer replaces its scoped `SUBJECT_OF` and `SOURCED_FROM` links.
+The old subject and source chunk can remain in the graph without retaining obsolete claim links.
+The writer does not change links with foreign endpoint scope or explicit foreign relationship ownership.

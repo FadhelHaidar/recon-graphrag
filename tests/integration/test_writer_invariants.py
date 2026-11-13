@@ -7,6 +7,7 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -20,6 +21,7 @@ from recon_graphrag.extraction.assembler import GraphDocumentAssembler
 from recon_graphrag.extraction.chunking import TextChunk
 from recon_graphrag.extraction.structured import ColumnEntity, RowMapping
 from recon_graphrag.extraction.types import ExtractedNode, GraphExtraction
+from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
 from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
 from recon_graphrag.pipelines.writer import CypherGraphWriter
@@ -453,3 +455,335 @@ def test_concurrent_identical_identity_ingestion_and_graph_isolation(case):
                 f"MATCH (n:{label} {{graph_name:$g}}) RETURN count(n) AS count", {"g": current}
             )[0]["count"]
             assert count == 1, (label, current, count)
+
+
+
+
+# --- Step 2 concurrency gate: baseline state reads under same-document concurrency ---
+
+# Query fingerprints below mirror `_read_document_state` in
+# recon_graphrag/pipelines/writer.py. Update them together with production.
+CHUNKS_QUERY_MARK = "MATCH (c:Chunk {graph_name: $graph_name})-[:PART_OF]->(d)"
+EVIDENCE_QUERY_MARK = "-[:FROM_CHUNK]->(e:__Entity__)"
+CLAIMS_QUERY_MARK = "-[:SOURCED_FROM]->(c)"
+
+_RELATIONSHIP_STATE_QUERY = """
+    MATCH (s:__Entity__ {graph_name: $graph_name})-[r]->(t:__Entity__ {graph_name: $graph_name})
+    WHERE r.graph_name = $graph_name
+      AND (r.id IN $rel_ids OR any(chunk IN coalesce(r.source_chunk_ids, [])
+                                   WHERE chunk IN $chunk_ids))
+    RETURN r.id AS id, s.id AS source_id, t.id AS target_id,
+           type(r) AS type,
+           coalesce(r.source_chunk_ids, []) AS source_chunk_ids,
+           r.descriptions AS descriptions,
+           r.description_sources AS description_sources,
+           r.description AS description,
+           r.description_summary_status AS description_summary_status,
+           r.strength AS strength,
+           r.strength_sources AS strength_sources,
+           r.properties AS properties
+    """
+_ENTITY_STATE_QUERY = """
+    UNWIND $entity_ids AS id
+    MATCH (e:__Entity__ {id: id, graph_name: $graph_name})
+    RETURN e.id AS id,
+           e.descriptions AS descriptions,
+           e.description_sources AS description_sources,
+           e.description AS description,
+           e.description_summary_status AS description_summary_status,
+           e.name AS name,
+           labels(e) AS labels,
+           e.embedding_input_fingerprint AS embedding_input_fingerprint
+    """
+
+
+class _GatePausingStore:
+    """Proxy store: pauses the state reader after the previous-chunk query."""
+
+    def __init__(self, store, entered, released, pause_always):
+        self._store = store
+        self._entered = entered
+        self._released = released
+        self._pause_always = pause_always
+        self._paused = False
+        self.read_log = []
+
+    def __getattr__(self, name):
+        return getattr(self._store, name)
+
+    def _query_kind(self, query):
+        if EVIDENCE_QUERY_MARK in query:
+            return "evidence"
+        if CLAIMS_QUERY_MARK in query:
+            return "claims"
+        if CHUNKS_QUERY_MARK in query:
+            return "chunks"
+        return None
+
+    def _maybe_pause(self, query, rows):
+        self.read_log.append(self._query_kind(query) or query)
+        kind = self._query_kind(query)
+        if (
+            not self._paused
+            and kind == "chunks"
+            and (self._pause_always or not rows)
+        ):
+            self._paused = True
+            self._entered.set()
+            self._released.wait(30)
+
+    def execute_query(self, query, parameters=None):
+        rows = self._store.execute_query(query, parameters)
+        self._maybe_pause(query, rows)
+        return rows
+
+    def _transaction(self):
+        inner = self._store
+        owner = self
+
+        class _PausingTransaction:
+            def __enter__(self):
+                self._cm = inner._transaction()
+                self._executor = self._cm.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                return self._cm.__exit__(*exc)
+
+            def execute_query(self, query, parameters=None):
+                rows = self._executor.execute_query(query, parameters)
+                owner._maybe_pause(query, rows)
+                return rows
+
+        return _PausingTransaction()
+
+
+def _gate_staged_read_state(self, graph_document):
+    """Candidate reader: evidence/claims only when previous chunks exist."""
+    from recon_graphrag.pipelines.writer import _DocumentState
+
+    document = graph_document.document
+    params = {"graph_name": document.graph_name, "document_id": document.id}
+    chunk_rows = self.graph_store.execute_query(
+        """
+        MATCH (d:Document {id: $document_id, graph_name: $graph_name})
+        MATCH (c:Chunk {graph_name: $graph_name})-[:PART_OF]->(d)
+        RETURN c.id AS id
+        """,
+        params,
+    )
+    state = _DocumentState(
+        chunk_ids=[row["id"] for row in chunk_rows], evidence=[], claims=[]
+    )
+    if state.chunk_ids:
+        state.evidence = list(self.graph_store.execute_query(
+            """
+            MATCH (d:Document {id: $document_id, graph_name: $graph_name})
+            MATCH (c:Chunk {graph_name: $graph_name})-[:PART_OF]->(d)
+            MATCH (c)-[:FROM_CHUNK]->(e:__Entity__)
+            RETURN c.id AS chunk_id, e.id AS entity_id
+            """,
+            params,
+        ))
+        state.claims = list(self.graph_store.execute_query(
+            """
+            MATCH (d:Document {id: $document_id, graph_name: $graph_name})
+            MATCH (c:Chunk {graph_name: $graph_name})-[:PART_OF]->(d)
+            MATCH (cl:Claim {graph_name: $graph_name})-[:SOURCED_FROM]->(c)
+            OPTIONAL MATCH (cl)-[:SUBJECT_OF]->(e:__Entity__)
+            RETURN cl.id AS id, c.id AS chunk_id, e.id AS entity_id
+            """,
+            params,
+        ))
+    if state.chunk_ids or graph_document.relationships:
+        state.relationships = list(self.graph_store.execute_query(
+            _RELATIONSHIP_STATE_QUERY,
+            {
+                **params,
+                "rel_ids": [rel.id for rel in graph_document.relationships],
+                "chunk_ids": state.chunk_ids,
+            },
+        ))
+    entity_ids = list(dict.fromkeys(
+        [entity.id for entity in graph_document.entities]
+        + [row.get("entity_id") for row in state.evidence if row.get("entity_id")]
+        + [row.get("entity_id") for row in state.claims if row.get("entity_id")]
+        + [row.get("source_id") for row in state.relationships]
+        + [row.get("target_id") for row in state.relationships]
+    ))
+    if entity_ids:
+        state.entities = {
+            row["id"]: row
+            for row in self.graph_store.execute_query(
+                _ENTITY_STATE_QUERY,
+                {"graph_name": document.graph_name, "entity_ids": entity_ids},
+            )
+        }
+    return state
+
+
+def _gate_dump(store, graph):
+    nodes, rels, idmap = [], [], {}
+    for row in store.execute_query(
+        "MATCH (n {graph_name: $g}) "
+        "RETURN labels(n) AS labels, properties(n) AS props, id(n) AS nid",
+        {"g": graph},
+    ):
+        props = {k: v for k, v in row["props"].items() if k not in ("updated", "created")}
+        key = (sorted(row["labels"]), props.get("id"))
+        idmap[row["nid"]] = key
+        nodes.append(key + (json.dumps(props, sort_keys=True, default=str),))
+    for row in store.execute_query(
+        "MATCH (s {graph_name: $g})-[r]->(t {graph_name: $g}) "
+        "RETURN type(r) AS rel_type, id(s) AS src, id(t) AS tgt, properties(r) AS props",
+        {"g": graph},
+    ):
+        props = {k: v for k, v in row["props"].items() if k not in ("updated", "created")}
+        rels.append(
+            (row["rel_type"], idmap.get(row["src"]), idmap.get(row["tgt"]),
+             json.dumps(props, sort_keys=True, default=str))
+        )
+    return sorted(nodes), sorted(rels)
+
+
+def _gate_variant(store, other, graph, path, scenario, variant):
+    """One writer run under the controlled interleaving; returns its outcome."""
+    inserted_doc = build_document(
+        chunks=["gate:c0"], document_id="gate-doc", graph_name=graph,
+        entities=[("e_gate", "Entity Gate", "Gate description.")],
+        evidence=[("gate:c0", "e_gate")],
+        claims=[("cl_gate", "e_gate", "gate:c0")],
+    )
+    empty_doc = build_document(
+        chunks=[], document_id="gate-doc", graph_name=graph,
+        entities=[("e_gate", "Entity Gate", "Gate description.")],
+        evidence=[],
+        claims=[],
+    )
+    for cleanup_store in (store, other):
+        cleanup_graph(cleanup_store, graph)
+    if scenario == "remove":
+        CypherGraphWriter(other).write_graph_document(inserted_doc)
+
+    entered, released = threading.Event(), threading.Event()
+    pausing = _GatePausingStore(store, entered, released, scenario == "remove")
+    writer = CypherGraphWriter(cast(GraphStore, pausing))
+    if variant == "candidate":
+        writer._read_document_state = _gate_staged_read_state.__get__(writer)
+
+    outcome, error = {}, []
+
+    def read_write(local_writer=writer, local_outcome=outcome, local_error=error):
+        try:
+            if path == "transaction":
+                local_outcome["receipt"] = local_writer.write_graph_document(empty_doc)
+            else:
+                local_outcome["receipt"] = local_writer._write_document(empty_doc)
+        except Exception as exc:  # noqa: BLE001
+            local_error.append(f"{type(exc).__name__}: {exc}")
+
+    reader = threading.Thread(target=read_write)
+    reader.start()
+    entered.wait(30)
+
+    def mutate(local_error=error):
+        try:
+            CypherGraphWriter(other).write_graph_document(
+                inserted_doc if scenario == "insert" else empty_doc
+            )
+        except Exception as exc:  # noqa: BLE001
+            local_error.append(f"concurrent {type(exc).__name__}: {exc}")
+
+    mutator = threading.Thread(target=mutate)
+    mutator.start()
+    mutator.join(20)
+    released.set()
+    reader.join(30)
+    return {
+        "receipt": outcome.get("receipt"),
+        "error": error[0] if error else None,
+        "graph": _gate_dump(store, graph),
+        "skipped": "evidence" not in pausing.read_log and "claims" not in pausing.read_log,
+    }
+
+
+def _gate_run(store, graph, path, scenario):
+    other = get_neo4j_store() if isinstance(store, Neo4jGraphStore) else get_memgraph_store()
+    try:
+        results = {
+            variant: _gate_variant(store, other, graph, path, scenario, variant)
+            for variant in ("baseline", "candidate")
+        }
+        cleanup_graph(store, graph)
+        cleanup_graph(other, graph)
+        return results
+    finally:
+        other.driver.close()
+
+
+@pytest.mark.parametrize("backend_label", ["neo4j", "memgraph"])
+@pytest.mark.parametrize("scenario,path", [
+    ("insert", "transaction"), ("insert", "autocommit"),
+    ("remove", "transaction"), ("remove", "autocommit"),
+])
+def test_writer_state_read_concurrency_gate(backend_label, scenario, path):
+    """Pin state-read behavior under a same-document concurrent commit.
+
+    Divergent insert cells document why the staged skip of the evidence and
+    claim reads is unsafe outside snapshot isolation: the baseline reader sees
+    and removes concurrently committed rows, the staged candidate would keep
+    them. Production keeps the baseline reads.
+    """
+    prefix = backend_label.upper()
+    require_integration_env(
+        "RUN_DATABASE_INTEGRATION_TESTS",
+        [f"{prefix}_URL"],
+        "writer state-read concurrency gate",
+        fail_on_missing=True,
+    )
+    graph = f"writer-gate-{uuid4().hex}"
+    store = get_neo4j_store() if backend_label == "neo4j" else get_memgraph_store()
+    try:
+        results = _gate_run(store, graph, path, scenario)
+        baseline, candidate = results["baseline"], results["candidate"]
+        snapshot_isolated = (
+            "memgraph" in type(store).__name__.lower() and path == "transaction"
+        )
+        for variant in ("baseline", "candidate"):
+            assert results[variant]["error"] is None, results[variant]["error"]
+            assert results[variant]["receipt"] is not None
+        assert baseline["receipt"] == candidate["receipt"]
+
+        concurrent_rels = {
+            ("FROM_CHUNK", "gate:c0", "e_gate"),
+            ("SOURCED_FROM", "cl_gate", "gate:c0"),
+            ("SUBJECT_OF", "cl_gate", "e_gate"),
+        }
+
+        def rel_keys(result):
+            return {(r[0], r[1][1], r[2][1]) for r in result["graph"][1]}
+
+        def node_ids(result):
+            return {n[1] for n in result["graph"][0]}
+
+        if scenario == "insert":
+            if snapshot_isolated:
+                # Memgraph snapshot isolation either hides the commit from the
+                # paused reader (both variants keep the concurrent rows) or
+                # aborts the conflicting reader; the writer retry then re-reads
+                # and both variants remove the same rows. Pin variant equality.
+                assert baseline["graph"] == candidate["graph"]
+            else:
+                assert "gate:c0" in node_ids(baseline) and "gate:c0" in node_ids(candidate)
+                assert baseline["graph"] != candidate["graph"]
+                assert baseline["skipped"] is False
+                assert candidate["skipped"] is True
+                assert concurrent_rels <= rel_keys(candidate)
+                assert not (concurrent_rels & rel_keys(baseline))
+        else:
+            assert baseline["graph"] == candidate["graph"]
+            assert node_ids(baseline) == {"gate-doc", "e_gate"}
+            assert baseline["skipped"] is False and candidate["skipped"] is False
+    finally:
+        cleanup_graph(store, graph)
+        store.driver.close()

@@ -86,6 +86,7 @@ class EntityEmbedder:
                             labels=entity.get("labels"),
                             name=entity.get("name", ""),
                             description=entity.get("description", ""),
+                            entity_type=entity.get("type"),
                         )
                         embedding = await self.embedder.async_embed_query(text)
                         return entity["id"], embedding, text
@@ -122,6 +123,7 @@ class EntityEmbedder:
                             labels=entity.get("labels"),
                             name=entity.get("name", ""),
                             description=entity.get("description", ""),
+                            entity_type=entity.get("type"),
                         )
                     )
 
