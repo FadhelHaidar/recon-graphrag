@@ -18,6 +18,14 @@
   label or `graph_name` filters are applied and trim to `top_k` after the
   filter, matching Memgraph behavior; result shape is unchanged.
 
+## [0.14.5](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.14.4...v0.14.5) (2026-11-15)
+
+
+### Bug Fixes
+
+* **pipelines:** preserve GraphBuilder evidence and embedding coverage ([0296f42](https://github.com/FadhelHaidar/recon-graphrag/commit/0296f4229d58f0452b660adac5adf03ad54c962f))
+* **pipelines:** preserve GraphBuilder evidence and embedding coverage ([600e56d](https://github.com/FadhelHaidar/recon-graphrag/commit/600e56d1767d8eef3787272d44a78c09d8e4c219))
+
 ## [0.14.4](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.14.3...v0.14.4) (2026-11-13)
 
 
