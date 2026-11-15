@@ -317,6 +317,8 @@ class GraphBuilderPipeline:
         self._require_schema(schema)
         self._require_concurrency(extraction_concurrency, document_concurrency)
         self._validate_document_envelopes(documents)
+        if extract_claims:
+            self.extractor.require_claim_output_support()
 
         with run_scope():
             batch_abort = asyncio.Event()
@@ -834,6 +836,8 @@ class GraphBuilderPipeline:
         finalize: bool = True,
         batch_abort: asyncio.Event | None = None,
     ) -> dict:
+        if extract_claims:
+            self.extractor.require_claim_output_support()
         extraction = await self._extract_and_write_chunks(
             document_id=document_id,
             text_hash=text_hash,

@@ -380,7 +380,7 @@ class StatefulFakeGraphStore:
         for entity_id in entity_ids:
             node = self._entities.get((graph_name, entity_id))
             if node is not None:
-                rows.append({field: node.get(field) for field in fields})
+                rows.append({**{field: node.get(field) for field in fields}, "props": dict(node)})
         return rows
 
     # Assertions

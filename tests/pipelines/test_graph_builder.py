@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from recon_graphrag.embeddings.base import BaseEmbedder
+from recon_graphrag.entity_text import text_fingerprint
 from recon_graphrag.extraction.chunking import TextChunker
 from recon_graphrag.extraction.description_summarizer import DescriptionSummarizer
 from recon_graphrag.extraction.schema import (
@@ -23,7 +24,6 @@ from recon_graphrag.graphdb.memgraph.store import MemgraphGraphStore
 from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.observability import UsageTrackingLLM, track_usage
-from recon_graphrag.entity_text import text_fingerprint
 from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
 from recon_graphrag.pipelines.writer import CypherGraphWriter
 
@@ -87,7 +87,7 @@ class FakeGraphStore:
         }
         return {"skipped": False, "merged_groups": 0, "strategy": "hybrid"}
 
-    def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None):
+    def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None, *, exclude_ids=None):
         return []
 
     def get_unembedded_chunks(self, graph_name, limit=500, model_fingerprint=None):
@@ -228,13 +228,14 @@ class PendingEmbeddingFakeGraphStore(FakeGraphStore):
             )
         return super().write_graph_document(graph_document)
 
-    def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None):
+    def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None, *, exclude_ids=None):
         self.embedding_queries += 1
         self.embedding_calls.append({"graph_name": graph_name, "limit": limit})
         return [
             e
             for e in self.entities
             if e["embedding_state"] == "pending" and e["graph_name"] == graph_name
+            and e["id"] not in (exclude_ids or [])
         ][:limit]
 
     def upsert_vectors(self, node_ids, embedding_property, vectors, **kwargs):
@@ -1923,10 +1924,10 @@ async def test_non_strict_vector_write_error_is_logged_and_continues(caplog):
 @pytest.mark.asyncio
 async def test_strict_completion_lookup_failure_propagates():
     class FinalCheckFailureStore(PendingEmbeddingFakeGraphStore):
-        def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None):
+        def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None, *, exclude_ids=None):
             if limit == 1:
                 raise RuntimeError("completion query failed")
-            return super().get_unembedded_entities(graph_name, limit, model_fingerprint)
+            return super().get_unembedded_entities(graph_name, limit, model_fingerprint, exclude_ids=exclude_ids)
 
     store = FinalCheckFailureStore()
     _two_pending_entities(store)
@@ -2218,3 +2219,16 @@ async def test_trusted_cross_label_collision_rejected_before_write(fake_writer, 
     assert str(exc.value) == "Cross-label canonical-key collision involving a trusted identity."
     fake_writer.write_graph_document.assert_not_called()
     assert store.queries == []
+
+
+@pytest.mark.asyncio
+async def test_claim_output_support_preflight_prevents_database_writes(
+    extraction_safety_pipeline, movie_schema, fake_writer,
+):
+    pipeline = extraction_safety_pipeline
+    pipeline.llm.supports_structured_output = False
+    pipeline.llm.ainvoke = AsyncMock()
+    with pytest.raises(ValueError, match="structured output"):
+        await pipeline.build_from_text("Alice", schema=movie_schema, extract_claims=True)
+    pipeline.llm.ainvoke.assert_not_called()
+    fake_writer.write_graph_document.assert_not_called()

@@ -3,13 +3,65 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
-from recon_graphrag.extraction.parser import AssessmentParser, ClaimParser, GraphExtractionParser
+from recon_graphrag.extraction.parser import (
+    AssessmentParser,
+    ClaimParser,
+    GraphExtractionParser,
+)
 from recon_graphrag.extraction.prompts import SchemaPromptBuilder
 from recon_graphrag.extraction.schema import GraphSchema
 from recon_graphrag.extraction.types import ExtractedClaim, GraphExtraction
 from recon_graphrag.observability import token_stage
+
+_CLAIM_PROPERTIES = {
+    **{key: {"type": "string"} for key in (
+        "subject_entity_id", "claim_type", "description", "status",
+    )},
+    **{key: {"type": ["string", "null"]} for key in (
+        "start_date", "end_date", "object_entity_id", "source_text", "text_unit_id",
+    )},
+}
+
+CLAIM_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "claims", "strict": True,
+        "schema": {
+            "type": "object", "additionalProperties": False,
+            "required": ["claims"],
+            "properties": {"claims": {
+                "type": "array", "items": {
+                    "type": "object", "additionalProperties": False,
+                    "required": list(_CLAIM_PROPERTIES),
+                    "properties": _CLAIM_PROPERTIES,
+                },
+            }},
+        },
+    },
+}
+
+
+def _validate_claim_response(content: str) -> None:
+    """Check schema shape even when a custom adapter ignores response_format."""
+    try:
+        data = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        raise ValueError("claims: invalid structured JSON") from None
+    if not isinstance(data, dict) or set(data) != {"claims"}:
+        raise ValueError("claims: expected the structured object envelope")
+    if not isinstance(data["claims"], list):
+        raise ValueError("claims: expected an array")
+    for item in data["claims"]:
+        if not isinstance(item, dict) or set(item) != set(_CLAIM_PROPERTIES):
+            raise ValueError("claims: invalid structured claim fields")
+        for key, schema in _CLAIM_PROPERTIES.items():
+            if not isinstance(item[key], str) and not (
+                item[key] is None and "null" in schema["type"]
+            ):
+                raise ValueError("claims: invalid structured claim field type")
 
 
 class LLMGraphExtractor:
@@ -71,6 +123,11 @@ class LLMGraphExtractor:
 
         return current
 
+    def require_claim_output_support(self) -> None:
+        """Reject adapters that explicitly lack strict structured output."""
+        if getattr(self.llm, "supports_structured_output", None) is False:
+            raise ValueError("Claim extraction requires structured output support")
+
     async def extract_claims(
         self,
         text: str,
@@ -92,12 +149,19 @@ class LLMGraphExtractor:
         if not entity_ids:
             return []
 
+        self.require_claim_output_support()
         prompt = self.prompt_builder.build_claim_prompt(
             text=text,
             entity_ids=entity_ids,
         )
         with token_stage("construction.claims"):
-            response = await self.llm.ainvoke(prompt)
+            response = await self.llm.ainvoke(
+                prompt, response_format=CLAIM_RESPONSE_FORMAT,
+            )
+        finish_reason = getattr(response, "finish_reason", None)
+        if isinstance(finish_reason, str) and finish_reason not in {"stop", "end_turn"}:
+            raise ValueError("claims: completion did not finish successfully")
+        _validate_claim_response(response.content)
         return self.claim_parser.parse(
             response.content,
             valid_entity_ids=set(entity_ids),
@@ -158,6 +222,8 @@ class LLMGraphExtractor:
             One tuple ``(chunk_id, extraction, claims)`` per input chunk, in the
             same order as ``chunks``.
         """
+        if extract_claims:
+            self.require_claim_output_support()
         semaphore = asyncio.Semaphore(max(int(concurrency), 1))
         stopped = False
 

@@ -2,7 +2,8 @@
 
 ``GraphBuilderPipeline`` and ``CommunityPipeline`` accept plain string
 prompts. The backend wraps each string with the standard schema, rules,
-JSON format, and rubric sections. Optional placeholders (e.g. ``{text}``,
+JSON format, and rubric sections. Claim-enabled builds require strict JSON-schema
+support from the selected LLM deployment. Optional placeholders (e.g. ``{text}``,
 ``{context}``) let a string control where the backend inserts content.
 
 Run this file to print the prompts the backend actually sends to the LLM:

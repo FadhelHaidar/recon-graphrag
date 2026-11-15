@@ -519,15 +519,17 @@ class Neo4jGraphStore(BaseGraphStore):
         return detector.detect()
 
     def get_unembedded_entities(
-        self, graph_name: str, limit: int = 500, model_fingerprint: str | None = None
+        self, graph_name: str, limit: int = 500, model_fingerprint: str | None = None,
+        *, exclude_ids: list[str | int] | None = None,
     ) -> list[dict]:
         query = """
         MATCH (e:__Entity__ {graph_name: $graph_name})
-        WHERE e.embedding IS NULL
+        WHERE NOT (elementId(e) IN $exclude_ids)
+          AND (e.embedding IS NULL
            OR coalesce(e.embedding_content_fingerprint, '')
               <> coalesce(e.embedding_input_fingerprint, '')
            OR ($model_fingerprint IS NOT NULL
-               AND coalesce(e.embedding_model_fingerprint, '') <> $model_fingerprint)
+               AND coalesce(e.embedding_model_fingerprint, '') <> $model_fingerprint))
         RETURN elementId(e) AS id, labels(e) AS labels,
                e.type AS type,
                e.name AS name,
@@ -542,6 +544,7 @@ class Neo4jGraphStore(BaseGraphStore):
                 "graph_name": graph_name,
                 "limit": limit,
                 "model_fingerprint": model_fingerprint,
+                "exclude_ids": exclude_ids or [],
             },
         )
 

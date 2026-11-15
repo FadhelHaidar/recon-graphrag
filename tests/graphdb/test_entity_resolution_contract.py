@@ -112,3 +112,18 @@ async def test_normalized_resolution_builds_groups_once(monkeypatch):
 
     assert calls == [2]
     assert result["merged_groups"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conflicts", [["birth_year"], {"Person": ["birth_year"]}])
+async def test_normalized_dispatch_preserves_conflict_configuration(conflicts):
+    rows = [
+        _EntityRecord(1, "one", "graph", "Person", "Alice", "alice", {"birth_year": 1980}),
+        _EntityRecord(2, "two", "graph", "Person", "ALICE", "alice", {"birth_year": 2000}),
+    ]
+    resolver = ContractResolver(rows)
+    direct = await resolver.resolve_normalized(graph_name="graph", conflict_properties=conflicts, dry_run=True)
+    dispatched = await resolver.resolve(graph_name="graph", strategy="normalized", conflict_properties=conflicts, dry_run=True)
+    assert dispatched == direct
+    assert dispatched["merged_groups"] == 0
+    assert dispatched["review_groups"]

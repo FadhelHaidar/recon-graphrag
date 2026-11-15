@@ -86,7 +86,7 @@ class FakeGraphStore:
                                       context_mode="safe_defaults", **kwargs):
         return {"skipped": True, "reason": "disabled in test"}
 
-    def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None):
+    def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None, *, exclude_ids=None):
         return []
 
     def upsert_vectors(self, node_ids, embedding_property, vectors, **kwargs):

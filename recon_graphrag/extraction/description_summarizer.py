@@ -5,36 +5,27 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import time
 
 from tqdm import tqdm
 
+from recon_graphrag.description_text import (
+    entity_summary_fingerprint,
+    summary_context_properties,
+)
 from recon_graphrag.extraction.parser import DescriptionSummaryParser
 from recon_graphrag.extraction.prompts import SchemaPromptBuilder
 from recon_graphrag.graphdb.base import GraphStore
-from recon_graphrag.graphdb.entity_resolution_context import (
-    INTERNAL_CONTEXT_FIELDS,
-    STANDARD_CONTEXT_FIELDS,
-)
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.observability import token_stage
+from recon_graphrag.utils.tokens import ApproximateTokenCounter, TokenCounter
 
-# Node properties that are pipeline bookkeeping rather than domain facts;
-# everything else is user-schema data worth showing to the summary LLM.
-_NON_CONTEXT_FIELDS = (
-    INTERNAL_CONTEXT_FIELDS
-    | set(STANDARD_CONTEXT_FIELDS)
-    | {
-        "descriptions",
-        "description_summary_status",
-        "description_input_fingerprint",
-        "description_summary_updated",
-        "description_summary_error",
-        "observation_count",
-        "type",
-        "weight",
-    }
-)
+logger = logging.getLogger(__name__)
+
+
+class _InvalidSummaryOutput(ValueError):
+    """Report exhausted output retries without exposing provider text."""
 
 
 class DescriptionSummarizationError(RuntimeError):
@@ -49,6 +40,10 @@ class DescriptionSummarizer:
         graph_name: str,
         concurrency: int = 5,
         prompt_builder: SchemaPromptBuilder | None = None,
+        *,
+        summary_token_budget: int = 8192,
+        summary_output_tokens: int = 1024,
+        token_counter: TokenCounter | None = None,
     ):
         self.llm = llm
         self.graph_store = graph_store
@@ -56,6 +51,11 @@ class DescriptionSummarizer:
         self.concurrency = max(int(concurrency), 1)
         self.parser = DescriptionSummaryParser()
         self.prompts = prompt_builder or SchemaPromptBuilder()
+        if summary_output_tokens <= 0 or summary_token_budget <= summary_output_tokens:
+            raise ValueError("Summary token budget must exceed the positive output reserve")
+        self.summary_token_budget = summary_token_budget
+        self.summary_output_tokens = summary_output_tokens
+        self.token_counter = token_counter or ApproximateTokenCounter()
 
     async def summarize_entities(self, limit: int = 500) -> dict:
         return await self._summarize_loop(
@@ -136,24 +136,10 @@ class DescriptionSummarizer:
             failure = None
             error_message = None
             try:
-                prompt = prompt_builder(item)
-                stage = (
-                    "construction.describe_entities"
-                    if label == "entity"
-                    else "construction.describe_relationships"
-                )
-                for attempt in range(3):
-                    async with semaphore:
-                        with token_stage(stage):
-                            response = await self.llm.ainvoke(prompt)
-                    try:
-                        summary = self._parse_summary(response.content)
-                        break
-                    except ValueError:
-                        if attempt == 2:
-                            error_message = "Invalid description summary after 3 attempts (empty output)."
-                            raise
-                        await asyncio.sleep(attempt + 1)
+                summary = await self._summarize_item(item, prompt_builder, semaphore, label)
+            except _InvalidSummaryOutput as exc:
+                failure = exc
+                error_message = str(exc)
             except Exception as exc:
                 failure = exc
                 if error_message is None:
@@ -190,6 +176,89 @@ class DescriptionSummarizer:
             [failure for _, failure in outcomes if failure is not None],
         )
 
+    def _budgeted_prompt(self, item: dict, descriptions: list[str], prompt_builder) -> str:
+        prompt = prompt_builder({**item, "descriptions": descriptions})
+        return prompt + f"\n\nReturn at most {self.summary_output_tokens} tokens. Preserve supported facts and qualifications."
+
+    def _partition_descriptions(self, item: dict, descriptions: list[str], prompt_builder) -> list[list[str]]:
+        """Partition complete source text without dropping an oversized observation."""
+        available = self.summary_token_budget - self.summary_output_tokens
+
+        def fits(texts: list[str]) -> bool:
+            return self.token_counter.count(self._budgeted_prompt(item, texts, prompt_builder)) <= available
+
+        if not fits([]):
+            raise ValueError("Fixed summary context exceeds the input budget")
+        batches: list[list[str]] = []
+        batch: list[str] = []
+        for text in descriptions:
+            remaining = text
+            while remaining:
+                if fits([*batch, remaining]):
+                    batch.append(remaining)
+                    break
+                # Find a source-string boundary; token truncation can lose Unicode bytes.
+                low, high = 0, len(remaining)
+                while low < high:
+                    middle = (low + high + 1) // 2
+                    if fits([*batch, remaining[:middle]]):
+                        low = middle
+                    else:
+                        high = middle - 1
+                if low:
+                    batch.append(remaining[:low])
+                    remaining = remaining[low:]
+                elif not batch:
+                    raise ValueError("Summary budget cannot fit one source character")
+                batches.append(batch)
+                batch = []
+        if batch:
+            batches.append(batch)
+        return batches
+
+    async def _request_summary(self, prompt: str, semaphore, label: str) -> str:
+        stage = "construction.describe_entities" if label == "entity" else "construction.describe_relationships"
+        for attempt in range(3):
+            async with semaphore:
+                with token_stage(stage):
+                    response = await self.llm.ainvoke(prompt)
+            invalid_reason = "empty output"
+            try:
+                summary = self._parse_summary(response.content)
+                reason = getattr(response, "finish_reason", None)
+                if isinstance(reason, str) and reason not in {"stop", "end_turn"}:
+                    invalid_reason = "incomplete output"
+                    raise ValueError("Incomplete summary output")
+                if self.token_counter.count(summary) > self.summary_output_tokens:
+                    invalid_reason = "oversized output"
+                    raise ValueError("Summary exceeds the output reserve")
+                return summary
+            except ValueError:
+                if attempt == 2:
+                    raise _InvalidSummaryOutput(
+                        f"Invalid description summary after 3 attempts ({invalid_reason})."
+                    ) from None
+                await asyncio.sleep(attempt + 1)
+        raise AssertionError("unreachable")
+
+    async def _summarize_item(self, item: dict, prompt_builder, semaphore, label: str) -> str:
+        batches = self._partition_descriptions(item, self._clean_descriptions(item), prompt_builder)
+        requests = 0
+        while batches:
+            generated = []
+            for batch in batches:
+                prompt = self._budgeted_prompt(item, batch, prompt_builder)
+                generated.append(await self._request_summary(prompt, semaphore, label))
+                requests += 1
+            if len(generated) == 1:
+                logger.info("Completed %s summary with %d evidence/consolidation requests", label, requests)
+                return generated[0]
+            next_batches = self._partition_descriptions(item, generated, prompt_builder)
+            if len(next_batches) >= len(batches):
+                raise ValueError("Summary consolidation cannot make progress within the budget")
+            batches = next_batches
+        raise ValueError("Summary requires nonempty source evidence")
+
     def _build_entity_summary_prompt(self, entity: dict) -> str:
         return self.prompts.build_entity_summary_prompt(
             descriptions=self._clean_descriptions(entity),
@@ -210,17 +279,7 @@ class DescriptionSummarizer:
         return self.parser.parse(content)
 
     def _entity_fingerprint(self, entity: dict) -> str:
-        payload = {
-            "id": entity.get("entity_id") or entity.get("id"),
-            "name": entity.get("name"),
-            "descriptions": sorted(self._clean_descriptions(entity)),
-        }
-        properties = self._context_properties(entity)
-        if properties:
-            payload["properties"] = {
-                key: str(value) for key, value in properties.items()
-            }
-        return self._hash_payload(payload)
+        return self._hash_payload({"inputs": entity_summary_fingerprint(entity), **self._batching_policy()})
 
     def _relationship_fingerprint(self, rel: dict) -> str:
         payload = {
@@ -230,15 +289,17 @@ class DescriptionSummarizer:
             "type": rel.get("type"),
             "descriptions": sorted(self._clean_descriptions(rel)),
         }
-        return self._hash_payload(payload)
+        return self._hash_payload({**payload, **self._batching_policy()})
+
+    def _batching_policy(self) -> dict:
+        return {"batching_version": 1, "token_budget": self.summary_token_budget,
+                "output_reserve": self.summary_output_tokens,
+                "token_counter": type(self.token_counter).__qualname__,
+                "approximate_ratio": getattr(self.token_counter, "_ratio", None),
+                "encoding": getattr(getattr(self.token_counter, "_encoding", None), "name", None)}
 
     def _context_properties(self, item: dict) -> dict:
-        props = item.get("props") or {}
-        return {
-            key: value
-            for key, value in props.items()
-            if key not in _NON_CONTEXT_FIELDS and value not in (None, "", [], {})
-        }
+        return summary_context_properties(item)
 
     def _clean_descriptions(self, item: dict) -> list[str]:
         return [

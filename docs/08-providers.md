@@ -22,6 +22,15 @@ llm = create_llm("openai", model_name="gpt-4o", api_key="sk-...")
 | Ollama | `"ollama"` | `[ollama]` extra |
 | OpenRouter | `"openrouter"` | Included in core package (OpenAI-compatible API) |
 
+### Structured claim extraction
+
+When `extract_claims=True`, select a deployed model that supports strict `response_format` JSON schemas.
+The OpenAI-compatible adapters forward this schema for OpenAI, Azure OpenAI, and OpenRouter endpoints.
+Model support depends on the endpoint and deployment.
+The current Anthropic and Ollama adapters do not support this claim-extraction mode.
+Use those adapters with claims disabled, or supply a custom schema-capable adapter.
+No prompt-only fallback runs when structured output fails.
+
 ### Examples
 
 #### OpenAI

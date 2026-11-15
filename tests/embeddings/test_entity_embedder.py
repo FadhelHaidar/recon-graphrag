@@ -22,7 +22,7 @@ class FakeGraphStore:
         self.queries.append(query.strip())
         return []
 
-    def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None):
+    def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None, *, exclude_ids=None):
         self.graph_names.append(graph_name)
         batch = self._entities[:limit]
         self._entities = self._entities[limit:]
@@ -47,7 +47,7 @@ class StuckGraphStore:
         self.fetches = 0
         self.upserted = []
 
-    def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None):
+    def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None, *, exclude_ids=None):
         self.fetches += 1
         return list(self._entities[:limit])
 
@@ -123,7 +123,7 @@ class StalenessFakeGraphStore:
         self.entities = entities
         self.upserted = []
 
-    def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None):
+    def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None, *, exclude_ids=None):
         stale = [
             dict(e)
             for e in self.entities
@@ -135,7 +135,7 @@ class StalenessFakeGraphStore:
                 and e.get("embedding_model_fingerprint", "") != model_fingerprint
             )
         ]
-        return stale[:limit]
+        return [e for e in stale if e["id"] not in (exclude_ids or [])][:limit]
 
     def upsert_vectors(self, ids, property_name, vectors, **kwargs):
         fingerprints = kwargs.get("content_fingerprints") or [None] * len(ids)

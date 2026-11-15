@@ -200,7 +200,10 @@ class _Neo4jEntityResolver(BaseEntityResolver):
                             n.description = $description,
                             n.embedding_input_fingerprint = null,
                             n.observation_count = size($descriptions),
-                            n.description_input_fingerprint = $fingerprint,
+                            n.description_input_fingerprint = null,
+                            n.description_summary_status = null,
+                            n.description_summary_error = null,
+                            n.description_summary_updated = null,
                             n.description_summary_fallback = $fallback
                         """,
                         {

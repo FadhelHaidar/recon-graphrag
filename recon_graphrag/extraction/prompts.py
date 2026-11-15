@@ -365,17 +365,17 @@ Extract ONLY the missing entities and relationships."""
 2. Each claim must have a subject_entity_id matching one of the known entities.
 3. claim_type should be a short label for the kind of claim (e.g. "role",
    "status", "opinion", "action", "attribute", "event").
-4. description is the claim text as stated or implied by the source.
+4. description must be a nonempty string supported by the source. Do not invent placeholder claims.
 5. status is "active" by default; use "resolved", "expired", or "rejected"
    only if the text explicitly indicates a state change.
 6. object_entity_id may reference another known entity when the claim is about
    a relationship or assertion involving another entity.
 7. source_text should be a short source excerpt supporting the claim.
-8. text_unit_id is optional; omit it if the chunk ID is not available.
-9. Return valid JSON only. Do not include markdown.
-10. If there are no valid claims, return an empty array.""")
+8. Use null for unavailable dates, object IDs, excerpts, and text_unit_id.
+9. Return valid JSON only: an object with a claims array. Do not include markdown.
+10. If there are no valid claims, return {"claims": []}.""")
         parts.append("""JSON format:
-[
+{"claims": [
   {
     "subject_entity_id": "person:example",
     "claim_type": "role",
@@ -387,7 +387,7 @@ Extract ONLY the missing entities and relationships."""
     "source_text": "Example was appointed CEO.",
     "text_unit_id": null
   }
-]""")
+]}""")
         if not has_text:
             parts.append(f"Text:\n{text}")
 
