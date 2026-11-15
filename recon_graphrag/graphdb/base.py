@@ -241,9 +241,14 @@ class GraphStore(Protocol):
         ...
 
     def get_unembedded_entities(
-        self, graph_name: str, limit: int = 500, model_fingerprint: str | None = None
+        self, graph_name: str, limit: int = 500, model_fingerprint: str | None = None,
+        *, exclude_ids: list[str | int] | None = None,
     ) -> list[dict]:
-        """Get graph-scoped entities whose stored vector is missing or stale."""
+        """Get pending graph entities, excluding supplied backend-native IDs before limiting.
+
+        Omitted exclusions retain the existing missing-or-stale vector selection.
+        Neo4j returns string element IDs; Memgraph returns integer node IDs.
+        """
         ...
 
     def get_unembedded_chunks(

@@ -230,6 +230,7 @@ class BaseEntityResolver(ABC):
                 graph_name=graph_name,
                 resolve_property=resolve_property,
                 dry_run=dry_run,
+                conflict_properties=conflict_properties,
             )
         if strategy == "fuzzy":
             return await self.resolve_fuzzy(

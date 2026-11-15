@@ -31,6 +31,7 @@ from copy import copy
 from dataclasses import dataclass, field
 from typing import Any
 
+from recon_graphrag.description_text import entity_summary_fingerprint
 from recon_graphrag.entity_text import entity_embedding_fingerprint, text_fingerprint
 from recon_graphrag.extraction.types import DocumentRecord, GraphDocument
 from recon_graphrag.graphdb._provenance import (
@@ -193,6 +194,7 @@ class CypherGraphWriter:
         self._reject_reserved_keys(graph_document)
         self._validate_document_scope(graph_document)
         self._validate_incoming_relationship_ids(graph_document)
+        self._validate_incoming_claim_ids(graph_document)
         state = self._read_document_state(graph_document)
         self._reject_reference_entity_ambiguity(graph_document, state)
         targets = self._read_relationship_targets(graph_document)
@@ -287,10 +289,19 @@ class CypherGraphWriter:
                     f"{chunk.document_id!r}, but this write targets Document "
                     f"{document.id!r}. Submit chunks that belong to the document."
                 )
+        chunk_ids = {chunk.id for chunk in graph_document.chunks}
         for entity in graph_document.entities:
             self._require_document_graph(
                 "EntityRecord", entity.id, entity.graph_name, document
             )
+            for observation in entity.description_observations:
+                if (
+                    not isinstance(observation.description, str)
+                    or observation.entity_id != entity.id
+                    or observation.source.document_id != document.id
+                    or observation.source.chunk_id not in chunk_ids
+                ):
+                    raise ValueError("Entity description observation leaves the submitted document scope")
         for relationship in graph_document.relationships:
             self._require_document_graph(
                 "RelationshipRecord",
@@ -347,6 +358,20 @@ class CypherGraphWriter:
                 target_id=relationship.target_id,
                 origin="submitted relationship",
             )
+
+    @staticmethod
+    def _validate_incoming_claim_ids(graph_document: GraphDocument) -> None:
+        """Reject conflicting assertions under one ID before database access."""
+        assertions: dict[str, tuple] = {}
+        for claim in graph_document.claims:
+            assertion = (
+                claim.graph_name, claim.source.document_id, claim.source.chunk_id,
+                claim.entity_id, claim.object_entity_id, claim.claim_type,
+                claim.description, claim.start_date, claim.end_date,
+            )
+            if claim.id in assertions and assertions[claim.id] != assertion:
+                raise ValueError("Claim ID represents an incompatible assertion")
+            assertions[claim.id] = assertion
 
     def _validate_stored_relationship_ids(
         self, graph_name: str, state: _DocumentState
@@ -773,6 +798,7 @@ class CypherGraphWriter:
                            e.description AS description,
                            e.description_summary_status AS description_summary_status,
                            e.name AS name,
+                           properties(e) AS props,
                            labels(e) AS labels,
                            e.embedding_input_fingerprint AS embedding_input_fingerprint
                     """,
@@ -861,27 +887,37 @@ class CypherGraphWriter:
         for entity in graph_document.entities:
             properties = dict(entity.properties)
             description = str(properties.pop("description", "") or "")
+            observations = list(dict.fromkeys(
+                observation.description.strip()
+                for observation in entity.description_observations
+                if observation.description and observation.description.strip()
+            ))
+            incoming_descriptions = observations or ([description] if description else [])
             stored = state.entities.get(entity.id) or {}
             stored_descriptions = raw_descriptions(stored)
             entries = _accessible_entries(
                 stored.get("description_sources"), stored_descriptions,
-                [description], document_id, entity.id,
+                incoming_descriptions, document_id, entity.id,
             )
             merged_entries, descriptions = _merge_contributions(
-                entries, document_id, [description]
+                entries, document_id, incoming_descriptions
             )
-            changed = descriptions != stored_descriptions
+            name = (
+                properties.get("name") or properties.get("title")
+                or entity.human_readable_id or entity.id
+            )
+            effective_properties = {**(stored.get("props") or {}), **properties}
+            previous_inputs = {**stored, "entity_id": entity.id}
+            next_inputs = {
+                "entity_id": entity.id, "name": name, "type": entity.type,
+                "descriptions": descriptions, "props": effective_properties,
+            }
+            changed = entity_summary_fingerprint(previous_inputs) != entity_summary_fingerprint(next_inputs)
             keep_description = (
                 stored.get("description_summary_status") is not None and not changed
             )
             description_text = (
                 None if keep_description else _joined(descriptions)
-            )
-            name = (
-                properties.get("name")
-                or properties.get("title")
-                or entity.human_readable_id
-                or entity.id
             )
             final_description = (
                 stored.get("description") or ""

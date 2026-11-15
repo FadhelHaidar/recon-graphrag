@@ -272,7 +272,11 @@ def test_get_unembedded_entities_selects_missing_or_stale_vectors():
     assert "e.embedding_content_fingerprint" in query
     assert "e.embedding_input_fingerprint" in query
     assert "e.embedding_model_fingerprint" in query
-    assert params == {"graph_name": "g", "limit": 5, "model_fingerprint": "model-1"}
+    assert params == {"graph_name": "g", "limit": 5, "model_fingerprint": "model-1", "exclude_ids": []}
+    assert "WHERE NOT (elementId(e) IN $exclude_ids)" in query
+    assert "AND (e.embedding IS NULL" in query
+    store.get_unembedded_entities("g", limit=5, exclude_ids=["4:a"])
+    assert driver.calls[-1][1]["exclude_ids"] == ["4:a"]
 
 
 def test_upsert_vectors_records_content_and_model_fingerprints():

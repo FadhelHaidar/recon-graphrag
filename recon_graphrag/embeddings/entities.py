@@ -44,13 +44,15 @@ class EntityEmbedder:
     async def embed_entities(self, batch_size: int = 500):
         """Generate missing entity embeddings and refresh stale embeddings.
 
-        Repeat batches until stored fingerprints match the current text and model,
-        or the pass makes no progress. Embed up to ``self.concurrency`` entities
-        concurrently, then write each batch of successful vectors together.
+        Attempt each pending entity at most once per pass.
+        Exclude attempted IDs so failures cannot block later batches.
+        Keep failed entities pending for the next pass.
+        Embed up to ``self.concurrency`` entities concurrently.
+        Write each batch of successful vectors together.
         """
         total = 0
         semaphore = asyncio.Semaphore(self.concurrency)
-        last_batch_ids: frozenset | None = None
+        attempted_ids: set[str | int] = set()
         model_fingerprint = self.model_fingerprint
 
         while True:
@@ -59,23 +61,21 @@ class EntityEmbedder:
                 graph_name=self.graph_name,
                 limit=batch_size,
                 model_fingerprint=model_fingerprint,
+                exclude_ids=list(attempted_ids),
             )
             if not entities:
                 break
 
-            # No-forward-progress guard: if the store hands back the same batch
-            # it just did, embedding it again cannot change the result — persistent
-            # embed failures (or an upsert that doesn't clear `embedding IS NULL`)
-            # would otherwise loop here forever.
-            batch_ids = frozenset(e["id"] for e in entities)
-            if batch_ids == last_batch_ids:
+            # Keep termination protection even if an adapter ignores exclusions.
+            entities = [entity for entity in entities if entity["id"] not in attempted_ids]
+            if not entities:
                 logger.warning(
                     "stopping: %s entities could not be embedded (no progress); "
                     "leaving them unembedded",
-                    len(entities),
+                    len(attempted_ids),
                 )
                 break
-            last_batch_ids = batch_ids
+            attempted_ids.update(entity["id"] for entity in entities)
 
             # Returns the exception on failure so tqdm_asyncio.gather (no
             # return_exceptions=) still lets the caller sort ok/failed results.
@@ -138,7 +138,7 @@ class EntityEmbedder:
                 )
                 total += len(ids)
 
-        if total == 0:
+        if not attempted_ids:
             logger.info("all entities already have embeddings")
         else:
-            logger.info("embedded %s entities", total)
+            logger.info("embedded %s of %s attempted entities; failed items remain pending", total, len(attempted_ids))

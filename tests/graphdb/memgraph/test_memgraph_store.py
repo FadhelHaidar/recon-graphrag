@@ -343,6 +343,11 @@ def test_get_unembedded_entities_selects_missing_or_stale_vectors(store, fake_dr
     assert "e.embedding_content_fingerprint" in query_text
     assert "e.embedding_input_fingerprint" in query_text
     assert "e.embedding_model_fingerprint" in query_text
+    assert "WHERE NOT (id(e) IN $exclude_ids)" in query_text
+    assert "AND (e.embedding IS NULL" in query_text
+    assert fake_driver.session_obj.params[-1]["exclude_ids"] == []
+    store.get_unembedded_entities("g", limit=5, exclude_ids=[123])
+    assert fake_driver.session_obj.params[-1]["exclude_ids"] == [123]
 
 
 def test_upsert_vectors_records_content_and_model_fingerprints(store, fake_driver):

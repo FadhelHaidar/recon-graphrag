@@ -8,13 +8,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from recon_graphrag.graphdb.base import GraphStore
-from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.extraction import description_summarizer as module
 from recon_graphrag.extraction.description_summarizer import (
     DescriptionSummarizationError,
     DescriptionSummarizer,
 )
+from recon_graphrag.graphdb.base import GraphStore
+from recon_graphrag.llm.base import BaseLLM
 
 
 class SummaryStore:
@@ -141,7 +141,9 @@ async def test_description_summarizer_persists_mixed_outcomes_and_recovery_skips
     llm.ainvoke.reset_mock(side_effect=True)
     llm.ainvoke.return_value = SimpleNamespace(content="recovered")
     assert await summarizer.summarize_entities() == {"summarized": 1, "batches": 1}
-    llm.ainvoke.assert_awaited_once_with("entity_name: 1")
+    llm.ainvoke.assert_awaited_once_with(
+        summarizer._budgeted_prompt(store.items[1], ["original"], summarizer._build_entity_summary_prompt)
+    )
 
 
 @pytest.mark.asyncio

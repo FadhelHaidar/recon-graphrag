@@ -121,6 +121,12 @@ class _MemgraphEntityResolver(BaseEntityResolver):
                     if text
                 ))
                 combined_props["observation_count"] = len(combined_props["descriptions"])
+            combined_props.update({
+                "description_summary_status": None,
+                "description_input_fingerprint": None,
+                "description_summary_error": None,
+                "description_summary_updated": None,
+            })
             if aliases:
                 existing_aliases = combined_props.get("aliases", [])
                 if not isinstance(existing_aliases, list):

@@ -267,14 +267,16 @@ async def test_gleaning_duplicate_entities_not_added():
 @pytest.mark.asyncio
 async def test_extract_claims_returns_claims():
     """extract_claims makes one LLM call and returns parsed claims."""
-    claim_response = json.dumps([
+    claim_response = json.dumps({"claims": [
         {
             "subject_entity_id": "person:alice",
             "claim_type": "role",
             "description": "Alice is the CEO.",
             "status": "active",
+            "start_date": None, "end_date": None, "object_entity_id": None,
+            "source_text": None, "text_unit_id": None,
         }
-    ])
+    ]})
 
     llm = MagicMock()
     llm.ainvoke = AsyncMock(return_value=MagicMock(content=claim_response))
@@ -354,14 +356,16 @@ class _CustomBuilder(SchemaPromptBuilder):
 
 @pytest.mark.asyncio
 async def test_extractor_uses_string_claim_prompt():
-    claim_response = json.dumps([
+    claim_response = json.dumps({"claims": [
         {
             "subject_entity_id": "person:alice",
             "claim_type": "role",
             "description": "Alice is the CEO.",
             "status": "active",
+            "start_date": None, "end_date": None, "object_entity_id": None,
+            "source_text": None, "text_unit_id": None,
         }
-    ])
+    ]})
     llm = MagicMock()
     llm.ainvoke = AsyncMock(return_value=MagicMock(content=claim_response))
 
@@ -390,14 +394,16 @@ async def test_extractor_uses_custom_build_prompt():
 
 @pytest.mark.asyncio
 async def test_extractor_uses_custom_claim_prompt():
-    claim_response = json.dumps([
+    claim_response = json.dumps({"claims": [
         {
             "subject_entity_id": "person:alice",
             "claim_type": "role",
             "description": "Alice is the CEO.",
             "status": "active",
+            "start_date": None, "end_date": None, "object_entity_id": None,
+            "source_text": None, "text_unit_id": None,
         }
-    ])
+    ]})
     llm = MagicMock()
     llm.ainvoke = AsyncMock(return_value=MagicMock(content=claim_response))
 

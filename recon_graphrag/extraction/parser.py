@@ -113,16 +113,27 @@ class ClaimParser:
         payload = self._json_parser._extract_json(content)
         data = json.loads(payload)
 
+        if not isinstance(data, (list, dict)):
+            raise ValueError("claims: expected an array or object")
         raw_claims = data if isinstance(data, list) else data.get("claims", [])
+        if not isinstance(raw_claims, list):
+            raise ValueError("claims: expected an array")
 
         claims: list[ExtractedClaim] = []
         for item in raw_claims:
             if not isinstance(item, dict):
                 continue
 
-            subject = str(item.get("subject_entity_id", "")).strip()
-            claim_type = str(item.get("claim_type", "")).strip()
-            description = str(item.get("description", "")).strip()
+            if any(
+                value is not None and not isinstance(value, str)
+                for value in item.values()
+            ):
+                continue
+            if not isinstance(item.get("description"), str):
+                continue
+            subject = (item.get("subject_entity_id") or "").strip()
+            claim_type = (item.get("claim_type") or "").strip()
+            description = item["description"].strip()
 
             if not subject or not description:
                 continue
@@ -146,7 +157,7 @@ class ClaimParser:
                     subject_entity_id=subject,
                     claim_type=claim_type or "general",
                     description=description,
-                    status=str(item.get("status", "active")).strip() or "active",
+                    status=(item.get("status") or "active").strip() or "active",
                     start_date=item.get("start_date"),
                     end_date=item.get("end_date"),
                     object_entity_id=object_entity_id,

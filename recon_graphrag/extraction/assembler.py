@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from dataclasses import asdict
 from typing import Any
@@ -172,6 +174,7 @@ class GraphDocumentAssembler:
     ) -> GraphDocument:
         entities_by_id: dict[str, EntityRecord] = {}
         relationships_by_key: dict[tuple, RelationshipRecord] = {}
+        relationship_descriptions: dict[tuple, dict[str, None]] = {}
         evidence_links = []
         claim_records: list[ClaimRecord] = []
 
@@ -317,6 +320,10 @@ class GraphDocumentAssembler:
                         chunk.id
                     )
 
+                description = rel.properties.get("description")
+                if isinstance(description, str) and description.strip():
+                    relationship_descriptions.setdefault(key, {})[description.strip()] = None
+
             # Convert extracted claims to ClaimRecord
             if chunk_claims:
                 for extracted_claim in chunk_claims.get(chunk.id, []):
@@ -332,7 +339,11 @@ class GraphDocumentAssembler:
                         if extracted_claim.object_entity_id
                         else None
                     )
-                    claim_id = _build_claim_id(document_id, chunk.id, extracted_claim)
+                    claim_id = _build_claim_id(
+                        document_id, chunk.id, extracted_claim,
+                        _build_entity_uuid(graph_name, subject_key),
+                        _build_entity_uuid(graph_name, object_key) if object_key else None,
+                    )
                     claim_records.append(
                         ClaimRecord(
                             id=claim_id,
@@ -353,6 +364,9 @@ class GraphDocumentAssembler:
                             text_unit_id=extracted_claim.text_unit_id or chunk.id,
                         )
                     )
+
+        for key, relationship in relationships_by_key.items():
+            relationship.properties["description"] = "\n".join(relationship_descriptions.get(key, {}))
 
         # Consolidate descriptions into properties["description"]
         for entity in entities_by_id.values():
@@ -375,13 +389,19 @@ class GraphDocumentAssembler:
         )
 
 
-def _build_claim_id(document_id: str, chunk_id: str, claim: ExtractedClaim) -> str:
-    """Build a deterministic claim ID from document, chunk, and claim content."""
-    import hashlib
-
-    content = f"{claim.subject_entity_id}:{claim.claim_type}:{claim.description}"
-    short_hash = hashlib.sha256(content.encode()).hexdigest()[:12]
-    return f"claim:{document_id}:{chunk_id}:{short_hash}"
+def _build_claim_id(
+    document_id: str, chunk_id: str, claim: ExtractedClaim,
+    subject_id: str, object_id: str | None,
+) -> str:
+    """Identify the assertion; status and source excerpts remain mutable metadata."""
+    content = json.dumps({
+        "document_id": document_id, "chunk_id": chunk_id,
+        "subject_id": subject_id, "object_id": object_id,
+        "claim_type": claim.claim_type, "description": claim.description,
+        "start_date": claim.start_date, "end_date": claim.end_date,
+    }, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    digest = hashlib.sha256(content.encode()).hexdigest()
+    return f"claim:v2:{document_id}:{chunk_id}:{digest}"
 
 
 def _build_entity_uuid(graph_name: str, canonical_key: str) -> str:

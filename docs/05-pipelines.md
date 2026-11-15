@@ -393,6 +393,29 @@ extraction cost matters more than completeness.
 
 ### Claims extraction
 
+Claim-enabled builds require an adapter and deployed model that support strict JSON-schema output.
+The pipeline requests a `{"claims": [...]}` object through `response_format`.
+It does not retry with prompt-only extraction when the endpoint rejects the schema.
+Explicitly unsupported adapters fail before database writes.
+Custom adapters must accept `response_format` through the existing LLM invocation interface.
+
+The parser also rejects invalid description types and unknown entity references.
+An empty `claims` array is valid when the source supports no claims.
+Structured output enforces shape, not factual accuracy.
+Claim extraction remains disabled by default.
+
+Generated claim IDs use the `claim:v2:` format with a full SHA-256 digest.
+Identity includes persistent endpoints, claim type, description, dates, document, and chunk.
+Status and source excerpts remain mutable metadata.
+Different objects or dates therefore produce different assertions.
+Custom `ClaimRecord.id` values remain unchanged.
+The writer rejects incompatible assertions with one ID within a submitted document.
+
+Re-ingest each affected document to replace its old generated claim IDs.
+Document replacement removes the old claims owned by that document.
+Applications that retain generated claim IDs must refresh those references.
+A changed chunk ID still changes the generated claim ID.
+
 Set `extract_claims=True` on the build call to run a second LLM call per chunk
 that extracts claims, assertions, and covariates about the entities already
 found in that chunk:
@@ -434,7 +457,49 @@ Use stable `metadata["document_id"]` to identify updates explicitly. Otherwise t
 
 Description ownership (`description_sources`) and optional relationship strength ownership (`strength_sources`) are internal flat lists of JSON-encoded contribution records, compatible with both databases. Do not supply these fields. If legacy descriptions or strength have unknown ownership, the writer raises a migration diagnostic before writing. Identical text is not ownership evidence. Rebuild the affected documents/graph from their sources through the current writer; index creation alone cannot reconstruct ownership. Already mismerged identities also require rebuilding.
 
-Changed description inputs invalidate summaries and vectors. Removing an observation rebuilds raw text from the surviving contributions rather than retaining an obsolete summary. The embedding pass checks both input and provider/model fingerprints; changing a model refreshes vectors even when text is unchanged. Stale in-flight embedding results cannot certify newer input. Low-level vector writes without fingerprints remain supported but clear freshness certification and need a normal embedding pass before strict completion.
+Changed description inputs invalidate summaries and vectors.
+Changes to the entity name, type, or nonempty domain context also invalidate successful summaries.
+Omitted domain properties retain their stored values; explicit null removes a property.
+SDK bookkeeping changes do not invalidate summaries.
+The generic normalized-resolution dispatcher also forwards configured conflict properties.
+The pipeline continues to use the direct strategy methods.
+Entity resolution clears previous summary status after a merge.
+Relationship contributions retain each unique nonempty description from the document.
+Their counts, source chunks, frequency weights, and first-observation strength keep their existing meanings.
+
+Entity contributions use complete `description_observations`, not the assembler's 2,000-character preview.
+The writer validates observation ownership before database access.
+Records without observations still use their description property.
+Re-ingest or re-extract affected source documents to recover previously discarded text.
+Summary refresh alone cannot recover evidence that earlier writes discarded.
+
+Summary requests use bounded evidence batches when complete input exceeds the budget.
+A single oversized observation is split without discarding its remaining text.
+Intermediate summaries remain generated text; they never replace stored raw evidence.
+Every required batch must succeed before the item receives successful summary status.
+A failed batch retains raw evidence and uses the existing failed-item recovery path.
+Consolidation stops with an error when the budget prevents progress.
+Complete submission does not guarantee that the LLM repeats every fact.
+
+`DescriptionSummarizer` accepts these keyword-only accounting options:
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `summary_token_budget` | `8192` | Total accounting budget for each prompt and output reserve. |
+| `summary_output_tokens` | `1024` | Reserved output tokens and maximum accepted summary size. |
+| `token_counter` | `ApproximateTokenCounter()` | Counter used to partition and check requests. |
+
+The pipeline uses these defaults.
+For direct summary runs, select a counter appropriate for the deployed model.
+The default counter estimates tokens; it does not reproduce provider billing or message overhead.
+The prompt requests bounded output, and local validation rejects oversized or incomplete output.
+Configure provider-side output limits separately when required.
+If fixed context exceeds the budget, summarization fails without discarding evidence.
+
+Re-ingest previously affected documents to refresh summaries skipped by earlier versions.
+Direct database edits must clear summary status before regeneration.
+
+ Removing an observation rebuilds raw text from the surviving contributions rather than retaining an obsolete summary. The embedding pass checks both input and provider/model fingerprints; changing a model refreshes vectors even when text is unchanged. Stale in-flight embedding results cannot certify newer input. Low-level vector writes without fingerprints remain supported but clear freshness certification and need a normal embedding pass before strict completion.
 
 An entity keeps one identity across domain-type changes, so the type is a label and not part of the identity.
 The embedding text and the vector fingerprint use the recorded entity type, not the label order.
@@ -519,6 +584,19 @@ before it is written, but other documents in a multi-document build may already
 have been written.
 
 #### Embedding failures and recovery
+
+Each entity-embedding pass attempts a pending entity at most once.
+The store excludes attempted backend-native IDs before applying the batch limit.
+A failed first batch therefore does not block healthy entities later in the queue.
+Failed entities remain pending for the next pass.
+The no-progress guard still stops adapters that ignore exclusions.
+
+Custom graph stores must accept the keyword-only `exclude_ids` argument in `get_unembedded_entities`.
+Apply exclusions before the limit; do not use offset pagination over a changing pending set.
+Omitted exclusions retain the previous query behavior.
+Neo4j IDs are strings from `elementId(e)`; Memgraph IDs are integers from `id(e)`.
+Update custom adapters before using the new embedding pass.
+This intentional contract extension preserves result shapes and existing positional arguments.
 
 Entity embedding is best-effort by default: provider or vector-write errors are
 logged and the build continues. Set `fail_on_embedding_error=True` to require strict completion. You can also request strict completion directly.
