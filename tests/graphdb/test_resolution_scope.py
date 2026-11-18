@@ -1,13 +1,36 @@
 """Resolvers check incident graph ownership before either backend mutates data."""
 
+from contextlib import contextmanager
 from unittest.mock import MagicMock
 
-import pytest
+import pytest  # pyright: ignore[reportMissingImports]
 
 from recon_graphrag.graphdb._provenance import preflight_merge_ownership
 from recon_graphrag.graphdb.memgraph.entity_resolution import _MemgraphEntityResolver
 from recon_graphrag.graphdb.neo4j.entity_resolution import _Neo4jEntityResolver
 from tests.graphdb.test_resolution_provenance import group
+
+
+def _membership_rows(entities):
+    return [
+        {
+            "node_id": entity.node_id,
+            "props": {
+                **entity.properties,
+                "id": entity.entity_id,
+                "graph_name": entity.graph_name,
+            },
+        }
+        for entity in entities
+    ]
+
+
+def _install_transaction(store):
+    @contextmanager
+    def transaction():
+        yield store
+
+    store._transaction = transaction
 
 
 @pytest.mark.parametrize("resolver_type", [_Neo4jEntityResolver, _MemgraphEntityResolver])
@@ -34,9 +57,18 @@ def test_load_entities_prefers_recorded_type(resolver_type, recorded_type, expec
 ])
 def test_incident_scope_checked_before_mutation(resolver_type, edge_graph, target_graph, rel_type, source_labels, target_labels, allowed):
     store = MagicMock()
+    _install_transaction(store)
     row = {"source_graph": "g:1", "target_graph": target_graph, "scope_type": rel_type,
            "source_labels": source_labels, "target_labels": target_labels, "relationship_graph": edge_graph}
-    store.execute_query.side_effect = lambda query, params: [row] if "AS scope_type" in query else []
+
+    def execute(query, params):
+        if "RETURN id(n) AS node_id, properties(n) AS props" in query:
+            return _membership_rows(group())
+        if "AS scope_type" in query:
+            return [row]
+        return []
+
+    store.execute_query.side_effect = execute
     if allowed:
         preflight_merge_ownership(store, [group()], "id")
     else:
@@ -54,6 +86,7 @@ def test_all_groups_are_scope_checked_before_first_merge(resolver_type):
     for entity in second:
         entity.node_id += 10
     store = MagicMock()
+    _install_transaction(store)
 
     def execute(query, params):
         if "AS scope_type" in query and params["node_ids"] == [11, 12]:

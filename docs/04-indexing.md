@@ -43,7 +43,8 @@ You do not need to recreate them every time you ingest more text, unless you cha
 Before creating constraints, setup checks for duplicate `(graph_name, id)` records within each label. A failure names the label, graph, ID, and duplicate count. Resolve those duplicates or rebuild the affected graph, then rerun setup; it never auto-merges them. Once the preflight passes, missing UIDs are backfilled. Equivalent constraints are accepted; other constraint errors propagate.
 
 **Finish setup before starting concurrent graph building.** Two writes can match the same node or cause a database conflict.
-The constraints prevent duplicate committed identities; they do not order concurrent updates.
+The constraints prevent duplicate committed identities.
+The writer also locks affected entities before it reads shared state, so distinct documents serialize on shared identities.
 The built-in writer uses document transactions and retries selected conflicts. See [document replacement](05-pipelines.md#document-replacement-and-legacy-graphs) for its guarantees and retry limits.
 The same ID in different graphs remains independent.
 

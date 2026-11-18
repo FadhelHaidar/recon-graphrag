@@ -37,6 +37,8 @@ class StatefulFakeGraphStore:
     def __init__(self):
         self.queries: list[str] = []
         self.params: list[dict] = []
+        self.lock_batches: list[list[dict]] = []
+        self.lock_releases: list[list[str]] = []
         self._documents: dict[tuple[str, str], dict] = {}
         self._chunks: dict[tuple[str, str], dict] = {}
         self._entities: dict[tuple[str, str], dict] = {}
@@ -51,6 +53,10 @@ class StatefulFakeGraphStore:
         return self._dispatch(query, params)
 
     def _dispatch(self, query: str, params: dict):
+        if "UNWIND $rows AS row" in query and "__recon_write_lock" in query:
+            return self._write_entity_locks(params)
+        if "REMOVE e.__recon_write_lock" in query:
+            return self._release_entity_locks(params)
         if "UNWIND $documents AS row" in query:
             return self._write_documents(params["documents"])
         if "UNWIND $chunks AS row" in query:
@@ -101,6 +107,10 @@ class StatefulFakeGraphStore:
                     params["entity_ids"], params["graph_name"]
                 )
             return self._read_entities(params["entity_ids"], params["graph_name"])
+        if "evidence_entity:__Entity__" in query:
+            return self._read_prior_entity_ids(params)
+        if "RETURN DISTINCT s.id AS source_id, t.id AS target_id" in query:
+            return self._read_prior_relationship_endpoints(params)
         if "-[:FROM_CHUNK]->(e:__Entity__)" in query:
             return self._read_evidence(params)
         if "(cl:Claim" in query:
@@ -115,6 +125,66 @@ class StatefulFakeGraphStore:
         for row in rows:
             self._documents[(row["graph_name"], row["id"])] = dict(row)
         return []
+
+    def _write_entity_locks(self, params: dict) -> list:
+        rows = params["rows"]
+        self.lock_batches.append([dict(row) for row in rows])
+        locked = []
+        for row in rows:
+            key = (row["graph_name"], row["id"])
+            node = self._entities.get(key)
+            if node is None:
+                if not row["create"]:
+                    continue
+                node = {
+                    "id": row["id"],
+                    "graph_name": row["graph_name"],
+                    "uid": row.get("uid"),
+                    "created": params["now"],
+                }
+                self._entities[key] = node
+            node["__recon_write_lock"] = params["token"]
+            locked.append(row["id"])
+        return [{"locked": locked, "requested": len(rows)}]
+
+    def _release_entity_locks(self, params: dict) -> list:
+        self.lock_releases.append(list(params["ids"]))
+        for entity_id in params["ids"]:
+            node = self._entities.get((params["graph_name"], entity_id))
+            if node is not None and node.get("__recon_write_lock") == params["token"]:
+                node.pop("__recon_write_lock", None)
+        return []
+
+    def _read_prior_entity_ids(self, params: dict) -> list[dict]:
+        chunk_ids = set(params["chunk_ids"])
+        rows: list[dict] = []
+        for graph_name, chunk_id, entity_id in sorted(self._evidence):
+            if graph_name == params["graph_name"] and chunk_id in chunk_ids:
+                rows.append({"evidence_id": entity_id, "claim_id": None})
+        for claim in self._claims.values():
+            if (
+                claim["graph_name"] == params["graph_name"]
+                and claim["chunk_id"] in chunk_ids
+            ):
+                rows.append(
+                    {"evidence_id": None, "claim_id": claim.get("entity_id")}
+                )
+        return rows
+
+    def _read_prior_relationship_endpoints(self, params: dict) -> list[dict]:
+        wanted = set(params["relationship_ids"])
+        chunk_ids = set(params["chunk_ids"])
+        endpoints: set[tuple[str, str]] = set()
+        for (graph_name, source, target, _), rel in self._relationships.items():
+            if graph_name != params["graph_name"]:
+                continue
+            owned_chunks = set(rel.get("source_chunk_ids") or [])
+            if rel.get("id") in wanted or chunk_ids & owned_chunks:
+                endpoints.add((source, target))
+        return [
+            {"source_id": source, "target_id": target}
+            for source, target in sorted(endpoints)
+        ]
 
     def _write_chunks(self, rows: list[dict]) -> list:
         for row in rows:

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
+import pytest  # pyright: ignore[reportMissingImports]
 
 from recon_graphrag.graphdb.memgraph.entity_resolution import (
     _EntityRecord,
@@ -13,12 +14,57 @@ from recon_graphrag.graphdb.memgraph.entity_resolution import (
 )
 
 
-class FakeGraphStore:
-    def __init__(self, rows=None):
-        self.queries: list[tuple[str, dict]] = []
-        self._rows = rows or []
+class FakeTransaction:
+    def __init__(self, store: FakeGraphStore):
+        self._store = store
+        self.committed = False
+        self.rolled_back = False
+
+    def run(self, query: str, parameters: dict | None = None):
+        return self._store.execute_query(query, parameters)
+
+    def commit(self) -> None:
+        self.committed = True
+
+    def rollback(self) -> None:
+        self.rolled_back = True
+
+
+class FakeTransactionExecutor:
+    def __init__(self, transaction: FakeTransaction):
+        self._transaction = transaction
 
     def execute_query(self, query: str, parameters: dict | None = None):
+        return self._transaction.run(query, parameters)
+
+
+class FakeGraphStore:
+    def __init__(self, rows=None, node_props=None):
+        self.queries: list[tuple[str, dict]] = []
+        self._rows = rows or []
+        self.node_props = dict(node_props or {})
+        self.transactions: list[FakeTransaction] = []
+        self._active_transaction: FakeTransaction | None = None
+
+    @contextmanager
+    def _transaction(self):
+        transaction = FakeTransaction(self)
+        self.transactions.append(transaction)
+        self._active_transaction = transaction
+        try:
+            yield FakeTransactionExecutor(transaction)
+        except BaseException:
+            transaction.rolled_back = True
+            raise
+        else:
+            transaction.committed = True
+        finally:
+            self._active_transaction = None
+
+    def execute_query(self, query: str, parameters: dict | None = None):
+        return self._execute(query, parameters)
+
+    def _execute(self, query: str, parameters: dict | None = None):
         params = parameters or {}
         self.queries.append((query.strip(), params))
 
@@ -35,30 +81,37 @@ class FakeGraphStore:
             return [{"rel_type": "ACTED_IN", "node_id": 2}]
 
         if "RETURN id(n) AS node_id, properties(n) AS props" in query:
+            node_ids = params.get("node_ids", [])
+            if self.node_props:
+                return [
+                    {"node_id": node_id, "props": dict(self.node_props[node_id])}
+                    for node_id in node_ids
+                    if node_id in self.node_props
+                ]
             return [
                 {
-                    "node_id": 1,
+                    "node_id": row.get("node_id"),
                     "props": {
-                        "name": "Christopher Nolan",
-                        "aliases": ["C. Nolan"],
-                        "source": "a",
+                        **(row.get("properties") or {}),
+                        "id": row.get("entity_id"),
+                        "graph_name": row.get("graph_name"),
                     },
-                },
-                {
-                    "node_id": 2,
-                    "props": {
-                        "name": "Chris Nolan",
-                        "aliases": ["Nolan"],
-                        "source": "b",
-                    },
-                },
+                }
+                for row in self._rows
+                if row.get("node_id") in node_ids
             ]
+
+        if "RETURN count(*) AS deleted" in query:
+            return [{"deleted": len(params.get("other_ids", []))}]
 
         return [{"merged_id": 1}]
 
 
 def test_combine_properties_combines_conflicts_and_aliases():
-    resolver = _MemgraphEntityResolver(FakeGraphStore())
+    resolver = _MemgraphEntityResolver(FakeGraphStore(node_props={
+        1: {"name": "Christopher Nolan", "aliases": ["C. Nolan"], "source": "a"},
+        2: {"name": "Chris Nolan", "aliases": ["Nolan"], "source": "b"},
+    }))
 
     props = resolver._combine_properties([1, 2])
 
@@ -83,7 +136,22 @@ def test_rewire_relationships_uses_merge_and_self_loop_guards():
 
 
 def test_merge_groups_reports_neo4j_like_processed_node_count():
-    store = FakeGraphStore()
+    store = FakeGraphStore(node_props={
+        1: {
+            "id": "person-1",
+            "graph_name": "entity-graph",
+            "name": "Christopher Nolan",
+            "aliases": ["C. Nolan"],
+            "source": "a",
+        },
+        2: {
+            "id": "person-2",
+            "graph_name": "entity-graph",
+            "name": "Chris Nolan",
+            "aliases": ["Nolan"],
+            "source": "b",
+        },
+    })
     resolver = _MemgraphEntityResolver(store)
     group = [
         _EntityRecord(1, "person-1", "entity-graph", "Person", "Christopher Nolan", "christophernolan"),
@@ -93,6 +161,8 @@ def test_merge_groups_reports_neo4j_like_processed_node_count():
     merged_nodes = resolver._merge_groups([group], "name")
 
     assert merged_nodes == 2
+    assert len(store.transactions) == 1
+    assert store.transactions[0].committed is True
     props = next(params["props"] for query, params in store.queries if "SET n += $props" in query)
     assert props["name"] == "Christopher Nolan"
     assert props["aliases"] == ["C. Nolan", "Nolan", "Chris Nolan"]
@@ -359,7 +429,7 @@ async def test_memgraph_resolver_hybrid_auto_merges_llm_approved_review():
             "graph_name": "g1",
             "resolve_value": "John Smith",
             "labels": ["__Entity__", "Person"],
-            "properties": {},
+            "properties": {"id": "e1", "graph_name": "g1"},
         },
         {
             "node_id": 2,
@@ -367,7 +437,7 @@ async def test_memgraph_resolver_hybrid_auto_merges_llm_approved_review():
             "graph_name": "g1",
             "resolve_value": "Jon Smith",
             "labels": ["__Entity__", "Person"],
-            "properties": {},
+            "properties": {"id": "e2", "graph_name": "g1"},
         },
     ]
     llm = MagicMock()

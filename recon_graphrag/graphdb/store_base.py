@@ -11,20 +11,48 @@ from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from typing import Any, LiteralString, Protocol, cast
 
+from recon_graphrag.graphdb.cypher import escape_cypher_identifier
 from recon_graphrag.models.artifacts import (
     CommunityReport,
     report_to_json,
     report_to_text,
 )
-from recon_graphrag.graphdb.cypher import escape_cypher_identifier
+
+# A failed write runs in its own transaction, so a deadlock or serialization
+# abort rolls back cleanly and the same write can be retried. Bounded, because
+# a persistent abort must surface.
+WRITE_RETRY_ATTEMPTS = 3
+WRITE_RETRY_DELAY_SECONDS = 0.05
+
+
+def is_retryable_write_error(error: BaseException) -> bool:
+    """Return True for an abort where retrying the same write can succeed.
+
+    A unique-constraint failure on ``uid`` is included: two concurrent writers
+    MERGE the same entity that does not exist yet, both create it, and the
+    loser's rollback leaves the winner's node in place for the retry to match.
+    """
+    code = str(getattr(error, "code", "") or "")
+    if "DeadlockDetected" in code or "SerializationError" in code:
+        return True
+    if "ConstraintValidationFailed" in code:
+        return True
+    if "unique constraint violation" in str(error).lower():
+        return True
+    return type(error).__name__ in {
+        "DeadlockDetected",
+        "TransientError",
+        "SerializationError",
+        "TransientTransactionError",
+    }
 
 
 class TransactionExecutor:
     """Run ``execute_query`` on one open driver transaction.
 
-    The writer only needs ``execute_query``, so this can stand in for the store
-    for the duration of one document write; the owning ``_transaction`` context
-    commits or rolls it back.
+    The writer and entity resolver only need ``execute_query``, so this can
+    stand in for the store for the duration of one transaction; the owning
+    ``_transaction`` context commits or rolls it back.
     """
 
     def __init__(self, transaction) -> None:

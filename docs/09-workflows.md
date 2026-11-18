@@ -445,7 +445,10 @@ SDK-owned keys rejected in every map: `id`, `graph_name`, `created`, `updated`,
 `description_summary_updated`, `description_summary_error`,
 `description_summary_fallback`, `description_sources`, `strength_sources`,
 `embedding_input_fingerprint`, `embedding_content_fingerprint`,
-`embedding_model_fingerprint`, `uid`.
+`embedding_model_fingerprint`, `uid`, `__recon_write_lock`.
+
+`__recon_write_lock` is a transient writer lock. The writer removes it before
+commit, and a rollback removes it automatically.
 
 Rejected on top of those:
 
@@ -491,8 +494,11 @@ This guarantee applies to reserved-key rejection for one artifact only.
 If a later document is rejected, earlier artifacts remain written.
 A custom store without the `_transaction` hook can still leave partial writes. Built-in Neo4j and Memgraph stores write one
 document inside one transaction, so a failure inside a single document write
-rolls that document back. Extraction may already have incurred provider costs
-before validation; a high-level retry may repeat that work.
+rolls that document back. A custom store with the `_transaction` hook must run
+the writer's entity-lock queries and report the locked identities. The writer
+fails the document write after bounded retries when it cannot verify that lock
+set. Extraction may already have incurred provider costs before validation; a
+high-level retry may repeat that work.
 
 ### Implement a custom GraphStore
 
@@ -662,6 +668,9 @@ The returned dictionary includes `merged_groups`, `merged_nodes`,
 `candidate_groups`, `review_groups`, `ai_merged_review_groups`, and `signals`.
 In a dry run, `merged_groups` reports groups that would be merged, while
 `merged_nodes` stays `0` because no write occurs.
+On Memgraph, `merged_nodes` counts nodes from committed merge groups only.
+A skipped stale group adds no count. A failure rolls back its complete group.
+Concurrent entity resolution on the same graph is not covered.
 
 ### How this relates to pipeline deduplication
 
@@ -687,6 +696,10 @@ Backend notes:
 - Neo4j non-dry-run merges require APOC. If APOC is unavailable, the resolver
   returns a skipped result instead of failing the whole build.
 - Memgraph uses its own merge implementation and does not require APOC.
+- Memgraph runs one transaction per merge group. It re-reads membership and ownership on each attempt.
+  Before the first merge, it checks every group for foreign or unscoped incident relationships.
+  That preflight does not make the complete run atomic; a later group failure does not roll back earlier groups.
+  A store without `_transaction()` support fails before mutation.
 - `graph_name` matters. Resolution only compares entities inside the requested
   graph.
 

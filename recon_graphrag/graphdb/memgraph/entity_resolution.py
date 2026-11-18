@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+import time
+from copy import copy
+from dataclasses import replace
+
 from recon_graphrag.entity_text import entity_domain_type
 from recon_graphrag.graphdb._provenance import (
     build_uid,
@@ -9,13 +14,24 @@ from recon_graphrag.graphdb._provenance import (
     property_list,
     raw_descriptions,
 )
+from recon_graphrag.graphdb.cypher import escape_cypher_identifier
 from recon_graphrag.graphdb.entity_resolution import (
     BaseEntityResolver,
     _EntityRecord,
     _first_property_value,
     _normalize_name,
 )
-from recon_graphrag.graphdb.cypher import escape_cypher_identifier
+from recon_graphrag.graphdb.store_base import (
+    WRITE_RETRY_ATTEMPTS as _MERGE_RETRY_ATTEMPTS,
+)
+from recon_graphrag.graphdb.store_base import (
+    WRITE_RETRY_DELAY_SECONDS as _MERGE_RETRY_DELAY_SECONDS,
+)
+from recon_graphrag.graphdb.store_base import (
+    is_retryable_write_error as _is_retryable_write_error,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class _MemgraphEntityResolver(BaseEntityResolver):
@@ -63,7 +79,18 @@ class _MemgraphEntityResolver(BaseEntityResolver):
     def _merge_groups(
         self, groups: list[list[_EntityRecord]], resolve_property: str
     ) -> int:
+        transaction = getattr(self.graph_store, "_transaction", None)
+        if not callable(transaction):
+            raise RuntimeError(  # noqa: TRY004 - missing store capability
+                "Entity merging requires a store with _transaction() support; "
+                "no nodes were merged."
+            )
+
+        # Check every group against the current ownership rules before the
+        # first group writes. Each attempt still rechecks its own group, but
+        # this preflight does not make the complete run atomic.
         preflight_merge_ownership(self.graph_store, groups, "id")
+
         merged_nodes = 0
         for group in groups:
             sorted_group = sorted(
@@ -71,108 +98,252 @@ class _MemgraphEntityResolver(BaseEntityResolver):
                 key=lambda e: len(e.resolve_value) if e.resolve_value else 0,
                 reverse=True,
             )
-            node_ids = [e.node_id for e in sorted_group]
-            canonical_entity_id = sorted_group[0].entity_id if sorted_group else ""
-            canonical_key = _first_property_value(
-                sorted_group[0].properties.get("canonical_key")
-                if sorted_group
-                else None
-            )
-            canonical_readable_id = _first_property_value(
-                sorted_group[0].properties.get("human_readable_id")
-                if sorted_group
-                else None
-            )
-            canonical_name = sorted_group[0].resolve_value if sorted_group else ""
-            aliases = list(
-                {
-                    e.resolve_value
-                    for e in group
-                    if e.resolve_value and e.resolve_value != canonical_name
-                }
-            )
-
-            canonical_id = node_ids[0]
-            other_ids = node_ids[1:]
-            if not other_ids:
+            if len(sorted_group) < 2:
                 continue
-
-            combined_props = self._combine_properties(node_ids)
-            combined_props["id"] = canonical_entity_id
-            combined_props["graph_name"] = sorted_group[0].graph_name
-            combined_props["uid"] = build_uid(sorted_group[0].graph_name, canonical_entity_id)
-            combined_props["description_sources"] = property_list(combined_props.get("description_sources"))
-            # Drop any (now-stale, possibly corrupted) merged embedding so the
-            # embedding step re-embeds the merged node from its consolidated
-            # description. SET n += {embedding: null} removes the property.
-            combined_props["embedding"] = None
-            combined_props["embedding_input_fingerprint"] = None
-            if canonical_key:
-                combined_props["canonical_key"] = canonical_key
-            if canonical_readable_id:
-                combined_props["human_readable_id"] = canonical_readable_id
-            combined_props[resolve_property] = canonical_name
-            summary = self._merge_summaries.get(canonical_entity_id)
-            if summary:
-                combined_props.update(summary)
-                combined_props["descriptions"] = list(dict.fromkeys(
-                    text for entity in sorted_group
-                    for text in raw_descriptions(entity.properties)
-                    if text
-                ))
-                combined_props["observation_count"] = len(combined_props["descriptions"])
-            combined_props.update({
-                "description_summary_status": None,
-                "description_input_fingerprint": None,
-                "description_summary_error": None,
-                "description_summary_updated": None,
-            })
-            if aliases:
-                existing_aliases = combined_props.get("aliases", [])
-                if not isinstance(existing_aliases, list):
-                    existing_aliases = [existing_aliases]
-                combined_props["aliases"] = list(
-                    dict.fromkeys(existing_aliases + aliases)
-                )
-
-            self.graph_store.execute_query(
-                """
-                MATCH (n)
-                WHERE id(n) = $canonical_id
-                SET n += $props
-                RETURN id(n) AS merged_id
-                """,
-                {"canonical_id": canonical_id, "props": combined_props},
-            )
-
-            self._rewire_relationships(canonical_id, other_ids)
-
-            # Claim objects are scalar IDs, not relationships rewired above.
-            self.graph_store.execute_query(
-                """
-                MATCH (c:Claim {graph_name: $graph_name})
-                WHERE c.object_entity_id IN $losing_entity_ids
-                SET c.object_entity_id = $canonical_entity_id
-                """,
-                {
-                    "graph_name": sorted_group[0].graph_name,
-                    "losing_entity_ids": [e.entity_id for e in sorted_group[1:]],
-                    "canonical_entity_id": canonical_entity_id,
-                },
-            )
-
-            self.graph_store.execute_query(
-                """
-                MATCH (n)
-                WHERE id(n) IN $other_ids
-                DELETE n
-                """,
-                {"other_ids": other_ids},
-            )
-
-            merged_nodes += len(node_ids)
+            if self._merge_group(sorted_group, resolve_property, transaction):
+                merged_nodes += len(sorted_group)
 
         return merged_nodes
+
+    def _merge_group(
+        self,
+        group: list[_EntityRecord],
+        resolve_property: str,
+        transaction,
+    ) -> bool:
+        """Merge one group, re-reading state in each fresh transaction attempt."""
+        for attempt in range(1, _MERGE_RETRY_ATTEMPTS + 1):
+            try:
+                with transaction() as executor:
+                    scoped = copy(self)
+                    scoped.graph_store = executor
+                    merged = scoped._merge_group_once(group, resolve_property)
+                return merged
+            except Exception as error:
+                if (
+                    not _is_retryable_write_error(error)
+                    or attempt == _MERGE_RETRY_ATTEMPTS
+                ):
+                    raise
+                logger.warning(
+                    "merge group rolled back: graph_name=%s "
+                    "canonical_entity_id=%s attempt=%s/%s error=%s: %s",
+                    group[0].graph_name,
+                    group[0].entity_id,
+                    attempt,
+                    _MERGE_RETRY_ATTEMPTS,
+                    type(error).__name__,
+                    error,
+                )
+                time.sleep(_MERGE_RETRY_DELAY_SECONDS * attempt)
+        raise AssertionError("unreachable: retry loop exhausted without raising")
+
+    def _merge_group_once(
+        self, group: list[_EntityRecord], resolve_property: str
+    ) -> bool:
+        """Merge one group inside an open transaction, or skip it when stale."""
+        node_ids = [entity.node_id for entity in group]
+        rows = self.graph_store.execute_query(
+            """
+            MATCH (n:__Entity__)
+            WHERE id(n) IN $node_ids AND n.graph_name = $graph_name
+            RETURN id(n) AS node_id, properties(n) AS props
+            """,
+            {"node_ids": node_ids, "graph_name": group[0].graph_name},
+        )
+        fresh_group = self._fresh_group(group, rows, resolve_property)
+        if fresh_group is None:
+            return False
+
+        # Run the ownership preflight on the fresh transaction state, before
+        # any mutation. A retry repeats this read and the preflight.
+        preflight_merge_ownership(self.graph_store, [fresh_group], "id")
+
+        self._merge_group_records(fresh_group, resolve_property)
+        return True
+
+    def _fresh_group(
+        self,
+        group: list[_EntityRecord],
+        rows: list[dict],
+        resolve_property: str,
+    ) -> list[_EntityRecord] | None:
+        expected = {entity.node_id: entity for entity in group}
+        rows_by_id = {
+            row.get("node_id"): row.get("props") or {}
+            for row in rows
+        }
+        missing = sorted(set(expected) - set(rows_by_id), key=str)
+        if missing:
+            logger.warning(
+                "skipping stale merge group: graph_name=%s "
+                "canonical_entity_id=%s missing_node_ids=%s",
+                group[0].graph_name,
+                group[0].entity_id,
+                missing,
+            )
+            return None
+        unexpected = sorted(set(rows_by_id) - set(expected), key=str)
+        if unexpected:
+            logger.warning(
+                "skipping stale merge group: graph_name=%s "
+                "canonical_entity_id=%s unexpected_node_ids=%s",
+                group[0].graph_name,
+                group[0].entity_id,
+                unexpected,
+            )
+            return None
+
+        fresh_group = []
+        for entity in group:
+            props = rows_by_id[entity.node_id]
+            if (
+                props.get("id") != entity.entity_id
+                or props.get("graph_name") != entity.graph_name
+            ):
+                logger.warning(
+                    "skipping stale merge group: graph_name=%s "
+                    "canonical_entity_id=%s node_id=%s",
+                    group[0].graph_name,
+                    group[0].entity_id,
+                    entity.node_id,
+                )
+                return None
+            resolve_value = _first_property_value(props.get(resolve_property))
+            resolve_value = "" if resolve_value is None else str(resolve_value)
+            fresh_group.append(
+                replace(
+                    entity,
+                    resolve_value=resolve_value,
+                    normalized_value=_normalize_name(resolve_value),
+                    properties=props,
+                )
+            )
+        return fresh_group
+
+    def _merge_group_records(
+        self, sorted_group: list[_EntityRecord], resolve_property: str
+    ) -> None:
+        node_ids = [e.node_id for e in sorted_group]
+        canonical = sorted_group[0]
+        canonical_entity_id = canonical.entity_id
+        canonical_key = _first_property_value(
+            canonical.properties.get("canonical_key")
+        )
+        canonical_readable_id = _first_property_value(
+            canonical.properties.get("human_readable_id")
+        )
+        canonical_name = canonical.resolve_value
+        aliases = list(
+            {
+                e.resolve_value
+                for e in sorted_group
+                if e.resolve_value and e.resolve_value != canonical_name
+            }
+        )
+
+        canonical_id = node_ids[0]
+        other_ids = node_ids[1:]
+        if not other_ids:
+            return
+
+        combined_props = self._combine_property_rows(
+            [entity.properties for entity in sorted_group]
+        )
+        combined_props["id"] = canonical_entity_id
+        combined_props["graph_name"] = canonical.graph_name
+        combined_props["uid"] = build_uid(canonical.graph_name, canonical_entity_id)
+        combined_props["description_sources"] = property_list(combined_props.get("description_sources"))
+        # Drop any (now-stale, possibly corrupted) merged embedding so the
+        # embedding step re-embeds the merged node from its consolidated
+        # description. SET n += {embedding: null} removes the property.
+        combined_props["embedding"] = None
+        combined_props["embedding_input_fingerprint"] = None
+        if canonical_key:
+            combined_props["canonical_key"] = canonical_key
+        if canonical_readable_id:
+            combined_props["human_readable_id"] = canonical_readable_id
+        combined_props[resolve_property] = canonical_name
+        summary = self._merge_summaries.get(canonical_entity_id)
+        if summary:
+            combined_props.update(summary)
+            combined_props["descriptions"] = list(dict.fromkeys(
+                text for entity in sorted_group
+                for text in raw_descriptions(entity.properties)
+                if text
+            ))
+            combined_props["observation_count"] = len(combined_props["descriptions"])
+        combined_props.update({
+            "description_summary_status": None,
+            "description_input_fingerprint": None,
+            "description_summary_error": None,
+            "description_summary_updated": None,
+        })
+        if aliases:
+            existing_aliases = combined_props.get("aliases", [])
+            if not isinstance(existing_aliases, list):
+                existing_aliases = [existing_aliases]
+            combined_props["aliases"] = list(
+                dict.fromkeys(existing_aliases + aliases)
+            )
+
+        written = self.graph_store.execute_query(
+            """
+            MATCH (n)
+            WHERE id(n) = $canonical_id
+            SET n += $props
+            RETURN id(n) AS merged_id
+            """,
+            {"canonical_id": canonical_id, "props": combined_props},
+        )
+        if len(written) != 1:
+            raise RuntimeError(
+                "Merge invariant violated: canonical entity "
+                f"{canonical_entity_id!r} in graph {canonical.graph_name!r} "
+                "was not updated; the merge group is stale."
+            )
+
+        self._rewire_relationships(canonical_id, other_ids)
+
+        # Claim objects are scalar IDs, not relationships rewired above.
+        # Keep the retarget before the loser delete; the delete removes only
+        # entity nodes and does not touch Claim nodes.
+        self.graph_store.execute_query(
+            """
+            MATCH (c:Claim {graph_name: $graph_name})
+            WHERE c.object_entity_id IN $losing_entity_ids
+            SET c.object_entity_id = $canonical_entity_id
+            """,
+            {
+                "graph_name": canonical.graph_name,
+                "losing_entity_ids": [e.entity_id for e in sorted_group[1:]],
+                "canonical_entity_id": canonical_entity_id,
+            },
+        )
+
+        self._delete_losers(canonical.graph_name, other_ids)
+
+    def _delete_losers(self, graph_name: str, other_ids: list[int]) -> None:
+        rows = self.graph_store.execute_query(
+            """
+            MATCH (n)
+            WHERE id(n) IN $other_ids
+            OPTIONAL MATCH (n)-[r]-()
+            WITH n, count(r) AS degree
+            WHERE degree = 0
+            DELETE n
+            RETURN count(*) AS deleted
+            """,
+            {"other_ids": other_ids},
+        )
+        deleted = rows[0].get("deleted", 0) if rows else 0
+        if deleted != len(other_ids):
+            raise RuntimeError(
+                "Merge invariant violated: expected to delete "
+                f"{len(other_ids)} merged entities in graph {graph_name!r}, "
+                f"deleted {deleted}; concurrent writes or residual "
+                "relationships were detected."
+            )
 
     def _combine_properties(self, node_ids: list[int]) -> dict:
         # Union semantics matching Neo4j apoc.refactor.mergeNodes({properties:'combine'}):
@@ -186,12 +357,17 @@ class _MemgraphEntityResolver(BaseEntityResolver):
             """,
             {"node_ids": node_ids},
         )
+        return self._combine_property_rows(
+            [row.get("props", {}) or {} for row in rows]
+        )
+
+    @staticmethod
+    def _combine_property_rows(rows: list[dict]) -> dict:
         combined: dict = {}
-        for row in rows:
-            props = row.get("props", {}) or {}
+        for props in rows:
             for key, value in props.items():
                 if key not in combined:
-                    combined[key] = value
+                    combined[key] = list(value) if isinstance(value, list) else value
                 elif isinstance(combined[key], list) and isinstance(value, list):
                     for v in value:
                         if v not in combined[key]:

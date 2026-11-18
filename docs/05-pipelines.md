@@ -464,6 +464,20 @@ SDK bookkeeping changes do not invalidate summaries.
 The generic normalized-resolution dispatcher also forwards configured conflict properties.
 The pipeline continues to use the direct strategy methods.
 Entity resolution clears previous summary status after a merge.
+On Memgraph, each merge group runs in one database transaction.
+If a statement in the group fails, the transaction rolls back the complete group.
+Before the first merge, the resolver checks every group for foreign or unscoped incident relationships.
+That preflight does not make the complete resolution run atomic: a later group failure does not roll back earlier committed groups.
+The resolver re-reads current membership and ownership in each attempt.
+A group with a missing member or a changed entity identity is skipped.
+A skipped group contributes no merged nodes.
+`merged_nodes` counts only nodes from a committed group.
+The resolver retries deadlock, serialization, or unique-constraint aborts up to 3 times, with the writer policy.
+It does not retry validation failures or merge invariant failures.
+A residual relationship stops the plain `DELETE` and fails the group.
+Memgraph entity resolution requires a store with `_transaction()` support.
+A custom store without this hook fails before mutation; it does not use auto-commit.
+Neo4j merge behavior is unchanged.
 Relationship contributions retain each unique nonempty description from the document.
 Their counts, source chunks, frequency weights, and first-observation strength keep their existing meanings.
 
@@ -513,19 +527,37 @@ The writer commits after the last write. If a statement fails, it rolls back the
 The transaction covers only the document write. Chunking, extraction, summarization, and embedding run outside it.
 A failure later in the build leaves the written document in place.
 
+Before the writer reads shared contribution state, it locks each affected `__Entity__` identity.
+One sorted batch acquires the complete lock set.
+The lock is a transient, SDK-owned property.
+The writer removes it before commit, and a rollback removes it automatically.
+Writers that share an entity or a relationship endpoint therefore serialize on that identity.
+Writers of documents with disjoint entities can still write in parallel.
+The lock covers built-in Neo4j and Memgraph stores after `create_indexes()` installs identity constraints.
+It covers distinct document IDs only.
+Concurrent writes of one document ID are unsupported.
+Concurrent entity resolution on the same graph is also unsupported.
+The lock cannot remap an entity ID that resolution merged or deleted.
+Under heavy contention, the bounded retries can still surface a conflict to the caller.
+The lock does not guarantee success.
+
 Concurrent writes of different documents have no defined order and can cause each other to abort.
-The writer retries deadlock or serialization aborts and shared-entity uniqueness failures up to 3 times, with a short delay.
+The writer retries deadlock or serialization aborts, lock closure conflicts, and shared-entity uniqueness failures up to 3 times, with a short delay.
 Retries reuse the same extracted document. Rollback removes partial changes, so retries do not duplicate them.
 After a uniqueness conflict, a retry can match the node that the other writer committed.
+A retry also reads the state and rebuilds all rows from scratch.
 If all retries fail, the error reaches the caller without changes from that document transaction.
 The writer does not automatically retry other failures.
 
 Stores without the transaction hook use auto-commit writes. These custom stores and test doubles retain partial-write risk and receive no retries.
 Custom writers must define their own guarantees.
+The concurrency guarantees cover writes of different documents on built-in stores.
+They do not cover concurrent writes of the same document.
+They also do not cover a write that overlaps entity resolution on the same graph.
 
 `write_stats` gives database-confirmed write counts for each record kind, not submitted input counts.
 Before writing, the writer checks references to relationship endpoints, evidence entities, and claim entities or chunks.
-A missing entity reference raises `ValueError` before the first write, unless the graph already stores the entity.
+A missing entity reference raises `ValueError` before the first document record write, unless the graph already stores the entity.
 A chunk reference must name a chunk in the submitted document version. Replacement removes chunks that the version omits.
 The writer requires both endpoints before writing a relationship.
 

@@ -30,6 +30,7 @@ from collections import Counter, defaultdict
 from copy import copy
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import uuid4
 
 from recon_graphrag.description_text import entity_summary_fingerprint
 from recon_graphrag.entity_text import entity_embedding_fingerprint, text_fingerprint
@@ -44,14 +45,21 @@ from recon_graphrag.graphdb._provenance import (
 )
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.cypher import escape_cypher_identifier
+from recon_graphrag.graphdb.store_base import (
+    WRITE_RETRY_ATTEMPTS as _WRITE_RETRY_ATTEMPTS,
+)
+from recon_graphrag.graphdb.store_base import (
+    WRITE_RETRY_DELAY_SECONDS as _WRITE_RETRY_DELAY_SECONDS,
+)
+from recon_graphrag.graphdb.store_base import (
+    is_retryable_write_error,
+)
 
 logger = logging.getLogger(__name__)
 
-# A document write runs in one transaction, so a deadlock or serialization
-# abort rolls back cleanly and the same in-memory GraphDocument can be retried
-# without new entity ids. Bounded, because a persistent abort must surface.
-_WRITE_RETRY_ATTEMPTS = 3
-_WRITE_RETRY_DELAY_SECONDS = 0.05
+# A transient, SDK-owned marker that serializes writers which share an entity.
+# The writer removes it before commit, and a rollback removes it automatically.
+_WRITE_LOCK_PROPERTY = "__recon_write_lock"
 
 # Properties the writer's own Cypher sets. A free-form metadata/property map
 # that carries one would overwrite SDK-owned graph state after MERGE.
@@ -69,6 +77,7 @@ _SDK_OWNED_KEYS = frozenset(
         "description_summary_fallback",
         "description_sources",
         "strength_sources",
+        "__recon_write_lock",
         "embedding_input_fingerprint",
         "embedding_content_fingerprint",
         "embedding_model_fingerprint",
@@ -94,6 +103,19 @@ class _DocumentState:
     claims: list[dict] = field(default_factory=list)
     relationships: list[dict] = field(default_factory=list)
     entities: dict[str, dict] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _EntityLock:
+    """One transaction's set of locked entity identities."""
+
+    graph_name: str
+    token: str
+    ids: tuple[str, ...]
+
+
+class _LockClosureConflict(Exception):
+    """The post-lock state names an entity that this attempt did not lock."""
 
 
 def _description_entries(value: Any) -> list[list[str]]:
@@ -136,25 +158,8 @@ def _joined(descriptions: list[str]) -> str:
 
 
 def _is_retryable_write_error(error: BaseException) -> bool:
-    """True for an abort where retrying the same document can succeed.
-
-    A unique-constraint failure on ``uid`` is included: two concurrent writers
-    MERGE the same entity that does not exist yet, both create it, and the
-    loser's rollback leaves the winner's node in place for the retry to match.
-    """
-    code = str(getattr(error, "code", "") or "")
-    if "DeadlockDetected" in code or "SerializationError" in code:
-        return True
-    if "ConstraintValidationFailed" in code:
-        return True
-    if "unique constraint violation" in str(error).lower():
-        return True
-    return type(error).__name__ in {
-        "DeadlockDetected",
-        "TransientError",
-        "SerializationError",
-        "TransientTransactionError",
-    }
+    """Return whether a fresh document transaction can resolve the conflict."""
+    return isinstance(error, _LockClosureConflict) or is_retryable_write_error(error)
 
 
 class CypherGraphWriter:
@@ -174,7 +179,9 @@ class CypherGraphWriter:
                 with transaction() as executor:
                     scoped = copy(self)
                     scoped.graph_store = executor
-                    return scoped._write_document(graph_document)
+                    return scoped._write_document(
+                        graph_document, synchronized=True
+                    )
             except Exception as error:
                 retryable = _is_retryable_write_error(error)
                 if not retryable or attempt == _WRITE_RETRY_ATTEMPTS:
@@ -190,12 +197,29 @@ class CypherGraphWriter:
                 time.sleep(_WRITE_RETRY_DELAY_SECONDS * attempt)
         raise AssertionError("unreachable: retry loop exhausted without raising")
 
-    def _write_document(self, graph_document: GraphDocument) -> dict[str, int]:
+    def _write_document(
+        self,
+        graph_document: GraphDocument,
+        *,
+        synchronized: bool = False,
+    ) -> dict[str, int]:
         self._reject_reserved_keys(graph_document)
         self._validate_document_scope(graph_document)
         self._validate_incoming_relationship_ids(graph_document)
         self._validate_incoming_claim_ids(graph_document)
+        # Lock every shared identity before the state that rebuilds shared
+        # contributions is read. The auto-commit path keeps its weaker
+        # contract, because a lock there is released before the write.
+        entity_lock = (
+            self._lock_entity_identities(graph_document)
+            if synchronized
+            else None
+        )
         state = self._read_document_state(graph_document)
+        if entity_lock is not None:
+            self._assert_entity_lock_closure(
+                graph_document, state, entity_lock
+            )
         self._reject_reference_entity_ambiguity(graph_document, state)
         targets = self._read_relationship_targets(graph_document)
         self._reject_duplicate_relationship_identities(
@@ -238,6 +262,9 @@ class CypherGraphWriter:
             rebuild_entities,
         )
 
+        if entity_lock is not None:
+            self._release_entity_locks(entity_lock)
+
         # A receipt of what the database confirmed, not of what was submitted.
         return {
             "documents": documents,
@@ -247,6 +274,256 @@ class CypherGraphWriter:
             "evidence_links": evidence_links,
             "claims": claims,
         }
+
+    def _lock_entity_identities(
+        self, graph_document: GraphDocument
+    ) -> _EntityLock | None:
+        """Lock every entity identity that this write can read or change.
+
+        The set covers submitted entities, incoming references, and identities
+        reachable from the document's previous version. One sorted batch both
+        creates submitted identities that are absent and matches references
+        that must already exist. A missing reference is never created.
+        """
+        submitted = {
+            entity.id
+            for entity in graph_document.entities
+            if isinstance(entity.id, str)
+        }
+        prior_ids = self._discover_prior_entity_ids(graph_document)
+        locked_ids = submitted | self._incoming_entity_ids(graph_document)
+        locked_ids |= prior_ids
+        if not locked_ids:
+            return None
+        graph_name = graph_document.document.graph_name
+        rows = [
+            {
+                "id": entity_id,
+                "graph_name": graph_name,
+                "uid": _build_uid(graph_name, entity_id),
+                "create": entity_id in submitted,
+            }
+            for entity_id in sorted(locked_ids)
+        ]
+        token = uuid4().hex
+        result = self.graph_store.execute_query(
+            f"""
+            UNWIND $rows AS row
+            WITH row ORDER BY row.id
+            CALL {{
+              WITH row
+              OPTIONAL MATCH (e:__Entity__ {{id: row.id, graph_name: row.graph_name}})
+              FOREACH (_ IN CASE WHEN e IS NULL AND row.create THEN [1] ELSE [] END |
+                MERGE (n:__Entity__ {{id: row.id, graph_name: row.graph_name}})
+                ON CREATE SET n.uid = row.uid, n.created = $now
+              )
+              WITH row
+              MATCH (e:__Entity__ {{id: row.id, graph_name: row.graph_name}})
+              SET e.{_WRITE_LOCK_PROPERTY} = $token
+              RETURN e.id AS locked_id
+            }}
+            RETURN collect(locked_id) AS locked, size($rows) AS requested
+            """,
+            {"rows": rows, "token": token, "now": int(time.time() * 1000)},
+        )
+        locked = self._read_locked_entity_ids(result, len(rows))
+        missing = {
+            row["id"] for row in rows if not row["create"]
+        } - locked
+        if missing:
+            # A vanished prior identity is a concurrent change. An unresolved
+            # incoming reference keeps the existing missing-reference error.
+            missing_prior = missing & prior_ids
+            if missing_prior:
+                raise _LockClosureConflict(
+                    f"Entity lock closure conflict in graph {graph_name!r}: "
+                    f"previous entit(ies) {', '.join(sorted(missing_prior))} "
+                    "are no longer present; retry the write."
+                )
+            self._raise_missing_entity_reference(graph_document, missing)
+        created = {row["id"] for row in rows if row["create"]} - locked
+        if created:
+            raise _LockClosureConflict(
+                f"Entity lock closure conflict in graph {graph_name!r}: "
+                f"submitted entit(ies) {', '.join(sorted(created))} did not "
+                "report a lock; retry the write."
+            )
+        return _EntityLock(graph_name, token, tuple(sorted(locked)))
+
+    def _discover_prior_entity_ids(
+        self, graph_document: GraphDocument
+    ) -> set[str]:
+        """Read only the identities the previous document version can reach."""
+        chunk_ids = self._read_prior_chunk_ids(graph_document)
+        prior_ids: set[str] = set()
+        if chunk_ids:
+            for row in self.graph_store.execute_query(
+                """
+                UNWIND $chunk_ids AS chunk_id
+                MATCH (c:Chunk {id: chunk_id, graph_name: $graph_name})
+                OPTIONAL MATCH (c)-[:FROM_CHUNK]->(evidence_entity:__Entity__)
+                OPTIONAL MATCH (cl:Claim {graph_name: $graph_name})-[:SOURCED_FROM]->(c)
+                OPTIONAL MATCH (cl)-[:SUBJECT_OF]->(claim_entity:__Entity__)
+                RETURN evidence_entity.id AS evidence_id,
+                       claim_entity.id AS claim_id
+                """,
+                {
+                    "graph_name": graph_document.document.graph_name,
+                    "chunk_ids": chunk_ids,
+                },
+            ):
+                prior_ids.update(
+                    entity_id
+                    for entity_id in (row.get("evidence_id"), row.get("claim_id"))
+                    if isinstance(entity_id, str) and entity_id
+                )
+        relationship_ids = [
+            relationship.id
+            for relationship in graph_document.relationships
+            if isinstance(relationship.id, str) and relationship.id
+        ]
+        if not chunk_ids and not relationship_ids:
+            return prior_ids
+        for row in self.graph_store.execute_query(
+            """
+            MATCH (s:__Entity__ {graph_name: $graph_name})-[r]->(t:__Entity__ {graph_name: $graph_name})
+            WHERE r.graph_name = $graph_name
+              AND (r.id IN $relationship_ids
+                   OR any(chunk IN coalesce(r.source_chunk_ids, []) WHERE chunk IN $chunk_ids))
+            RETURN DISTINCT s.id AS source_id, t.id AS target_id
+            """,
+            {
+                "graph_name": graph_document.document.graph_name,
+                "chunk_ids": chunk_ids,
+                "relationship_ids": relationship_ids,
+            },
+        ):
+            prior_ids.update(
+                entity_id
+                for entity_id in (row.get("source_id"), row.get("target_id"))
+                if isinstance(entity_id, str) and entity_id
+            )
+        return prior_ids
+
+    def _read_prior_chunk_ids(self, graph_document: GraphDocument) -> list[str]:
+        return [
+            row["id"]
+            for row in self.graph_store.execute_query(
+                """
+                MATCH (d:Document {id: $document_id, graph_name: $graph_name})
+                MATCH (c:Chunk {graph_name: $graph_name})-[:PART_OF]->(d)
+                RETURN c.id AS id
+                """,
+                {
+                    "graph_name": graph_document.document.graph_name,
+                    "document_id": graph_document.document.id,
+                },
+            )
+        ]
+
+    @staticmethod
+    def _incoming_entity_ids(graph_document: GraphDocument) -> set[str]:
+        entity_ids = {
+            entity_id
+            for relationship in graph_document.relationships
+            for entity_id in (relationship.source_id, relationship.target_id)
+        }
+        entity_ids.update(link.entity_id for link in graph_document.evidence_links)
+        for claim in graph_document.claims:
+            entity_ids.add(claim.entity_id)
+            if claim.object_entity_id:
+                entity_ids.add(claim.object_entity_id)
+        entity_ids.update(entity.id for entity in graph_document.entities)
+        return {
+            entity_id
+            for entity_id in entity_ids
+            if isinstance(entity_id, str) and entity_id
+        }
+
+    @staticmethod
+    def _read_locked_entity_ids(
+        result: list[dict[str, Any]], requested: int
+    ) -> set[str]:
+        if not result or "locked" not in (result[0] or {}):
+            raise _LockClosureConflict(
+                "The graph store did not report the entity lock result; "
+                "the writer cannot verify its lock set. Retry the write."
+            )
+        if (result[0] or {}).get("requested") != requested:
+            raise _LockClosureConflict(
+                "The graph store reported a mismatched entity lock count; "
+                "the writer cannot verify its lock set. Retry the write."
+            )
+        return {
+            entity_id
+            for entity_id in (result[0].get("locked") or [])
+            if isinstance(entity_id, str)
+        }
+
+    def _assert_entity_lock_closure(
+        self,
+        graph_document: GraphDocument,
+        state: _DocumentState,
+        entity_lock: _EntityLock,
+    ) -> None:
+        """Reject a post-lock state that names an identity outside the lock set."""
+        required = self._incoming_entity_ids(graph_document)
+        required.update(state.entities)
+        required.update(
+            row["entity_id"]
+            for row in state.evidence
+            if isinstance(row.get("entity_id"), str) and row.get("entity_id")
+        )
+        required.update(
+            row["entity_id"]
+            for row in state.claims
+            if isinstance(row.get("entity_id"), str) and row.get("entity_id")
+        )
+        for row in state.relationships:
+            required.update(
+                entity_id
+                for entity_id in (row.get("source_id"), row.get("target_id"))
+                if isinstance(entity_id, str) and entity_id
+            )
+        missing = sorted(required - set(entity_lock.ids))
+        if not missing:
+            return
+        raise _LockClosureConflict(
+            f"Entity lock closure conflict in graph {entity_lock.graph_name!r}: "
+            f"entit(ies) {', '.join(missing)} were not locked before the "
+            "authoritative read; a concurrent writer changed shared state. "
+            "Retry the write."
+        )
+
+    @staticmethod
+    def _raise_missing_entity_reference(
+        graph_document: GraphDocument, entity_ids: set[str]
+    ) -> None:
+        raise ValueError(
+            f"GraphDocument {graph_document.document.id!r} references missing "
+            f"entity(ies) {', '.join(sorted(entity_ids))}; relationships, "
+            "evidence links, and claims are only written when their endpoints "
+            "exist. Include the referenced records in the document, or write "
+            "them first."
+        )
+
+    def _release_entity_locks(self, entity_lock: _EntityLock) -> None:
+        if not entity_lock.ids:
+            return
+        self.graph_store.execute_query(
+            f"""
+            UNWIND $ids AS id
+            MATCH (e:__Entity__ {{id: id, graph_name: $graph_name}})
+            WHERE e.{_WRITE_LOCK_PROPERTY} = $token
+            REMOVE e.{_WRITE_LOCK_PROPERTY}
+            RETURN count(*) AS released
+            """,
+            {
+                "ids": list(entity_lock.ids),
+                "graph_name": entity_lock.graph_name,
+                "token": entity_lock.token,
+            },
+        )
 
     def _reject_reserved_keys(self, graph_document: GraphDocument) -> None:
         """Fail before any query when a free-form map would overwrite SDK fields."""
@@ -805,6 +1082,16 @@ class CypherGraphWriter:
                     {"graph_name": document.graph_name, "entity_ids": entity_ids},
                 )
             )
+            # The transient lock is SDK bookkeeping, never persisted input.
+            # Remove it before any fingerprint or property rebuild reads props.
+            for row in entity_rows:
+                props = row.get("props")
+                if isinstance(props, dict):
+                    row["props"] = {
+                        key: value
+                        for key, value in props.items()
+                        if key != _WRITE_LOCK_PROPERTY
+                    }
             self._reject_ambiguous_entity_identities(
                 document.graph_name, entity_ids, entity_rows
             )
