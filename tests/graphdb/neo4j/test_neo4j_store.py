@@ -485,7 +485,7 @@ def test_validate_graph_build_returns_counts():
             return [{"cnt": 5}]
         if "FROM_CHUNK" in query:
             return [{"cnt": 3}]
-        if "MATCH (:__Entity__)-[r]-(:__Entity__)" in query:
+        if "MATCH (:__Entity__)-[r]->(:__Entity__)" in query:
             return [{"cnt": 2}]
         return []
 

@@ -8,6 +8,7 @@ from tests.integration.factories import get_neo4j_store
 from tests.integration.database_scenarios import (
     assert_cross_document_rerun_idempotent,
     assert_graph_document_write,
+    assert_relationship_count_counts_each_stored_edge_once,
     assert_uid_contract,
     cleanup_graph,
 )
@@ -54,3 +55,9 @@ def test_neo4j_uid_contract_is_written_backfilled_and_enforced(neo4j_store):
 @pytest.mark.database
 def test_neo4j_cross_document_rerun_is_idempotent(neo4j_store):
     assert_cross_document_rerun_idempotent(neo4j_store, GRAPH_NAME)
+
+
+@pytest.mark.integration
+@pytest.mark.database
+def test_neo4j_relationship_count_counts_each_stored_edge_once(neo4j_store):
+    assert_relationship_count_counts_each_stored_edge_once(neo4j_store, GRAPH_NAME)

@@ -356,6 +356,44 @@ def assert_cross_document_rerun_idempotent(store, graph_name: str) -> None:
     assert entity_count(store, graph_name) == 1
 
 
+def assert_relationship_count_counts_each_stored_edge_once(
+    store, graph_name: str
+) -> None:
+    """Two directed edges and one self-loop must count as three relationships."""
+    seed_entities(
+        store,
+        graph_name,
+        "Person",
+        [
+            {"id": f"{graph_name}:alice", "name": "Alice"},
+            {"id": f"{graph_name}:bob", "name": "Bob"},
+            {"id": f"{graph_name}:carol", "name": "Carol"},
+        ],
+    )
+
+    # The shared count is database-global, so this test compares with the
+    # count that existed before it wrote its own relationships.
+    baseline = store.get_relationship_count()
+    store.execute_query(
+        """
+        MATCH (alice:__Entity__ {id: $alice, graph_name: $graph_name})
+        MATCH (bob:__Entity__ {id: $bob, graph_name: $graph_name})
+        MATCH (carol:__Entity__ {id: $carol, graph_name: $graph_name})
+        CREATE (alice)-[:KNOWS {graph_name: $graph_name}]->(bob)
+        CREATE (bob)-[:KNOWS {graph_name: $graph_name}]->(carol)
+        CREATE (alice)-[:KNOWS {graph_name: $graph_name}]->(alice)
+        """,
+        {
+            "graph_name": graph_name,
+            "alice": f"{graph_name}:alice",
+            "bob": f"{graph_name}:bob",
+            "carol": f"{graph_name}:carol",
+        },
+    )
+
+    assert store.get_relationship_count() == baseline + 3
+
+
 def _expected_uid(graph_name: str, node_id: str) -> str:
     return f"{len(graph_name)}:{graph_name}:{node_id}"
 

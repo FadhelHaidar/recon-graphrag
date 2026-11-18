@@ -163,7 +163,7 @@ stored community reports and synthesizes a corpus-level answer.
 | `community_level` | Which community level to search. Use `"coarsest"` when you do not know the numeric levels. |
 | `random_seed` | Seed for reproducible report shuffling. Defaults to `42`. |
 | `map_budget_tokens` | Constructor option on `GlobalSearchRetriever`; maximum report text packed into one map prompt. |
-| `reduce_budget_tokens` | Constructor option on `GlobalSearchRetriever`; maximum partial-answer text packed into the final reduce prompt. |
+| `reduce_budget_tokens` | Constructor option on `GlobalSearchRetriever`; maximum formatted partial-answer text packed into the final reduce prompt. The budget includes separators. The prompt template and general-knowledge instruction do not count against it. It is not an output-length cap. |
 | `map_concurrency` | Constructor option on `GlobalSearchRetriever`; max concurrent map calls. Defaults to `5`. |
 | `max_map_calls` | Constructor option on `GlobalSearchRetriever`; max total map batches, and therefore max map calls. Defaults to `None` (unlimited). Batches beyond the cap are never built. |
 | `max_map_tokens` | Constructor option on `GlobalSearchRetriever`; sum of complete formatted map-prompt token counts, including query/template overhead and separators, using `token_counter`. Stop before the first batch that does not fit (possibly sending no map calls). Defaults to `None` (unlimited). This is not a billed-token or output-token cap. |
@@ -612,6 +612,9 @@ What gets included, per mode:
 - **Global** — only partial answers that fit the actual reduce-stage token
   packing are considered; the community reports behind them are expanded at the
   searched level. Reports that were merely read or mapped are not expanded.
+  For synthesized answers, `context` and `citations` cover the same retained
+  partials. When no whole partial fits, only the returned partial answer is
+  considered.
 
 `Community` nodes are never returned as vertices: a contributing report shows up
 as its member entities and relationships, with the report id and level kept in
@@ -900,11 +903,47 @@ Partial answers with `helpfulness == 0` are discarded. The rest are sorted from
 highest to lowest helpfulness. In this example, the single batch scored 75, so
 it survives.
 
-#### Step 6 — Reduce phase: one final LLM call
+#### Step 6 — Reduce phase: at most one final LLM call
 
 The surviving partial answers are packed into the reduce prompt (subject to
 `reduce_budget_tokens`) and sent to the LLM. The reduce prompt asks the LLM to
 combine the partial answers into one coherent final answer.
+
+The reduce budget covers only the formatted partial-answer text, including
+the separators between partials. The prompt template and general-knowledge
+instruction do not count against it. Each partial is measured whole against
+the token counter. An oversized partial is skipped, and later smaller
+partials can still fit. The retriever never splits a partial.
+
+When synthesis runs, `context` and `citations` describe only the partials
+packed into the reduce prompt. Same for `graph` when
+`include_graph_evidence=True`. The `reduce_partials_used` metadata value
+reports that packed count. With `synthesize_response=False`, `context` and
+`citations` describe all scored partials.
+
+If no whole partial fits, the retriever does not call the reduce LLM. It
+returns the highest-ranked partial answer with nonblank text, word for word.
+The `answer` field holds that text. `context` and `citations` describe only
+that batch. When `include_graph_evidence=True`, `graph` also describes that
+batch, and its provenance records `synthesis_included: false`. The
+`reduce_partials_used` metadata value stays `0`. If no scored partial has
+usable text, the answer is the standard no-relevant-information message, and
+`context`, `citations`, and `graph` stay empty.
+
+On this evidence-backed path, only a nonblank string answer counts as usable
+evidence. A blank or nonstring answer never reaches synthesis and never
+answers the query. The packing and fallback selection use the same filtered,
+ranked list.
+
+These no-call rules describe the evidence-backed path. The opt-in general
+knowledge path is separate. When `allow_general_knowledge=True` and no scored
+partial exists, that path is already active. It still calls the reduce LLM
+with the general-knowledge instruction, even when the packed partial text is
+empty. A failed budget packing never activates this path.
+
+The reduce budget limits input text. It is not an output-length cap. It does
+not limit the length of the synthesized answer. Set the provider `max_tokens`
+model parameter to limit answer length.
 
 **Input to the reduce LLM:**
 
@@ -1167,7 +1206,7 @@ There are three separate token budgets. They happen at different times:
 | --- | --- | --- | --- |
 | `max_context_tokens` | `CommunityPipeline` / `CommunitySummarizer` | Indexing time | How much entity, relationship, and claim context fits into one community report-generation prompt. |
 | `map_budget_tokens` | `GlobalSearchRetriever` | Query time | How many stored community reports fit into one map prompt. |
-| `reduce_budget_tokens` | `GlobalSearchRetriever` | Query time | How many scored partial answers fit into the final reduce prompt. |
+| `reduce_budget_tokens` | `GlobalSearchRetriever` | Query time | How much formatted partial-answer text, including separators, fits into the final reduce prompt. |
 
 `max_context_tokens` shapes the report that gets stored on a `Community`.
 `map_budget_tokens` and `reduce_budget_tokens` shape how those already-stored
@@ -1350,9 +1389,9 @@ selection and get no automatic ranking.
 | `map_concurrency` | `5` | Max concurrent map LLM calls. |
 | `max_map_calls` | `None` (unlimited) | Hard cap on total map batches, applied while batching: reports beyond the cap are never read into a batch and no map call is made for them. |
 | `max_map_tokens` | `None` (unlimited) | Sum of complete formatted map-prompt counts under `token_counter`, including repeated query/template overhead and separators. Stops before the first batch that would exceed the remaining allowance; sends no partial final batch. A cap below the first prompt sends no map calls. Approximate counters provide estimated, not provider-billed, token bounds. |
-| `reduce_budget_tokens` | `12000` | Tokens for packing scored partial answers into the final reduce prompt. |
+| `reduce_budget_tokens` | `12000` | Formatted partial-answer text only, including separators, for the final reduce prompt. The prompt template and general-knowledge instruction do not count. Oversized partials are skipped whole so later smaller partials can fit. On the evidence-backed path, no reduce call runs when no whole partial fits: the top-ranked nonblank partial answer is returned unchanged. An already-activated `allow_general_knowledge` path still reduces. This budget is not an output-length cap. |
 | Map calls (total) | One per retained batch | Depends on report sizes, prompt overhead, packing and configured caps; not an exact `ceil(total_report_tokens / map_budget_tokens)` calculation. |
-| Reduce calls | At most `1` | Skipped when synthesis is disabled or no usable map answers remain. |
+| Reduce calls | At most `1` | The retriever skips reduction when synthesis is disabled. On the evidence-backed path, it also skips reduction when no usable partial fits the budget. |
 
 **Example:** Suppose 20 reports total about 40k tokens and packing produces four
 batches with `map_budget_tokens=12000`:

@@ -26,6 +26,7 @@ from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.observability import UsageTrackingLLM, track_usage
 from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
 from recon_graphrag.pipelines.writer import CypherGraphWriter
+from tests.pipelines.writer_scenarios import StatefulFakeGraphStore
 
 
 class FakeGraphStore:
@@ -399,6 +400,72 @@ async def test_build_from_text_orchestration(
     written_doc = fake_writer.write_graph_document.call_args[0][0]
     assert len(written_doc.entities) > 0
     assert len(written_doc.relationships) > 0
+
+
+class _PipelineStatefulStore(StatefulFakeGraphStore):
+    """Add the finalize hooks that GraphBuilderPipeline calls."""
+
+    def backfill_descriptions(self):
+        pass
+
+    def validate_graph_build(self):
+        return {
+            "entity_count": self.node_count,
+            "entity_relationship_count": self.relationship_count,
+            "chunk_count": len(self.chunk_ids),
+            "evidence_link_count": len(self.evidence),
+        }
+
+
+@pytest.mark.asyncio
+async def test_failed_rebuild_preserves_previous_graph(
+    movie_schema, fake_llm, fake_embedder
+):
+    store = _PipelineStatefulStore()
+    writer = CypherGraphWriter(cast(GraphStore, store))
+    pipeline = GraphBuilderPipeline(
+        graph_store=cast(GraphStore, store),
+        llm=fake_llm,
+        embedder=fake_embedder,
+        graph_writer=writer,
+        perform_entity_resolution=False,
+        embed_entities=False,
+        summarize_descriptions=False,
+        track_token_usage=False,
+    )
+    document = {"document_id": "doc:rebuild"}
+    text = "Alice directed Inception in 2010."
+
+    await pipeline.build_from_text(
+        text, metadata=document, schema=movie_schema, max_gleanings=0
+    )
+    chunk_ids = set(store.chunk_ids)
+    evidence = set(store.evidence)
+    entity_count = store.node_count
+    relationship_count = store.relationship_count
+    queries_before = list(store.queries)
+    assert chunk_ids and evidence and entity_count and relationship_count
+
+    fake_llm.ainvoke = AsyncMock(
+        return_value=MagicMock(content='{"error": "temporary failure"}')
+    )
+    with pytest.raises(ValueError) as caught:
+        await pipeline.build_from_text(
+            text, metadata=document, schema=movie_schema, max_gleanings=0
+        )
+
+    message = str(caught.value)
+    assert "Validation failed (document=" in message
+    assert (
+        "field=extraction: expected an object with nodes or relationships"
+        in message
+    )
+    assert "temporary failure" not in message
+    assert store.queries == queries_before
+    assert store.chunk_ids == chunk_ids
+    assert store.evidence == evidence
+    assert store.node_count == entity_count
+    assert store.relationship_count == relationship_count
 
 
 @pytest.mark.asyncio

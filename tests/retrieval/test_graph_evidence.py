@@ -521,17 +521,53 @@ async def test_global_expands_only_reports_that_reached_the_reduce_prompt():
         cast(Any, store),
         cast(Any, global_fakes.FakeLLM(map_responses=map_responses)),
         graph_name="entity-graph",
-        map_budget_tokens=10000,
+        # One report per batch, so the second partial reaches the reduce budget.
+        map_budget_tokens=270,
         # Room for the first partial only; the second never reaches reduce.
         reduce_budget_tokens=10,
     )
     result = await retriever.search(
-        "Who leads Acme?", community_level=0, include_graph_evidence=True,
+        "Who leads Acme?", community_level=0, random_seed=0, include_graph_evidence=True,
     )
 
     assert result.graph["provenance"]["retained_batches"] == ["0"]
     assert [call[1] for call in store.expansion_calls] == ["report:c0:0"]
     assert result.graph["provenance"]["synthesis_included"] is True
+    assert "Alice leads Acme." in result.context
+    assert "Bob writes code." not in result.context
+    assert result.metadata["reduce_partials_used"] == 1
+
+
+@pytest.mark.asyncio
+async def test_global_direct_partial_fallback_keeps_evidence_on_returned_batch():
+    map_responses = [
+        json.dumps({"answer": "Alice leads Acme.", "helpfulness": 90, "report_ids": ["report:c0:0"]}),
+        json.dumps({"answer": "Bob writes code.", "helpfulness": 10, "report_ids": ["report:c1:0"]}),
+    ]
+    store = GlobalEvidenceStore(global_reports())
+    llm = global_fakes.FakeLLM(map_responses=map_responses)
+    retriever = GlobalSearchRetriever(
+        cast(Any, store),
+        cast(Any, llm),
+        graph_name="entity-graph",
+        # One report per batch, and no reduce budget for one whole partial.
+        map_budget_tokens=270,
+        reduce_budget_tokens=0,
+    )
+    result = await retriever.search(
+        "Who leads Acme?", community_level=0, random_seed=0, include_graph_evidence=True,
+    )
+
+    # The top-ranked partial answers directly; no synthesis ran.
+    assert result.answer == "Alice leads Acme."
+    assert result.graph["provenance"]["retained_batches"] == ["0"]
+    assert result.graph["provenance"]["contributing_reports"] == ["report:c0:0"]
+    assert [call[1] for call in store.expansion_calls] == ["report:c0:0"]
+    assert result.graph["provenance"]["synthesis_included"] is False
+    assert result.graph["nodes"], "the returned batch still expands its report"
+    assert result.context == "[Batch 0] (score: 90)\nAlice leads Acme."
+    assert result.metadata["reduce_partials_used"] == 0
+    assert not any("Partial Answers" in prompt for prompt in llm.prompts)
 
 
 @pytest.mark.asyncio

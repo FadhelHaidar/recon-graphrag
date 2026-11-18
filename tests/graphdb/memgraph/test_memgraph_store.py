@@ -612,7 +612,7 @@ def test_validate_graph_build_runs_counts(store, fake_driver):
             return FakeResult([{"cnt": 5}])
         if "FROM_CHUNK" in query:
             return FakeResult([{"cnt": 3}])
-        if "MATCH (:__Entity__)-[r]-(:__Entity__)" in query:
+        if "MATCH (:__Entity__)-[r]->(:__Entity__)" in query:
             return FakeResult([{"cnt": 2}])
         if "MATCH (c:Community)" in query and "report_text" in query:
             return FakeResult([{"cnt": 6}])

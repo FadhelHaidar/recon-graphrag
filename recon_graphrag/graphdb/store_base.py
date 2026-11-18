@@ -83,8 +83,10 @@ class BaseGraphStore:
         )
 
     def get_relationship_count(self) -> int:
+        # Directed traversal: an undirected pattern returns each stored
+        # relationship once per direction, so it counts self-loops twice.
         return self._count(
-            "MATCH (:__Entity__)-[r]-(:__Entity__) RETURN count(r) AS cnt"
+            "MATCH (:__Entity__)-[r]->(:__Entity__) RETURN count(r) AS cnt"
         )
 
     def validate_graph_build(self) -> dict:

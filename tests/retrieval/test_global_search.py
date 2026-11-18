@@ -10,12 +10,18 @@ from unittest.mock import MagicMock
 import pytest
 
 from recon_graphrag.retrieval.search_global import (
+    GENERAL_KNOWLEDGE_INSTRUCTION,
     GLOBAL_POINT_RESPONSE_FORMAT,
     POINT_OMITTED_NOTICE,
     GlobalSearchRetriever,
     MapBatch,
     PartialAnswer,
 )
+from recon_graphrag.utils import ApproximateTokenCounter
+
+
+def _tokens(text: str) -> int:
+    return ApproximateTokenCounter().count(text)
 
 
 def _make_reports(n: int = 5) -> list[dict]:
@@ -111,13 +117,28 @@ class FakeGraphStore:
         return rows
 
 
+class _ReportFilteringStore(FakeGraphStore):
+    """Honor ``report_ids`` reads and map entity IDs to distinct chunks."""
+
+    def execute_query(self, query, params=None):
+        params = params or {}
+        if "report_ids" in params:
+            wanted = set(params["report_ids"])
+            return [dict(r) for r in self._reports if r.get("id") in wanted]
+        if "FROM_CHUNK" in query and "entity_ids" in params:
+            return [{"chunk_id": f"chunk:{eid}"} for eid in params["entity_ids"]]
+        return super().execute_query(query, params)
+
+
 class FakeLLM:
     def __init__(self, map_responses: list[str] | None = None, reduce_response: str = "Final answer."):
         self._map_responses = map_responses or [_make_map_response()]
         self._reduce_response = reduce_response
         self._map_call_count = 0
+        self.prompts: list[str] = []
 
     async def ainvoke(self, prompt):
+        self.prompts.append(prompt)
         # Distinguish map vs reduce by prompt content
         if "Synthesize" in prompt or "Partial Answers" in prompt:
             return MagicMock(content=self._reduce_response)
@@ -209,20 +230,399 @@ class TestMapPhase:
         assert partials[0].helpfulness == 0
 
 
-class TestReducePhase:
-    @pytest.mark.asyncio
-    async def test_reduce_calls_llm(self):
-        store = FakeGraphStore()
-        llm = FakeLLM(reduce_response="Combined final answer.")
-        search = GlobalSearchRetriever(cast(Any, store), cast(Any, llm))
-
+class TestReducePacking:
+    def test_packs_every_fitting_partial(self):
+        search = GlobalSearchRetriever(cast(Any, FakeGraphStore()), cast(Any, FakeLLM()))
         partials = [
             PartialAnswer(batch_id="0", answer="Part 1.", helpfulness=80, report_ids=["r1"]),
             PartialAnswer(batch_id="1", answer="Part 2.", helpfulness=60, report_ids=["r2"]),
         ]
-        result, retained = await search._reduce_phase("query", partials)
-        assert result == "Combined final answer."
-        assert retained == {"0", "1"}
+
+        retained, text = search._pack_reduce_partials(partials)
+
+        assert [p.batch_id for p in retained] == ["0", "1"]
+        assert text == "[Score 80] Part 1.\n\n[Score 60] Part 2."
+
+    @pytest.mark.asyncio
+    async def test_synthesis_sends_packed_text_to_llm(self):
+        llm = FakeLLM(reduce_response="Combined final answer.")
+        search = GlobalSearchRetriever(cast(Any, FakeGraphStore()), cast(Any, llm))
+
+        answer = await search._synthesize("query", "[Score 80] Part 1.")
+
+        assert answer == "Combined final answer."
+        assert "[Score 80] Part 1." in llm.prompts[-1]
+
+    def test_oversized_first_partial_skipped_for_later_smaller_answer(self):
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore()), cast(Any, FakeLLM()), reduce_budget_tokens=8
+        )
+        partials = [
+            PartialAnswer(
+                batch_id="0", answer="x" * 400, helpfulness=95, report_ids=["r1"]
+            ),
+            PartialAnswer(
+                batch_id="1", answer="small answer", helpfulness=10, report_ids=["r2"]
+            ),
+        ]
+
+        retained, text = search._pack_reduce_partials(partials)
+
+        assert [p.batch_id for p in retained] == ["1"]
+        assert "small answer" in text
+        assert "x" * 400 not in text
+
+    def test_separators_count_against_text_budget(self):
+        partials = [
+            PartialAnswer(batch_id="0", answer="AAAAA", helpfulness=90, report_ids=["r1"]),
+            PartialAnswer(batch_id="1", answer="BBBBB", helpfulness=80, report_ids=["r2"]),
+        ]
+        first_tokens = _tokens("[Score 90] AAAAA")
+        second_tokens = _tokens("[Score 80] BBBBB")
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore()),
+            cast(Any, FakeLLM()),
+            # Without the separator this budget would keep both partials.
+            reduce_budget_tokens=first_tokens + second_tokens,
+        )
+
+        retained, _ = search._pack_reduce_partials(partials)
+
+        assert [p.batch_id for p in retained] == ["0"]
+
+    def test_exact_text_budget_boundary_keeps_both_partials(self):
+        partials = [
+            PartialAnswer(batch_id="0", answer="AAAA", helpfulness=90, report_ids=["r1"]),
+            PartialAnswer(batch_id="1", answer="BBBB", helpfulness=80, report_ids=["r2"]),
+        ]
+        packed = "[Score 90] AAAA\n\n[Score 80] BBBB"
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore()),
+            cast(Any, FakeLLM()),
+            reduce_budget_tokens=_tokens(packed),
+        )
+
+        retained, text = search._pack_reduce_partials(partials)
+
+        assert [p.batch_id for p in retained] == ["0", "1"]
+        assert text == packed
+
+    @pytest.mark.asyncio
+    async def test_general_knowledge_suffix_excluded_from_text_budget(self):
+        llm = FakeLLM(reduce_response="Combined final answer.")
+        packed = "[Score 90] AAAA\n\n[Score 80] BBBB"
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore()),
+            cast(Any, llm),
+            reduce_budget_tokens=_tokens(packed),
+        )
+        partials = [
+            PartialAnswer(batch_id="0", answer="AAAA", helpfulness=90, report_ids=["r1"]),
+            PartialAnswer(batch_id="1", answer="BBBB", helpfulness=80, report_ids=["r2"]),
+        ]
+
+        retained, text = search._pack_reduce_partials(partials)
+        await search._synthesize("query", text, use_general_knowledge=True)
+
+        assert [p.batch_id for p in retained] == ["0", "1"]
+        assert GENERAL_KNOWLEDGE_INSTRUCTION in llm.prompts[-1]
+
+    @pytest.mark.asyncio
+    async def test_synthesized_context_and_citations_match_retained_partials(self):
+        reports = [
+            _make_report_with_json_ref("report:0:0", "person:alice"),
+            _make_report_with_json_ref("report:1:0", "person:bob"),
+        ]
+        llm = FakeLLM(
+            map_responses=[
+                json.dumps({
+                    "answer": "Alice leads Acme.",
+                    "helpfulness": 90,
+                    "report_ids": ["report:0:0"],
+                }),
+                json.dumps({
+                    "answer": "Bob writes code.",
+                    "helpfulness": 10,
+                    "report_ids": ["report:1:0"],
+                }),
+            ],
+            reduce_response="Final answer.",
+        )
+        search = GlobalSearchRetriever(
+            cast(Any, _ReportFilteringStore(reports)),
+            cast(Any, llm),
+            map_budget_tokens=270,
+            reduce_budget_tokens=9,
+        )
+
+        result = await search.search("test query", community_level=0, random_seed=0)
+
+        assert result.metadata["map_batches"] == 2
+        assert "Alice leads Acme." in result.context
+        assert "Bob writes code." not in result.context
+        assert [c.chunk_id for c in result.citations] == ["chunk:person:alice"]
+        assert result.metadata["source_report_ids_used"] == 1
+        assert result.metadata["reduce_partials_used"] == 1
+
+
+class TestDirectPartialFallback:
+    """No whole partial fits: answer with the top-ranked usable partial.
+
+    Blank and nonstring answers never reach synthesis and never answer.
+    """
+
+    @pytest.mark.asyncio
+    async def test_returns_top_ranked_nonblank_partial_verbatim(self):
+        reports = _make_reports(2)
+        llm = FakeLLM(
+            map_responses=[
+                json.dumps({
+                    "answer": "Second best.",
+                    "helpfulness": 40,
+                    "report_ids": [],
+                    "references": [
+                        {"target_id": "person:bob", "target_type": "entity"}
+                    ],
+                }),
+                json.dumps({
+                    "answer": "   ",
+                    "helpfulness": 90,
+                    "report_ids": [],
+                    "references": [
+                        {"target_id": "person:carol", "target_type": "entity"}
+                    ],
+                }),
+            ],
+            reduce_response="Final answer.",
+        )
+        search = GlobalSearchRetriever(
+            cast(Any, _ReportFilteringStore(reports)),
+            cast(Any, llm),
+            # One report per batch, and no reduce budget for one whole partial.
+            map_budget_tokens=270,
+            reduce_budget_tokens=0,
+        )
+
+        result = await search.search("test query", community_level=0, random_seed=0)
+
+        assert result.answer == "Second best."
+        assert result.context == "[Batch 0] (score: 40)\nSecond best."
+        # Citations and report ids describe the returned batch only.
+        assert [c.chunk_id for c in result.citations] == ["chunk:person:bob"]
+        assert result.metadata["source_report_ids_used"] == 1
+        assert result.metadata["reduce_partials_used"] == 0
+        assert not any("Partial Answers" in prompt for prompt in llm.prompts)
+
+    @pytest.mark.asyncio
+    async def test_returns_highest_ranked_nonblank_partial_without_reducing(self):
+        llm = FakeLLM(
+            map_responses=[
+                json.dumps({"answer": "Third.", "helpfulness": 40, "report_ids": []}),
+                json.dumps({"answer": "Best answer.", "helpfulness": 90, "report_ids": []}),
+                json.dumps({"answer": "Second.", "helpfulness": 70, "report_ids": []}),
+            ],
+            reduce_response="Final answer.",
+        )
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(_make_reports(3))),
+            cast(Any, llm),
+            map_budget_tokens=270,
+            reduce_budget_tokens=0,
+        )
+
+        result = await search.search("test query", community_level=0, random_seed=0)
+
+        assert result.answer == "Best answer."
+        assert result.context == "[Batch 1] (score: 90)\nBest answer."
+        assert result.metadata["reduce_partials_used"] == 0
+        assert not any("Partial Answers" in prompt for prompt in llm.prompts)
+
+    @pytest.mark.parametrize("reduce_budget", [0, 12000])
+    @pytest.mark.asyncio
+    async def test_all_blank_partials_return_no_evidence_answer(self, reduce_budget):
+        llm = FakeLLM(
+            map_responses=[
+                json.dumps({"answer": "", "helpfulness": 90, "report_ids": []}),
+                json.dumps({"answer": "   ", "helpfulness": 80, "report_ids": []}),
+            ],
+            reduce_response="Final answer.",
+        )
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(_make_reports(2))),
+            cast(Any, llm),
+            map_budget_tokens=270,
+            reduce_budget_tokens=reduce_budget,
+        )
+
+        result = await search.search(
+            "test query", community_level=0, random_seed=0, include_graph_evidence=True
+        )
+
+        assert result.answer == "No relevant information found in community reports."
+        assert result.context == ""
+        assert result.citations == []
+        assert result.graph == {}
+        assert result.metadata["reduce_partials_used"] == 0
+        assert not any("Partial Answers" in prompt for prompt in llm.prompts)
+
+    @pytest.mark.asyncio
+    async def test_blank_partial_with_sufficient_budget_never_reduces(self):
+        llm = FakeLLM(
+            map_responses=[_make_map_response(helpfulness=80, answer="   ")],
+            reduce_response="Final answer.",
+        )
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(_make_reports(1))),
+            cast(Any, llm),
+            # The formatted blank partial would fit this budget.
+            reduce_budget_tokens=12000,
+        )
+
+        result = await search.search(
+            "test query", community_level=0, random_seed=0, include_graph_evidence=True
+        )
+
+        assert result.answer == "No relevant information found in community reports."
+        assert result.context == ""
+        assert result.citations == []
+        assert result.graph == {}
+        assert result.metadata["reduce_partials_used"] == 0
+        assert not any("Partial Answers" in prompt for prompt in llm.prompts)
+
+    @pytest.mark.asyncio
+    async def test_oversized_valid_partial_returned_verbatim_when_blank_fits(self):
+        budget = _tokens("[Score 90]    ")
+        assert budget < _tokens("[Score 80] Part 1.")
+        llm = FakeLLM(
+            map_responses=[
+                _make_map_response(helpfulness=80, answer="Part 1."),
+                _make_map_response(helpfulness=90, answer="   "),
+            ],
+            reduce_response="Final answer.",
+        )
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(_make_reports(2))),
+            cast(Any, llm),
+            map_budget_tokens=270,
+            reduce_budget_tokens=budget,
+        )
+
+        result = await search.search("test query", community_level=0, random_seed=0)
+
+        assert result.answer == "Part 1."
+        assert result.context == "[Batch 0] (score: 80)\nPart 1."
+        assert result.metadata["reduce_partials_used"] == 0
+        assert not any("Partial Answers" in prompt for prompt in llm.prompts)
+
+    @pytest.mark.parametrize(
+        "bad_answer", [None, 42, ["text"]], ids=["null", "number", "list"]
+    )
+    @pytest.mark.asyncio
+    async def test_higher_ranked_nonstring_answer_falls_back_to_valid_partial(
+        self, bad_answer
+    ):
+        reports = _make_reports(2)
+        llm = FakeLLM(
+            map_responses=[
+                json.dumps({
+                    "answer": "Bob writes code.",
+                    "helpfulness": 10,
+                    "report_ids": [],
+                    "references": [
+                        {"target_id": "person:bob", "target_type": "entity"}
+                    ],
+                }),
+                json.dumps({
+                    "answer": bad_answer,
+                    "helpfulness": 90,
+                    "report_ids": [],
+                    "references": [
+                        {"target_id": "person:carol", "target_type": "entity"}
+                    ],
+                }),
+            ],
+            reduce_response="Final answer.",
+        )
+        search = GlobalSearchRetriever(
+            cast(Any, _ReportFilteringStore(reports)),
+            cast(Any, llm),
+            map_budget_tokens=270,
+            reduce_budget_tokens=0,
+        )
+
+        result = await search.search("test query", community_level=0, random_seed=0)
+
+        assert result.answer == "Bob writes code."
+        assert result.context == "[Batch 0] (score: 10)\nBob writes code."
+        # Evidence comes from the returned batch only.
+        assert [c.chunk_id for c in result.citations] == ["chunk:person:bob"]
+        assert result.metadata["reduce_partials_used"] == 0
+        assert not any("Partial Answers" in prompt for prompt in llm.prompts)
+
+    @pytest.mark.asyncio
+    async def test_nonstring_answer_excluded_before_packing(self):
+        llm = FakeLLM(
+            map_responses=[
+                json.dumps({"answer": "Bob writes code.", "helpfulness": 10, "report_ids": []}),
+                json.dumps({"answer": None, "helpfulness": 90, "report_ids": []}),
+            ],
+            reduce_response="Final answer.",
+        )
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(_make_reports(2))),
+            cast(Any, llm),
+            map_budget_tokens=270,
+            # Both formatted partials would fit this budget.
+            reduce_budget_tokens=12000,
+        )
+
+        result = await search.search("test query", community_level=0, random_seed=0)
+
+        assert result.answer == "Final answer."
+        assert "[Score 10] Bob writes code." in llm.prompts[-1]
+        assert "[Score 90]" not in llm.prompts[-1]
+        assert result.context == "[Batch 0] (score: 10)\nBob writes code."
+        assert result.metadata["reduce_partials_used"] == 1
+
+    @pytest.mark.asyncio
+    async def test_budget_failure_does_not_activate_general_knowledge(self):
+        llm = FakeLLM(
+            map_responses=[_make_map_response(helpfulness=80, answer="Part 1.")],
+            reduce_response="Final answer.",
+        )
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(_make_reports(1))),
+            cast(Any, llm),
+            reduce_budget_tokens=0,
+            allow_general_knowledge=True,
+        )
+
+        result = await search.search("test query", community_level=0, random_seed=0)
+
+        assert result.answer == "Part 1."
+        assert not any(
+            GENERAL_KNOWLEDGE_INSTRUCTION in prompt for prompt in llm.prompts
+        )
+        assert not any("Partial Answers" in prompt for prompt in llm.prompts)
+
+    @pytest.mark.asyncio
+    async def test_opted_in_general_knowledge_still_synthesizes_without_evidence(self):
+        llm = FakeLLM(
+            map_responses=[_make_map_response(helpfulness=0, answer="No info.")],
+            reduce_response="General answer.",
+        )
+        search = GlobalSearchRetriever(
+            cast(Any, FakeGraphStore(_make_reports(1))),
+            cast(Any, llm),
+            reduce_budget_tokens=0,
+            allow_general_knowledge=True,
+        )
+
+        result = await search.search("test query", community_level=0, random_seed=0)
+
+        assert result.answer == "General answer."
+        assert GENERAL_KNOWLEDGE_INSTRUCTION in llm.prompts[-1]
+        assert result.metadata["reduce_partials_used"] == 0
 
 
 class TestFullSearch:

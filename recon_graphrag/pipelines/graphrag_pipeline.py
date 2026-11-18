@@ -29,7 +29,7 @@ from recon_graphrag.extraction.chunking import (
 )
 from recon_graphrag.extraction.description_summarizer import DescriptionSummarizer
 from recon_graphrag.extraction.extractor import LLMGraphExtractor
-from recon_graphrag.extraction.parser import _PropertyValidationError
+from recon_graphrag.extraction.parser import _ExtractionValidationError
 from recon_graphrag.extraction.prompts import SchemaPromptBuilder
 from recon_graphrag.extraction.schema import GraphSchema, NodeType
 from recon_graphrag.extraction.structured import (
@@ -707,7 +707,7 @@ class GraphBuilderPipeline:
             raw = await self.extractor.extract(
                 text=chunk.text, schema=schema, max_gleanings=max_gleanings
             )
-        except _PropertyValidationError as error:
+        except _ExtractionValidationError as error:
             # Only parser-created metadata is trusted across extraction; provider
             # ValueError strings must never supply field context.
             raise ValueError(

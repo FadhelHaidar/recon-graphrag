@@ -1,7 +1,7 @@
 """Privacy-safe diagnostics from the shared extraction/claims boundary."""
 
 import traceback
-from json import JSONDecodeError
+from json import JSONDecodeError, dumps
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -191,6 +191,48 @@ async def test_real_adapter_and_parser_failures_are_reported_safely(
     assert "status=" not in str(caught.value)
     assert PRIVATE_TEXT not in "".join(traceback.format_exception(caught.value))
     assert PRIVATE_TEXT not in caplog.text
+    pipeline.graph_writer.write_graph_document.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "content, field",
+    [
+        (
+            dumps({"error": PRIVATE_TEXT}),
+            "extraction: expected an object with nodes or relationships",
+        ),
+        ("{}", "extraction: expected an object with nodes or relationships"),
+        ("[]", "extraction: expected an object with nodes or relationships"),
+        (dumps({"nodes": PRIVATE_TEXT}), "nodes: expected an array or null"),
+        (
+            dumps({"relationships": {"private": PRIVATE_TEXT}}),
+            "relationships: expected an array or null",
+        ),
+    ],
+)
+async def test_invalid_extraction_envelope_fails_before_write(
+    pipeline, content, field, caplog
+):
+    pipeline.extractor.llm.ainvoke = AsyncMock(
+        return_value=SimpleNamespace(content=content, usage=None)
+    )
+    with pytest.raises(ValueError) as caught:
+        await pipeline._extract_chunk(
+            ChunkRecord("chunk", PRIVATE_TEXT, PRIVATE_TEXT, 20),
+            PRIVATE_TEXT,
+            GraphSchema([], []),
+            0,
+            False,
+        )
+
+    message = str(caught.value)
+    assert "Validation failed (document=" in message
+    assert "chunk=21" in message
+    assert f"field={field}" in message
+    assert PRIVATE_TEXT not in "".join(traceback.format_exception(caught.value))
+    assert PRIVATE_TEXT not in caplog.text
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__ is True
     pipeline.graph_writer.write_graph_document.assert_not_called()
 
 

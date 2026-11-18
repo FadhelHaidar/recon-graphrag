@@ -11,6 +11,18 @@ class FakeBaseStore(BaseGraphStore):
         return []
 
 
+def test_base_store_relationship_count_traverses_each_relationship_once():
+    store = FakeBaseStore()
+
+    store.get_relationship_count()
+
+    query, params = store.calls[-1]
+    # An undirected pattern returns each stored relationship once per direction,
+    # so it counts an entity self-loop twice.
+    assert "MATCH (:__Entity__)-[r]->(:__Entity__) RETURN count(r) AS cnt" in query
+    assert params == {}
+
+
 def test_base_store_get_community_stats_uses_shared_result_shape():
     store = FakeBaseStore()
 
