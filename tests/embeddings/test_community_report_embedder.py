@@ -1,3 +1,5 @@
+import asyncio
+import threading
 from copy import deepcopy
 from typing import Any, cast
 
@@ -7,6 +9,7 @@ from recon_graphrag.embeddings.community_reports import CommunityReportEmbedder
 from recon_graphrag.entity_text import embedder_fingerprint
 from recon_graphrag.graphdb.store_base import _GENERATION_UNGUARDED
 from recon_graphrag.report_text import report_embedding_fingerprint
+from tests.pipelines.test_async_offload import BlockingCalls, with_heartbeat
 
 
 class FakeStore:
@@ -44,7 +47,7 @@ class FakeStore:
         self, node_ids, vectors, graph_name, levels
     ):
         self.upserts.append((node_ids, vectors, graph_name, levels))
-        self.embedded.update(zip(node_ids, levels))
+        self.embedded.update(zip(node_ids, levels, strict=True))
 
     def execute_query(self, query, parameters=None):
         if self.fail_writes:
@@ -739,3 +742,97 @@ async def test_custom_store_without_guards_keeps_the_legacy_signatures(caplog):
     assert count == 1
     assert store.upserts == [(["c1"], [[0.1, 0.2]], "graph-a", [0])]
     assert "does not support guarded embedding" in caplog.text
+
+
+class BlockingGuardedEmbeddingStore(GuardedFakeStore, BlockingCalls):
+    """Guarded report store whose reads and writes block their callers."""
+
+    def __init__(self, reports=None):
+        GuardedFakeStore.__init__(self, reports)
+        BlockingCalls.__init__(self)
+
+    def _get_unembedded_community_reports_for_embedding(self, *args, **kwargs):
+        self.block("embedding_select")
+        return super()._get_unembedded_community_reports_for_embedding(
+            *args, **kwargs
+        )
+
+    def _upsert_community_report_vectors_guarded(self, *args, **kwargs):
+        self.block("embedding_upsert")
+        return super()._upsert_community_report_vectors_guarded(*args, **kwargs)
+
+    def _mark_community_report_embedding_failed_guarded(self, *args, **kwargs):
+        self.block("embedding_failure")
+        return super()._mark_community_report_embedding_failed_guarded(
+            *args, **kwargs
+        )
+
+
+@pytest.mark.asyncio
+async def test_guarded_embedding_select_upsert_and_failure_run_off_loop():
+    store = BlockingGuardedEmbeddingStore([
+        {"report_id": "c1", "generation": "gen-a"},
+        {
+            "report_id": "c2",
+            "title": "Bad",
+            "report_text": "bad",
+            "generation": "gen-a",
+        },
+    ])
+    embedder = FlakyEmbedder()
+    embedder.fail = True
+
+    count = await with_heartbeat(
+        _guarded_embedder(store, embedder)._embed_reports_for_generation(
+            "graph-a", "gen-a"
+        )
+    )
+
+    assert count == 1
+    store.assert_offloaded("embedding_select", "embedding_upsert", "embedding_failure")
+
+
+class GatedVectorStore(GuardedFakeStore):
+    """Guarded vector store whose upsert waits for a test gate."""
+
+    def __init__(self):
+        super().__init__([{"report_id": "c1", "generation": "gen-a"}])
+        self.upsert_started = threading.Event()
+        self.release_upsert = threading.Event()
+        self.upsert_finished = threading.Event()
+        self.upsert_thread: int | None = None
+
+    def _upsert_community_report_vectors_guarded(self, *args, **kwargs):
+        self.upsert_thread = threading.get_ident()
+        self.upsert_started.set()
+        self.release_upsert.wait(5)
+        confirmed = super()._upsert_community_report_vectors_guarded(*args, **kwargs)
+        self.upsert_finished.set()
+        return confirmed
+
+
+@pytest.mark.asyncio
+async def test_cancelled_guarded_vector_write_leaves_a_replaced_generation_untouched():
+    store = GatedVectorStore()
+    worker = _guarded_embedder(store, CountingEmbedder())
+    task = asyncio.create_task(
+        worker._embed_reports_for_generation("graph-a", "gen-a")
+    )
+    assert await asyncio.to_thread(store.upsert_started.wait, 2)
+
+    task.cancel()
+    await asyncio.sleep(0.01)
+    row = store.rows[(0, "c1")]
+    row["generation"] = "gen-b"
+    store.release_upsert.set()
+    assert await asyncio.to_thread(store.upsert_finished.wait, 2)
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2)
+
+    assert store.upsert_thread != threading.get_ident()
+    assert store.upsert_calls[0][0][0]["generation"] == "gen-a"
+    assert row["vector"] is None
+    assert row["embedding_revision"] == 0
+    assert row["error"] is None
+    assert store.mark_calls == []

@@ -12,6 +12,8 @@ from contextlib import AbstractContextManager, contextmanager
 from typing import Any, LiteralString, Protocol, cast
 from uuid import uuid4
 
+import neo4j
+
 from recon_graphrag.graphdb.cypher import escape_cypher_identifier
 from recon_graphrag.models.artifacts import (
     CommunityReport,
@@ -25,6 +27,22 @@ from recon_graphrag.report_text import report_embedding_fingerprint
 # a persistent abort must surface.
 WRITE_RETRY_ATTEMPTS = 3
 WRITE_RETRY_DELAY_SECONDS = 0.05
+
+# A graph-scoped filtered search retries once at these widths when the first
+# read returns fewer distinct matches than the store target. The retry reads
+# the full cap so duplicate identities cannot hide later scoped matches; the
+# caller trims the deduplicated result to its target. The retry never widens a
+# read that already used the cap.
+_ENTITY_SEARCH_EXPANSION_CAP = 1000
+_COMMUNITY_REPORT_SEARCH_EXPANSION_CAP = 500
+
+# A wider search read can fall back to its first-round rows only when the
+# database or driver reports the failure. Other errors report a defect and
+# must propagate. Both backends use the Neo4j driver over Bolt.
+_SEARCH_RETRY_ERRORS = (
+    neo4j.exceptions.Neo4jError,
+    neo4j.exceptions.DriverError,
+)
 
 # The report, vector, and failure writes set a temporary Community property
 # first to acquire a write lock before their generation and text checks. The
@@ -47,6 +65,54 @@ def _affected_count(rows: list[dict], key: str) -> int:
     if not rows:
         return 0
     return int(rows[0].get(key) or 0)
+
+
+def _unique_search_row_count(
+    rows: list[dict], key_fields: tuple[str, ...]
+) -> int:
+    """Count distinct row identities after the store applied its scope."""
+    return len({tuple(row.get(field) for field in key_fields) for row in rows})
+
+
+def _should_expand_search(
+    rows: list[dict],
+    *,
+    target: int,
+    initial_width: int,
+    cap: int,
+    key_fields: tuple[str, ...],
+    graph_scoped: bool,
+) -> bool:
+    """Return True when one graph-scoped wider read can meet the target."""
+    if not graph_scoped or not 0 < initial_width < cap:
+        return False
+    return _unique_search_row_count(rows, key_fields) < target
+
+
+def _dedupe_search_rows(
+    rows: list[dict], key_fields: tuple[str, ...]
+) -> list[dict]:
+    """Keep the best native score per identity and order by score.
+
+    Equal scores use identity order, so ties do not depend on database row order.
+    """
+    best: dict[tuple, dict] = {}
+    for row in rows:
+        key = tuple(row.get(field) for field in key_fields)
+        current = best.get(key)
+        if current is None or _search_row_score(row) > _search_row_score(current):
+            best[key] = row
+    return sorted(
+        best.values(),
+        key=lambda row: (
+            -_search_row_score(row),
+            tuple(row.get(field) for field in key_fields),
+        ),
+    )
+
+
+def _search_row_score(row: dict) -> float:
+    return float(row.get("score") or 0.0)
 
 
 def is_retryable_write_error(error: BaseException) -> bool:

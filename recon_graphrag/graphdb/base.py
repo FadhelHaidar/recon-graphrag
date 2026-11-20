@@ -19,6 +19,13 @@ class GraphStore(Protocol):
 
     All SDK components depend on this protocol, not on any specific
     database driver. Implement this to add a new backend.
+
+    Async SDK components call synchronous store methods on worker threads.
+    A custom store must support concurrent calls from multiple threads. Each
+    call must own its session and close it before returning. Each call must
+    return materialized data, not a session-bound cursor. The SDK uses the
+    default executor and adds no setting. The SDK provides no stage-wide lock
+    and no snapshot across calls.
     """
 
     def execute_query(

@@ -188,13 +188,17 @@ class CommunitySummarizer:
                 # between the two reads then leaves the bound token older than
                 # the list, so guarded writes reject the work.
                 try:
-                    observed_generations = cast(
-                        Any, self.graph_store
-                    )._get_community_generations(self.graph_name, level)
+                    observed_generations = await asyncio.to_thread(
+                        cast(Any, self.graph_store)._get_community_generations,
+                        self.graph_name,
+                        level,
+                    )
                 except Exception as error:
                     generation_read_error = error
 
-            communities = self.graph_store.get_communities(self.graph_name, level=level)
+            communities = await asyncio.to_thread(
+                self.graph_store.get_communities, self.graph_name, level=level
+            )
             if not communities:
                 logger.info("no communities found at level %s", level)
                 return [], BuildStats(level=level)
@@ -264,12 +268,21 @@ class CommunitySummarizer:
                 input_fingerprint: str | None = None
                 child_rows: list[dict] | None = None
                 if skip_existing:
-                    report_context = self._fetch_community_context_obj(cid, level)
-                    child_rows = self._fetch_child_report_rows(cid, level)
+                    report_context = await asyncio.to_thread(
+                        self._fetch_community_context_obj, cid, level
+                    )
+                    child_rows = await asyncio.to_thread(
+                        self._fetch_child_report_rows, cid, level
+                    )
                     input_fingerprint = self._report_input_fingerprint(
                         report_context, cid, level, child_rows=child_rows
                     )
-                    if self._has_existing_report(cid, level, input_fingerprint):
+                    if await asyncio.to_thread(
+                        self._has_existing_report,
+                        cid,
+                        level,
+                        input_fingerprint,
+                    ):
                         stats.skipped += 1
                         logger.debug("skipping community %s (report unchanged)", cid)
                         return None
@@ -297,15 +310,20 @@ class CommunitySummarizer:
                         )
                     report_text = report_to_text(report)
                     if guarded:
-                        accepted = cast(
-                            Any, self.graph_store
-                        )._store_community_report_guarded(
+                        accepted = await asyncio.to_thread(
+                            cast(
+                                Any, self.graph_store
+                            )._store_community_report_guarded,
                             report,
                             self.graph_name,
                             expected_generation=invocation_generation,
                         )
                     else:
-                        self.graph_store.store_community_report(report, self.graph_name)
+                        await asyncio.to_thread(
+                            self.graph_store.store_community_report,
+                            report,
+                            self.graph_name,
+                        )
                         accepted = True
                     if not accepted:
                         _mark_generation_changed()
@@ -329,9 +347,10 @@ class CommunitySummarizer:
                     _record_error(cid, e, "Community report generation or storage failed.")
                     with contextlib.suppress(Exception):
                         if guarded:
-                            marked = cast(
-                                Any, self.graph_store
-                            )._mark_community_report_failed_guarded(
+                            marked = await asyncio.to_thread(
+                                cast(
+                                    Any, self.graph_store
+                                )._mark_community_report_failed_guarded,
                                 self.graph_name,
                                 cid,
                                 level,
@@ -341,7 +360,8 @@ class CommunitySummarizer:
                             if not marked:
                                 _mark_generation_changed()
                         else:
-                            self.graph_store.mark_community_report_failed(
+                            await asyncio.to_thread(
+                                self.graph_store.mark_community_report_failed,
                                 self.graph_name,
                                 cid,
                                 level,
@@ -469,14 +489,24 @@ class CommunitySummarizer:
         Fetches context, builds a structured prompt, parses the LLM response,
         validates references, and attempts one repair on failure.
         """
-        context = context or self._fetch_community_context_obj(community_id, level)
+        context = (
+            await asyncio.to_thread(
+                self._fetch_community_context_obj, community_id, level
+            )
+            if context is None
+            else context
+        )
         child_rows: list[dict] | None = None
         if not input_fingerprint:
             # Fingerprinting needs child rows even for an empty context.
-            child_rows = self._fetch_child_report_rows(community_id, level)
+            child_rows = await asyncio.to_thread(
+                self._fetch_child_report_rows, community_id, level
+            )
         elif self.max_context_tokens is not None and (context.edges or context.entities):
             # Budgeted prompts need child rows; empty reports return first.
-            child_rows = self._fetch_child_report_rows(community_id, level)
+            child_rows = await asyncio.to_thread(
+                self._fetch_child_report_rows, community_id, level
+            )
         return await self._generate_report_prepared(
             community_id, level, context, input_fingerprint, child_rows
         )

@@ -6,6 +6,7 @@ For changing graphs, run the community pipeline again as required.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from typing import Any, Optional, cast
@@ -146,11 +147,11 @@ class CommunityPipeline:
         """
         with run_scope():
             logger.info("detecting communities")
-            existing_reports = self.graph_store.count_communities_with_reports(
-                self.graph_name
+            existing_reports = await asyncio.to_thread(
+                self.graph_store.count_communities_with_reports, self.graph_name
             )
             community_stats, bound_generation, generation_guarded = (
-                self._run_detection()
+                await self._run_detection_offloaded()
             )
             logger.info("found %s communities", len(community_stats))
             if existing_reports:
@@ -193,8 +194,10 @@ class CommunityPipeline:
             generation_lost = False
             for lvl in levels:
                 if generation_guarded:
-                    changed_level = self._first_generation_mismatch(
-                        bound_generation, [lvl]
+                    changed_level = await asyncio.to_thread(
+                        self._first_generation_mismatch,
+                        bound_generation,
+                        [lvl],
                     )
                     if changed_level is not None:
                         self._append_generation_warning(
@@ -238,8 +241,10 @@ class CommunityPipeline:
                     break
 
             if generation_guarded and not generation_lost:
-                changed_level = self._first_generation_mismatch(
-                    bound_generation, levels
+                changed_level = await asyncio.to_thread(
+                    self._first_generation_mismatch,
+                    bound_generation,
+                    levels,
                 )
                 if changed_level is not None:
                     self._append_generation_warning(
@@ -276,8 +281,10 @@ class CommunityPipeline:
                         expected_generation=bound_generation,
                     )
                     embedded_count = int(confirmed or 0)
-                    changed_level = self._first_generation_mismatch(
-                        bound_generation, levels
+                    changed_level = await asyncio.to_thread(
+                        self._first_generation_mismatch,
+                        bound_generation,
+                        levels,
                     )
                     if changed_level is not None:
                         self._append_generation_warning(
@@ -305,6 +312,50 @@ class CommunityPipeline:
             if token_usage is not None:
                 result["token_usage"] = token_usage
             return result
+
+    async def _run_detection_offloaded(
+        self,
+    ) -> tuple[list[dict], str | None, bool]:
+        """Run detection on a worker thread and wait for it on cancellation."""
+        task = asyncio.create_task(asyncio.to_thread(self._run_detection))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await self._drain_detection(task)
+            raise
+
+    async def _drain_detection(
+        self, task: asyncio.Task[tuple[list[dict], str | None, bool]]
+    ) -> None:
+        """Wait for active detection before the build surfaces cancellation.
+
+        Detection has no generation precondition, so a detached replacement
+        could delete a newer hierarchy. Repeated cancellation interrupts the
+        shield, not the worker; keep waiting until the worker finishes.
+        """
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception as error:
+                self._log_detection_failure(error)
+                return
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception as error:
+            self._log_detection_failure(error)
+
+    @staticmethod
+    def _log_detection_failure(error: Exception) -> None:
+        logger.warning(
+            "community detection failed after the build was cancelled: "
+            "%s: %s",
+            type(error).__name__,
+            error,
+        )
 
     def _run_detection(self) -> tuple[list[dict], str | None, bool]:
         """Run detection and return the stats with the bound generation."""

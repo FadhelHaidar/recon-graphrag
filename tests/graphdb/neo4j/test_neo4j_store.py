@@ -12,9 +12,10 @@ from recon_graphrag.models.artifacts import CommunityReport
 
 
 class FakeSession:
-    def __init__(self, calls, records):
+    def __init__(self, calls, records, scripted_records=None):
         self.calls = calls
         self.records = records
+        self.scripted_records = scripted_records if scripted_records is not None else []
 
     def __enter__(self):
         return self
@@ -24,6 +25,11 @@ class FakeSession:
 
     def run(self, query, parameters=None):
         self.calls.append((query.strip(), parameters or {}))
+        if self.scripted_records:
+            response = self.scripted_records.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
         return self.records
 
 
@@ -31,10 +37,11 @@ class FakeDriver:
     def __init__(self):
         self.calls = []
         self.records = []
+        self.scripted_records = []
 
     def session(self, **kwargs):
         self.session_kwargs = kwargs
-        return FakeSession(self.calls, self.records)
+        return FakeSession(self.calls, self.records, self.scripted_records)
 
 
 def test_execute_query_translates_records():
@@ -346,6 +353,10 @@ def test_vector_search_no_filters_fetches_exactly_k():
 
 def test_community_report_vector_search_overfetches_and_scopes():
     driver = FakeDriver()
+    driver.records = [
+        {"id": f"community:{i}", "level": 0, "score": 0.9 - i / 10}
+        for i in range(3)
+    ]
     store = Neo4jGraphStore(cast(neo4j.Driver, driver))
 
     store.vector_search_community_reports([0.1], "graph-a", top_k=3, level=0)
@@ -355,6 +366,7 @@ def test_community_report_vector_search_overfetches_and_scopes():
     assert "c.graph_name = $graph_name" in query
     assert params["candidate_k"] == 15
     assert params["level"] == 0
+    assert len(driver.calls) == 1
 
 
 def test_keyword_search_runs_fulltext_procedure_with_label_filter():
@@ -376,6 +388,7 @@ def test_keyword_search_runs_fulltext_procedure_with_label_filter():
 
 def test_vector_search_graph_filter_overfetches_and_scopes():
     driver = FakeDriver()
+    driver.records = [{"id": f"4:{i}", "score": 1.0 - i / 10} for i in range(5)]
     store = Neo4jGraphStore(cast(neo4j.Driver, driver))
 
     store.vector_search(
@@ -390,10 +403,12 @@ def test_vector_search_graph_filter_overfetches_and_scopes():
     assert params["graph_name"] == "graph-a"
     assert params["k"] == 25  # over-fetch before post-filter trims to top_k
     assert params["top_k"] == 5
+    assert len(driver.calls) == 1
 
 
 def test_keyword_search_graph_filter_overfetches_and_scopes():
     driver = FakeDriver()
+    driver.records = [{"id": f"4:{i}", "score": 1.0 - i / 10} for i in range(5)]
     store = Neo4jGraphStore(cast(neo4j.Driver, driver))
 
     store.keyword_search(
@@ -408,6 +423,351 @@ def test_keyword_search_graph_filter_overfetches_and_scopes():
     assert params["graph_name"] == "graph-a"
     assert params["k"] == 25
     assert params["top_k"] == 5
+    assert len(driver.calls) == 1
+
+
+def test_vector_search_retries_once_at_cap_when_graph_scoped_matches_starve():
+    driver = FakeDriver()
+    first_rows = [{"id": "4:a", "score": 0.9}]
+    wider_rows = [
+        {"id": "4:a", "score": 0.9},
+        {"id": "4:b", "score": 0.8},
+        {"id": "4:c", "score": 0.7},
+    ]
+    driver.scripted_records = [first_rows, wider_rows]
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    result = store.vector_search(
+        index_name="entity-embeddings",
+        query_vector=[0.1],
+        k=5,
+        label="__Entity__",
+        filters={"graph_name": "graph-a"},
+    )
+
+    assert result == wider_rows
+    assert len(driver.calls) == 2
+    assert driver.calls[0][1]["k"] == 25
+    assert driver.calls[0][1]["top_k"] == 5
+    assert driver.calls[1][1]["k"] == 1000
+    assert driver.calls[1][1]["top_k"] == 1000
+    assert "node:`__Entity__`" in driver.calls[1][0]
+    assert "node.graph_name = $graph_name" in driver.calls[1][0]
+
+
+def test_vector_search_retry_uses_best_score_and_identity_tie():
+    driver = FakeDriver()
+    driver.scripted_records = [
+        [],
+        [
+            {"id": "4:a", "score": 0.2},
+            {"id": "4:c", "score": 0.9},
+            {"id": "4:a", "score": 0.7},
+            {"id": "4:b", "score": 0.9},
+        ],
+    ]
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    result = store.vector_search(
+        index_name="entity-embeddings",
+        query_vector=[0.1],
+        k=5,
+        filters={"graph_name": "graph-a"},
+    )
+
+    assert result == [
+        {"id": "4:b", "score": 0.9},
+        {"id": "4:c", "score": 0.9},
+        {"id": "4:a", "score": 0.7},
+    ]
+
+
+def test_vector_search_does_not_retry_without_graph_scope():
+    driver = FakeDriver()
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    result = store.vector_search(
+        index_name="entity-embeddings",
+        query_vector=[0.1],
+        k=5,
+        label="__Entity__",
+    )
+
+    assert result == []
+    assert len(driver.calls) == 1
+
+
+def test_vector_search_does_not_retry_when_initial_width_reaches_cap():
+    driver = FakeDriver()
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    result = store.vector_search(
+        index_name="entity-embeddings",
+        query_vector=[0.1],
+        k=200,
+        filters={"graph_name": "graph-a"},
+    )
+
+    assert result == []
+    assert len(driver.calls) == 1
+    assert driver.calls[0][1]["k"] == 1000
+    assert driver.calls[0][1]["top_k"] == 200
+
+
+def test_vector_search_retry_empty_is_authoritative():
+    driver = FakeDriver()
+    driver.scripted_records = [
+        [{"id": "4:a", "score": 0.9}],
+        [],
+    ]
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    result = store.vector_search(
+        index_name="entity-embeddings",
+        query_vector=[0.1],
+        k=5,
+        filters={"graph_name": "graph-a"},
+    )
+
+    assert result == []
+    assert len(driver.calls) == 2
+
+
+def test_vector_search_retry_error_returns_nonempty_first_round(caplog):
+    driver = FakeDriver()
+    first_rows = [{"id": "4:a", "score": 0.9}, {"id": "4:b", "score": 0.8}]
+    driver.scripted_records = [
+        first_rows,
+        neo4j.exceptions.ServiceUnavailable("driver lost"),
+    ]
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    with caplog.at_level("WARNING"):
+        result = store.vector_search(
+            index_name="entity-embeddings",
+            query_vector=[0.1],
+            k=5,
+            filters={"graph_name": "graph-a"},
+        )
+
+    assert result == first_rows
+    assert len(driver.calls) == 2
+    assert "retry failed" in caplog.text
+
+
+def test_vector_search_retry_error_with_empty_first_round_propagates():
+    driver = FakeDriver()
+    driver.scripted_records = [
+        [],
+        neo4j.exceptions.ServiceUnavailable("driver lost"),
+    ]
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    with pytest.raises(neo4j.exceptions.ServiceUnavailable, match="driver lost"):
+        store.vector_search(
+            index_name="entity-embeddings",
+            query_vector=[0.1],
+            k=5,
+            filters={"graph_name": "graph-a"},
+        )
+
+
+def test_vector_search_retry_propagates_unrelated_error():
+    driver = FakeDriver()
+    driver.scripted_records = [
+        [{"id": "4:a", "score": 0.9}],
+        TypeError("invalid query parameters"),
+    ]
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    with pytest.raises(TypeError, match="invalid query parameters"):
+        store.vector_search(
+            index_name="entity-embeddings",
+            query_vector=[0.1],
+            k=5,
+            filters={"graph_name": "graph-a"},
+        )
+
+    assert len(driver.calls) == 2
+
+
+def test_keyword_search_retries_once_at_cap_when_graph_scoped_matches_starve():
+    driver = FakeDriver()
+    first_rows = [{"id": "4:a", "score": 12.0}]
+    wider_rows = [
+        {"id": "4:a", "score": 12.0},
+        {"id": "4:b", "score": 8.0},
+    ]
+    driver.scripted_records = [first_rows, wider_rows]
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    result = store.keyword_search(
+        index_name="entity-names",
+        query_text="Alice",
+        k=5,
+        filters={"graph_name": "graph-a"},
+    )
+
+    assert result == wider_rows
+    assert len(driver.calls) == 2
+    assert driver.calls[0][1]["k"] == 25
+    assert driver.calls[1][1]["k"] == 1000
+    assert driver.calls[1][1]["top_k"] == 1000
+
+
+def test_keyword_search_retry_empty_is_authoritative():
+    driver = FakeDriver()
+    driver.scripted_records = [
+        [{"id": "4:a", "score": 12.0}],
+        [],
+    ]
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    result = store.keyword_search(
+        index_name="entity-names",
+        query_text="Alice",
+        k=5,
+        filters={"graph_name": "graph-a"},
+    )
+
+    assert result == []
+    assert len(driver.calls) == 2
+
+
+def test_keyword_search_retry_propagates_unrelated_error():
+    driver = FakeDriver()
+    driver.scripted_records = [
+        [{"id": "4:a", "score": 12.0}],
+        RuntimeError("invalid keyword state"),
+    ]
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    with pytest.raises(RuntimeError, match="invalid keyword state"):
+        store.keyword_search(
+            index_name="entity-names",
+            query_text="Alice",
+            k=5,
+            filters={"graph_name": "graph-a"},
+        )
+
+    assert len(driver.calls) == 2
+
+
+def test_keyword_search_retry_driver_error_returns_nonempty_first_round():
+    driver = FakeDriver()
+    first_rows = [{"id": "4:a", "score": 12.0}, {"id": "4:b", "score": 8.0}]
+    driver.scripted_records = [
+        first_rows,
+        neo4j.exceptions.TransientError("database unavailable"),
+    ]
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    result = store.keyword_search(
+        index_name="entity-names",
+        query_text="Alice",
+        k=5,
+        filters={"graph_name": "graph-a"},
+    )
+
+    assert result == first_rows
+    assert len(driver.calls) == 2
+
+
+def test_community_report_search_retries_once_at_cap_when_matches_starve():
+    driver = FakeDriver()
+    first_rows = [{"id": "community:1", "level": 0, "score": 0.9}]
+    wider_rows = [
+        {"id": "community:1", "level": 0, "score": 0.9},
+        {"id": "community:2", "level": 0, "score": 0.8},
+        {"id": "community:3", "level": 0, "score": 0.7},
+    ]
+    driver.scripted_records = [first_rows, wider_rows]
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    result = store.vector_search_community_reports(
+        [0.1], "graph-a", top_k=3, level=0
+    )
+
+    assert result == wider_rows
+    assert len(driver.calls) == 2
+    assert driver.calls[0][1]["candidate_k"] == 15
+    assert driver.calls[1][1]["candidate_k"] == 500
+    assert driver.calls[1][1]["top_k"] == 500
+    assert driver.calls[1][1]["level"] == 0
+    assert "c.graph_name = $graph_name" in driver.calls[1][0]
+
+
+def test_community_report_search_retry_dedupes_by_id_and_level():
+    driver = FakeDriver()
+    driver.scripted_records = [
+        [],
+        [
+            {"id": "community:1", "level": 0, "score": 0.4},
+            {"id": "community:2", "level": 0, "score": 0.8},
+            {"id": "community:1", "level": 1, "score": 0.8},
+            {"id": "community:1", "level": 0, "score": 0.7},
+        ],
+    ]
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    result = store.vector_search_community_reports([0.1], "graph-a", top_k=3)
+
+    assert result == [
+        {"id": "community:1", "level": 1, "score": 0.8},
+        {"id": "community:2", "level": 0, "score": 0.8},
+        {"id": "community:1", "level": 0, "score": 0.7},
+    ]
+
+
+def test_community_report_search_does_not_retry_when_initial_width_reaches_cap():
+    driver = FakeDriver()
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    result = store.vector_search_community_reports([0.1], "graph-a", top_k=100)
+
+    assert result == []
+    assert len(driver.calls) == 1
+    assert driver.calls[0][1]["candidate_k"] == 500
+    assert driver.calls[0][1]["top_k"] == 100
+
+
+def test_community_report_search_retry_error_returns_nonempty_first_round():
+    driver = FakeDriver()
+    first_rows = [
+        {"id": "community:1", "level": 0, "score": 0.9},
+        {"id": "community:2", "level": 0, "score": 0.8},
+    ]
+    driver.scripted_records = [
+        first_rows,
+        neo4j.exceptions.ServiceUnavailable("driver lost"),
+    ]
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    result = store.vector_search_community_reports(
+        [0.1], "graph-a", top_k=3, level=0
+    )
+
+    assert result == first_rows
+    assert len(driver.calls) == 2
+
+
+def test_community_report_search_retry_propagates_unrelated_error():
+    driver = FakeDriver()
+    driver.scripted_records = [
+        [
+            {"id": "community:1", "level": 0, "score": 0.9},
+            {"id": "community:2", "level": 0, "score": 0.8},
+        ],
+        TypeError("invalid report parameters"),
+    ]
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    with pytest.raises(TypeError, match="invalid report parameters"):
+        store.vector_search_community_reports(
+            [0.1], "graph-a", top_k=3, level=0
+        )
+
+    assert len(driver.calls) == 2
 
 
 def test_store_community_report_sets_structured_fields():

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from typing import Any, cast
 
 import pytest
@@ -13,6 +14,7 @@ from recon_graphrag.communities.reports import ReportRubric, ReportValidationErr
 from recon_graphrag.communities.summarization import BuildStats, CommunitySummarizer
 from recon_graphrag.graphdb.store_base import _GENERATION_UNGUARDED
 from recon_graphrag.llm.base import LLMResponse
+from tests.pipelines.test_async_offload import BlockingCalls, with_heartbeat
 
 
 class FakeReportGraphStore:
@@ -1274,3 +1276,224 @@ async def test_direct_summarizer_does_not_downgrade_when_the_generation_read_fai
     assert store.public_stored_reports == []
     assert store.guarded_stored_reports == []
     assert summarizer._generation_changed is True
+
+
+class BlockingGuardedReportStore(GuardedReportGraphStore, BlockingCalls):
+    """Guarded report store whose reads and writes block their callers."""
+
+    def __init__(self, count: int = 1, generations=None):
+        GuardedReportGraphStore.__init__(self, count, generations)
+        BlockingCalls.__init__(self)
+
+    def _get_community_generations(self, graph_name, level):
+        self.block("generation_read")
+        return super()._get_community_generations(graph_name, level)
+
+    def get_communities(self, graph_name, level=None):
+        self.block("communities_read")
+        return super().get_communities(graph_name, level=level)
+
+    def get_community_ranked_context(self, graph_name, community_id, level=0):
+        self.block("context_read")
+        return super().get_community_ranked_context(graph_name, community_id, level)
+
+    def get_claims_for_entities(self, graph_name, entity_ids):
+        self.block("claims_read")
+        return super().get_claims_for_entities(graph_name, entity_ids)
+
+    def get_child_community_reports(
+        self, graph_name, community_id, level, child_level
+    ):
+        self.block("children_read")
+        return super().get_child_community_reports(
+            graph_name, community_id, level, child_level
+        )
+
+    def get_community_reports_by_keys(self, graph_name, keys, top_k):
+        self.block("existing_read")
+        return super().get_community_reports_by_keys(graph_name, keys, top_k)
+
+    def _store_community_report_guarded(
+        self, report, graph_name, *, expected_generation
+    ):
+        self.block("report_write")
+        return super()._store_community_report_guarded(
+            report, graph_name, expected_generation=expected_generation
+        )
+
+    def _mark_community_report_failed_guarded(
+        self, graph_name, community_id, level, error, *, expected_generation
+    ):
+        self.block("failure_write")
+        return super()._mark_community_report_failed_guarded(
+            graph_name,
+            community_id,
+            level,
+            error,
+            expected_generation=expected_generation,
+        )
+
+
+@pytest.mark.asyncio
+async def test_direct_summarizer_reads_and_write_run_off_loop():
+    store = BlockingGuardedReportStore(generations=["generation-a"])
+    summarizer = CommunitySummarizer(cast(Any, store), cast(Any, FakeValidReportLLM()))
+
+    results, stats = await with_heartbeat(
+        summarizer.generate_all(level=0, skip_existing=True)
+    )
+
+    assert stats.succeeded == 1
+    assert [result["id"] for result in results] == ["community:0"]
+    store.assert_offloaded(
+        "generation_read",
+        "communities_read",
+        "context_read",
+        "claims_read",
+        "children_read",
+        "existing_read",
+        "report_write",
+    )
+
+
+class FailingReportLLM:
+    async def ainvoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
+        raise RuntimeError("provider failed")
+
+
+@pytest.mark.asyncio
+async def test_managed_summarizer_reads_and_failure_write_run_off_loop():
+    store = BlockingGuardedReportStore(generations=["generation-a"])
+    summarizer = CommunitySummarizer(
+        cast(Any, store), cast(Any, FailingReportLLM())
+    )
+    summarizer._bind_community_generation("generation-a")
+
+    results, stats = await with_heartbeat(summarizer.generate_all(level=0))
+
+    assert results == []
+    assert stats.failed == 1
+    store.assert_offloaded(
+        "communities_read",
+        "context_read",
+        "claims_read",
+        "children_read",
+        "failure_write",
+    )
+    labels = {label for label, _ in store.call_threads}
+    assert "generation_read" not in labels
+    assert "report_write" not in labels
+
+
+class ReplacingGuardedReportStore(GuardedReportGraphStore):
+    """Guarded store with a generation replacement after a captured snapshot."""
+
+    def __init__(self):
+        super().__init__(count=1, generations=["generation-a"])
+        self.write_started = threading.Event()
+        self.release_write = threading.Event()
+        self.write_finished = threading.Event()
+        self.write_thread: int | None = None
+        self.write_generation: str | None = None
+        self.current_generation = "generation-a"
+        self.report_state: dict[str, str] = {
+            "generation": "generation-a",
+            "title": "older generation",
+            "report_status": "success",
+        }
+        self.failure_marks: list[tuple[str, str | None]] = []
+
+    def replace_generation(self, generation: str) -> None:
+        self.current_generation = generation
+        self.report_state = {
+            "generation": generation,
+            "title": "newer generation",
+            "report_status": "success",
+        }
+
+    def _store_community_report_guarded(
+        self, report, graph_name, *, expected_generation
+    ):
+        self.write_thread = threading.get_ident()
+        self.write_generation = expected_generation
+        self.write_started.set()
+        self.release_write.wait(5)
+        if expected_generation != self.current_generation:
+            self.write_finished.set()
+            return False
+        self.report_state["title"] = report.title
+        self.write_finished.set()
+        return True
+
+    def _mark_community_report_failed_guarded(
+        self, graph_name, community_id, level, error, *, expected_generation
+    ):
+        self.failure_marks.append((community_id, expected_generation))
+        if expected_generation != self.current_generation:
+            return False
+        self.report_state["report_status"] = "failed"
+        return True
+
+
+@pytest.mark.asyncio
+async def test_cancelled_late_report_write_leaves_a_replaced_generation_untouched():
+    store = ReplacingGuardedReportStore()
+    summarizer = CommunitySummarizer(
+        cast(Any, store), cast(Any, FakeValidReportLLM()), concurrency=1
+    )
+    task = asyncio.create_task(summarizer.generate_all(level=0))
+    assert await asyncio.to_thread(store.write_started.wait, 2)
+
+    task.cancel()
+    await asyncio.sleep(0.01)
+    store.replace_generation("generation-b")
+    store.release_write.set()
+    assert await asyncio.to_thread(store.write_finished.wait, 2)
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2)
+
+    assert store.write_thread != threading.get_ident()
+    assert store.write_generation == "generation-a"
+    assert store.public_stored_reports == []
+    assert store.report_state == {
+        "generation": "generation-b",
+        "title": "newer generation",
+        "report_status": "success",
+    }
+    assert store.failure_marks == []
+
+
+class ReplacingReportLLM(FakeValidReportLLM):
+    """Replace the hierarchy while a report is being generated."""
+
+    def __init__(self, store: ReplacingGuardedReportStore):
+        super().__init__()
+        self.store = store
+
+    async def ainvoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
+        self.store.replace_generation("generation-b")
+        return await super().ainvoke(prompt, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_late_report_write_after_replacement_is_rejected_without_a_failure_mark():
+    store = ReplacingGuardedReportStore()
+    store.release_write.set()
+    summarizer = CommunitySummarizer(
+        cast(Any, store), cast(Any, ReplacingReportLLM(store))
+    )
+
+    results, stats = await summarizer.generate_all(level=0)
+
+    assert results == []
+    assert stats.failed == 1
+    assert summarizer._generation_changed is True
+    assert store.write_generation == "generation-a"
+    assert store.public_stored_reports == []
+    assert store.report_state == {
+        "generation": "generation-b",
+        "title": "newer generation",
+        "report_status": "success",
+    }
+    assert store.failure_marks == []

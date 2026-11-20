@@ -172,7 +172,8 @@ class CommunityReportEmbedder:
             self._warn_unguarded_once()
 
         while True:
-            reports = self._select_reports(
+            reports = await asyncio.to_thread(
+                self._select_reports,
                 graph_name,
                 expected_generation,
                 batch_size,
@@ -226,8 +227,12 @@ class CommunityReportEmbedder:
 
             # Save confirmed successes before diagnostics. A diagnostic write
             # must never discard vectors that the provider already produced.
-            total += self._store_successes(graph_name, embedded, guarded=guarded)
-            self._store_failures(graph_name, failed, guarded=guarded)
+            total += await asyncio.to_thread(
+                self._store_successes, graph_name, embedded, guarded=guarded
+            )
+            await asyncio.to_thread(
+                self._store_failures, graph_name, failed, guarded=guarded
+            )
 
         if total == 0:
             logger.info("all community reports already have embeddings")

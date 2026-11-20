@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -17,9 +18,25 @@ from recon_graphrag.graphdb.cypher import (
     escape_cypher_identifier,
 )
 from recon_graphrag.graphdb.memgraph.index_manager import IndexManager
+from recon_graphrag.graphdb.store_base import (
+    _COMMUNITY_REPORT_SEARCH_EXPANSION_CAP,
+    _ENTITY_SEARCH_EXPANSION_CAP,
+    _SEARCH_RETRY_ERRORS,
+    BaseGraphStore,
+    TransactionExecutor,
+    _dedupe_search_rows,
+    _should_expand_search,
+    _unique_search_row_count,
+)
 from recon_graphrag.models.types import IndexConfig
 from recon_graphrag.pipelines.writer import CypherGraphWriter
-from recon_graphrag.graphdb.store_base import BaseGraphStore, TransactionExecutor
+
+logger = logging.getLogger(__name__)
+
+
+def _is_missing_text_search(error: Exception) -> bool:
+    message = str(error).lower()
+    return "text_search.search" in message or "tantivy error" in message
 
 
 def _escape_tantivy_term(value: str) -> str:
@@ -371,15 +388,59 @@ class MemgraphGraphStore(BaseGraphStore):
         ORDER BY similarity DESC
         LIMIT $top_k
         """
-        return self.execute_query(
-            query,
-            {
-                "k": overfetch_k,
-                "top_k": k,
-                "query_vector": query_vector,
-                "graph_name": filters.get("graph_name"),
-            },
+        params = {
+            "k": overfetch_k,
+            "top_k": k,
+            "query_vector": query_vector,
+            "graph_name": filters.get("graph_name"),
+        }
+        first_rows = self.execute_query(query, params)
+        if not _should_expand_search(
+            first_rows,
+            target=k,
+            initial_width=overfetch_k,
+            cap=_ENTITY_SEARCH_EXPANSION_CAP,
+            key_fields=("id",),
+            graph_scoped=filters.get("graph_name") is not None,
+        ):
+            return first_rows
+
+        logger.debug(
+            "Memgraph entity vector search expanding index=%s target=%d "
+            "initial_width=%d scoped_matches=%d",
+            index_name,
+            k,
+            overfetch_k,
+            _unique_search_row_count(first_rows, ("id",)),
         )
+        try:
+            wider_rows = self.execute_query(
+                query,
+                {
+                    **params,
+                    "k": _ENTITY_SEARCH_EXPANSION_CAP,
+                    "top_k": _ENTITY_SEARCH_EXPANSION_CAP,
+                },
+            )
+        except _SEARCH_RETRY_ERRORS:
+            if first_rows:
+                logger.warning(
+                    "Memgraph entity vector search retry failed index=%s; "
+                    "returning %d first-round rows",
+                    index_name,
+                    len(first_rows),
+                    exc_info=True,
+                )
+                return first_rows
+            raise
+
+        ranked = _dedupe_search_rows(wider_rows, ("id",))
+        logger.debug(
+            "Memgraph entity vector search expanded index=%s scoped_matches=%d",
+            index_name,
+            len(ranked),
+        )
+        return ranked[:k]
 
     def keyword_search(
         self,
@@ -406,21 +467,67 @@ class MemgraphGraphStore(BaseGraphStore):
         ORDER BY score DESC
         LIMIT $top_k
         """
+        params = {
+            "query_text": formatted_query,
+            "k": overfetch_k,
+            "top_k": k,
+            "graph_name": filters.get("graph_name"),
+        }
         try:
-            return self.execute_query(
-                query,
-                {
-                    "query_text": formatted_query,
-                    "k": overfetch_k,
-                    "top_k": k,
-                    "graph_name": filters.get("graph_name"),
-                },
-            )
+            first_rows = self.execute_query(query, params)
         except Exception as exc:
-            message = str(exc).lower()
-            if "text_search.search" in message or "tantivy error" in message:
+            if _is_missing_text_search(exc):
                 return []
             raise
+
+        if not _should_expand_search(
+            first_rows,
+            target=k,
+            initial_width=overfetch_k,
+            cap=_ENTITY_SEARCH_EXPANSION_CAP,
+            key_fields=("id",),
+            graph_scoped=filters.get("graph_name") is not None,
+        ):
+            return first_rows
+
+        logger.debug(
+            "Memgraph entity keyword search expanding index=%s target=%d "
+            "initial_width=%d scoped_matches=%d",
+            index_name,
+            k,
+            overfetch_k,
+            _unique_search_row_count(first_rows, ("id",)),
+        )
+        try:
+            wider_rows = self.execute_query(
+                query,
+                {
+                    **params,
+                    "k": _ENTITY_SEARCH_EXPANSION_CAP,
+                    "top_k": _ENTITY_SEARCH_EXPANSION_CAP,
+                },
+            )
+        except _SEARCH_RETRY_ERRORS as exc:
+            if first_rows:
+                logger.warning(
+                    "Memgraph entity keyword search retry failed index=%s; "
+                    "returning %d first-round rows",
+                    index_name,
+                    len(first_rows),
+                    exc_info=True,
+                )
+                return first_rows
+            if _is_missing_text_search(exc):
+                return []
+            raise
+
+        ranked = _dedupe_search_rows(wider_rows, ("id",))
+        logger.debug(
+            "Memgraph entity keyword search expanded index=%s scoped_matches=%d",
+            index_name,
+            len(ranked),
+        )
+        return ranked[:k]
 
     def fetch_entity_context(
         self,
@@ -497,16 +604,65 @@ class MemgraphGraphStore(BaseGraphStore):
         ORDER BY similarity DESC
         LIMIT $top_k
         """
-        return self.execute_query(
-            query,
-            {
-                "candidate_k": max(top_k * 5, top_k),
-                "top_k": top_k,
-                "query_vector": query_vector,
-                "graph_name": graph_name,
-                "level": level,
-            },
+        initial_width = max(top_k * 5, top_k)
+        params = {
+            "candidate_k": initial_width,
+            "top_k": top_k,
+            "query_vector": query_vector,
+            "graph_name": graph_name,
+            "level": level,
+        }
+        first_rows = self.execute_query(query, params)
+        if not _should_expand_search(
+            first_rows,
+            target=top_k,
+            initial_width=initial_width,
+            cap=_COMMUNITY_REPORT_SEARCH_EXPANSION_CAP,
+            key_fields=("id", "level"),
+            graph_scoped=graph_name is not None,
+        ):
+            return first_rows
+
+        logger.debug(
+            "Memgraph community report search expanding graph=%s level=%s "
+            "target=%d initial_width=%d scoped_matches=%d",
+            graph_name,
+            level,
+            top_k,
+            initial_width,
+            _unique_search_row_count(first_rows, ("id", "level")),
         )
+        try:
+            wider_rows = self.execute_query(
+                query,
+                {
+                    **params,
+                    "candidate_k": _COMMUNITY_REPORT_SEARCH_EXPANSION_CAP,
+                    "top_k": _COMMUNITY_REPORT_SEARCH_EXPANSION_CAP,
+                },
+            )
+        except _SEARCH_RETRY_ERRORS:
+            if first_rows:
+                logger.warning(
+                    "Memgraph community report search retry failed graph=%s "
+                    "level=%s; returning %d first-round rows",
+                    graph_name,
+                    level,
+                    len(first_rows),
+                    exc_info=True,
+                )
+                return first_rows
+            raise
+
+        ranked = _dedupe_search_rows(wider_rows, ("id", "level"))
+        logger.debug(
+            "Memgraph community report search expanded graph=%s level=%s "
+            "scoped_matches=%d",
+            graph_name,
+            level,
+            len(ranked),
+        )
+        return ranked[:top_k]
 
     def detect_communities(
         self,

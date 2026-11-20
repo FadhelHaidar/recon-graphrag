@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import LiteralString, Optional, cast
@@ -15,9 +16,20 @@ from recon_graphrag.graphdb.cypher import (
     escape_cypher_identifier,
 )
 from recon_graphrag.graphdb.neo4j.index_manager import IndexManager
-from recon_graphrag.graphdb.store_base import BaseGraphStore, TransactionExecutor
+from recon_graphrag.graphdb.store_base import (
+    _COMMUNITY_REPORT_SEARCH_EXPANSION_CAP,
+    _ENTITY_SEARCH_EXPANSION_CAP,
+    _SEARCH_RETRY_ERRORS,
+    BaseGraphStore,
+    TransactionExecutor,
+    _dedupe_search_rows,
+    _should_expand_search,
+    _unique_search_row_count,
+)
 from recon_graphrag.models.types import IndexConfig
 from recon_graphrag.pipelines.writer import CypherGraphWriter
+
+logger = logging.getLogger(__name__)
 
 
 class Neo4jGraphStore(BaseGraphStore):
@@ -350,16 +362,60 @@ class Neo4jGraphStore(BaseGraphStore):
         ORDER BY score DESC
         LIMIT $top_k
         """
-        return self.execute_query(
-            query,
-            {
-                "index_name": index_name,
-                "k": overfetch_k,
-                "top_k": k,
-                "query_vector": query_vector,
-                "graph_name": filters.get("graph_name"),
-            },
+        params = {
+            "index_name": index_name,
+            "k": overfetch_k,
+            "top_k": k,
+            "query_vector": query_vector,
+            "graph_name": filters.get("graph_name"),
+        }
+        first_rows = self.execute_query(query, params)
+        if not _should_expand_search(
+            first_rows,
+            target=k,
+            initial_width=overfetch_k,
+            cap=_ENTITY_SEARCH_EXPANSION_CAP,
+            key_fields=("id",),
+            graph_scoped=filters.get("graph_name") is not None,
+        ):
+            return first_rows
+
+        logger.debug(
+            "Neo4j entity vector search expanding index=%s target=%d "
+            "initial_width=%d scoped_matches=%d",
+            index_name,
+            k,
+            overfetch_k,
+            _unique_search_row_count(first_rows, ("id",)),
         )
+        try:
+            wider_rows = self.execute_query(
+                query,
+                {
+                    **params,
+                    "k": _ENTITY_SEARCH_EXPANSION_CAP,
+                    "top_k": _ENTITY_SEARCH_EXPANSION_CAP,
+                },
+            )
+        except _SEARCH_RETRY_ERRORS:
+            if first_rows:
+                logger.warning(
+                    "Neo4j entity vector search retry failed index=%s; "
+                    "returning %d first-round rows",
+                    index_name,
+                    len(first_rows),
+                    exc_info=True,
+                )
+                return first_rows
+            raise
+
+        ranked = _dedupe_search_rows(wider_rows, ("id",))
+        logger.debug(
+            "Neo4j entity vector search expanded index=%s scoped_matches=%d",
+            index_name,
+            len(ranked),
+        )
+        return ranked[:k]
 
     def keyword_search(
         self,
@@ -391,16 +447,60 @@ class Neo4jGraphStore(BaseGraphStore):
         ORDER BY score DESC
         LIMIT $top_k
         """
-        return self.execute_query(
-            query,
-            {
-                "index_name": index_name,
-                "query_text": query_text,
-                "k": overfetch_k,
-                "top_k": k,
-                "graph_name": filters.get("graph_name"),
-            },
+        params = {
+            "index_name": index_name,
+            "query_text": query_text,
+            "k": overfetch_k,
+            "top_k": k,
+            "graph_name": filters.get("graph_name"),
+        }
+        first_rows = self.execute_query(query, params)
+        if not _should_expand_search(
+            first_rows,
+            target=k,
+            initial_width=overfetch_k,
+            cap=_ENTITY_SEARCH_EXPANSION_CAP,
+            key_fields=("id",),
+            graph_scoped=filters.get("graph_name") is not None,
+        ):
+            return first_rows
+
+        logger.debug(
+            "Neo4j entity keyword search expanding index=%s target=%d "
+            "initial_width=%d scoped_matches=%d",
+            index_name,
+            k,
+            overfetch_k,
+            _unique_search_row_count(first_rows, ("id",)),
         )
+        try:
+            wider_rows = self.execute_query(
+                query,
+                {
+                    **params,
+                    "k": _ENTITY_SEARCH_EXPANSION_CAP,
+                    "top_k": _ENTITY_SEARCH_EXPANSION_CAP,
+                },
+            )
+        except _SEARCH_RETRY_ERRORS:
+            if first_rows:
+                logger.warning(
+                    "Neo4j entity keyword search retry failed index=%s; "
+                    "returning %d first-round rows",
+                    index_name,
+                    len(first_rows),
+                    exc_info=True,
+                )
+                return first_rows
+            raise
+
+        ranked = _dedupe_search_rows(wider_rows, ("id",))
+        logger.debug(
+            "Neo4j entity keyword search expanded index=%s scoped_matches=%d",
+            index_name,
+            len(ranked),
+        )
+        return ranked[:k]
 
     def fetch_entity_context(
         self,
@@ -476,17 +576,66 @@ class Neo4jGraphStore(BaseGraphStore):
         ORDER BY score DESC
         LIMIT $top_k
         """
-        return self.execute_query(
-            query,
-            {
-                "index_name": "community-report-embeddings",
-                "candidate_k": max(top_k * 5, top_k),
-                "top_k": top_k,
-                "query_vector": query_vector,
-                "graph_name": graph_name,
-                "level": level,
-            },
+        initial_width = max(top_k * 5, top_k)
+        params = {
+            "index_name": "community-report-embeddings",
+            "candidate_k": initial_width,
+            "top_k": top_k,
+            "query_vector": query_vector,
+            "graph_name": graph_name,
+            "level": level,
+        }
+        first_rows = self.execute_query(query, params)
+        if not _should_expand_search(
+            first_rows,
+            target=top_k,
+            initial_width=initial_width,
+            cap=_COMMUNITY_REPORT_SEARCH_EXPANSION_CAP,
+            key_fields=("id", "level"),
+            graph_scoped=graph_name is not None,
+        ):
+            return first_rows
+
+        logger.debug(
+            "Neo4j community report search expanding graph=%s level=%s "
+            "target=%d initial_width=%d scoped_matches=%d",
+            graph_name,
+            level,
+            top_k,
+            initial_width,
+            _unique_search_row_count(first_rows, ("id", "level")),
         )
+        try:
+            wider_rows = self.execute_query(
+                query,
+                {
+                    **params,
+                    "candidate_k": _COMMUNITY_REPORT_SEARCH_EXPANSION_CAP,
+                    "top_k": _COMMUNITY_REPORT_SEARCH_EXPANSION_CAP,
+                },
+            )
+        except _SEARCH_RETRY_ERRORS:
+            if first_rows:
+                logger.warning(
+                    "Neo4j community report search retry failed graph=%s level=%s; "
+                    "returning %d first-round rows",
+                    graph_name,
+                    level,
+                    len(first_rows),
+                    exc_info=True,
+                )
+                return first_rows
+            raise
+
+        ranked = _dedupe_search_rows(wider_rows, ("id", "level"))
+        logger.debug(
+            "Neo4j community report search expanded graph=%s level=%s "
+            "scoped_matches=%d",
+            graph_name,
+            level,
+            len(ranked),
+        )
+        return ranked[:top_k]
 
     def detect_communities(
         self,

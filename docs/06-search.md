@@ -1322,6 +1322,74 @@ Neo4j passes the raw keyword query to Lucene full-text search. Memgraph rewrites
 the text into a Tantivy query, preserving phrases and joining escaped tokens
 with `OR`.
 
+### Bounded Candidate Expansion
+
+A graph or level filter runs after the index returns candidates. If too few
+scoped matches survive, search retries the same index read once at a wider
+width. This behavior is best effort. It does not guarantee exact recall. It
+applies to the built-in Neo4j and Memgraph stores. A custom store keeps its own
+search behavior.
+
+The first read keeps the existing query and width:
+
+- Entity vector and keyword search request `max(k * 5, k)` candidates when a
+  label or graph filter applies. Without a filter, they request `k`.
+- Community report vector search requests `max(top_k * 5, top_k)` candidates.
+- The first read keeps its graph, label, and level predicates. It keeps its
+  score order and returns at most the requested target.
+
+The entity `k` is the hybrid candidate target. Local and DRIFT derive it from
+`top_k` and `effective_search_ratio`.
+
+Entity search retries only when all of these conditions are true:
+
+- The call has a `graph_name` filter.
+- The first width is greater than 0 and less than 1000.
+- The scoped rows contain fewer than `k` distinct entity IDs.
+
+Community report search retries only when both conditions are true:
+
+- The first width is greater than 0 and less than 500.
+- The scoped rows contain fewer than `top_k` distinct `(id, level)` pairs.
+
+Report search always has graph scope. It also keeps its optional level filter.
+
+A retry is one wider read:
+
+| Search | First width | Retry width | Identity key |
+| --- | --- | --- | --- |
+| Entity vector | `max(k * 5, k)` with a label or graph filter | 1000 | `id` |
+| Entity keyword | `max(k * 5, k)` with a label or graph filter | 1000 | `id` |
+| Community report vector | `max(top_k * 5, top_k)` | 500 | `(id, level)` |
+
+The retry keeps the same predicates and score order. It does not run without
+graph scope. It does not run when the first width already reaches the cap.
+
+A successful retry replaces the first read. Search never merges two snapshots.
+Retry rows are deduplicated by identity. The best native score wins for each
+identity. Rows are ordered by native score in descending order. Equal scores
+use identity order, so ties do not depend on database row order. The result is
+trimmed to the requested count. A wider read that returns fewer rows or no rows
+is still authoritative.
+
+A database or driver error on the retry does not fail a nonempty result. Search
+logs a warning and returns the first read. Other retry errors propagate. If the
+first read is empty, the original error path applies. A failed first read never
+enters the retry. The Memgraph text-index translation stays the same: a missing
+`text_search.search` procedure or Tantivy error returns an empty result.
+
+Raw prefilter yields are unavailable. The index procedure yields candidates,
+and the same statement applies the scope filter. A true raw count needs either
+an extra count read or an aggregate that changes the legacy first query. Both
+are excluded. Debug logs report the scoped unique match count for each round.
+Treat those counts as post-filter diagnostics, not raw index yields.
+
+The policy adds at most one bounded read per starved search call. It has no
+wall-time cap. A wider read still uses approximate nearest-neighbor or
+full-text semantics. It cannot prove that no other valid result exists.
+Report vector reads use the same committed vectors as before. Expansion does
+not bypass the report freshness checks.
+
 ---
 
 ## Traversal Limits
@@ -1582,6 +1650,14 @@ The `community-report-embeddings` dimension must match the embedder that creates
 
 Built-in stores and `CommunityPipeline` bind report and vector writes to one detection generation. A custom store without the guarded private operations uses the public path; that path cannot reject stale in-flight results or detect a model change. A missing report vector keeps the existing DRIFT fallback to local-style entity search.
 
+### Async store calls
+
+Search APIs are async, but `GraphStore` methods are synchronous. Local search, global search, and DRIFT call store methods on worker threads through `asyncio.to_thread`. The SDK uses the default executor and adds no setting.
+
+A custom store must accept concurrent calls from multiple threads. Each call must own its session and return materialized data. The SDK adds no stage-wide lock and no snapshot across calls. A search that spans several calls can observe a newer graph state between calls.
+
+Cancellation does not stop an active worker call. A cancelled search can let one completed read finish. A cancelled search does not write graph state.
+
 ---
 
 ## Current Limits
@@ -1593,6 +1669,8 @@ Built-in stores and `CommunityPipeline` bind report and vector writes to one det
   multi-hop paths.
 - Global search uses one community level at a time.
 - Global search uses bounded parallel map calls.
+- Filtered entity and report search expands once at a bounded cap. It does not
+  guarantee exact recall or a maximum latency.
 
 ---
 

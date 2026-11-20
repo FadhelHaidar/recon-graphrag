@@ -10,6 +10,7 @@ answers anchored to particular entities and their local graph neighborhood.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any, Optional
@@ -187,7 +188,9 @@ class LocalSearchRetriever:
                 )
 
             phase_start = time.monotonic()
-            citations, citation_warnings = self._resolve_citations(retriever_result)
+            citations, citation_warnings = await asyncio.to_thread(
+                self._resolve_citations, retriever_result
+            )
             logger.debug(
                 "local phase=citations ms=%d citations=%d total_ms=%d",
                 int((time.monotonic() - phase_start) * 1000),
@@ -300,7 +303,8 @@ class LocalSearchRetriever:
             entity_matches.append({"id": entity_id, "score": score})
 
         phase_start = time.monotonic()
-        mixed = self._mixed_context_builder.build_context(
+        mixed = await asyncio.to_thread(
+            self._mixed_context_builder.build_context,
             entity_matches=entity_matches,
             entity_context_rows=entity_context_rows,
             token_budget=token_budget,

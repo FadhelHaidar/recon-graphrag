@@ -1,12 +1,16 @@
 """Tests for the community pipeline wrapper."""
 
+import asyncio
 import json
 import logging
+import threading
 from typing import Any, cast
 
 import pytest
 
 from recon_graphrag.communities.pipeline import CommunityPipeline
+from recon_graphrag.utils.tokens import TiktokenTokenCounter
+from tests.pipelines.test_async_offload import BlockingCalls, with_heartbeat
 
 
 class FakeGraphStore:
@@ -703,3 +707,141 @@ async def test_guarded_build_skips_an_embedder_without_generation_support(
     assert result["embedded_reports"] == 0
     assert result["status"] == "completed"
     assert "report embeddings are skipped" in caplog.text
+
+
+class BlockingGuardedPipelineStore(GuardedPipelineStore, BlockingCalls):
+    """Guarded pipeline store whose reads and writes block their callers."""
+
+    def __init__(self, communities, **kwargs):
+        GuardedPipelineStore.__init__(self, communities, **kwargs)
+        BlockingCalls.__init__(self)
+
+    def count_communities_with_reports(self, graph_name):
+        self.block("preflight")
+        return super().count_communities_with_reports(graph_name)
+
+    def _detect_communities_with_generation(self, **kwargs):
+        self.block("detection")
+        return super()._detect_communities_with_generation(**kwargs)
+
+    def _get_community_generations(self, graph_name, level):
+        self.block("generation")
+        return super()._get_community_generations(graph_name, level)
+
+    def get_communities(self, graph_name, level=None):
+        self.block("communities")
+        return super().get_communities(graph_name, level=level)
+
+    def get_community_ranked_context(self, graph_name, community_id, level=0):
+        self.block("context")
+        return super().get_community_ranked_context(graph_name, community_id, level)
+
+    def get_claims_for_entities(self, graph_name, entity_ids):
+        self.block("claims")
+        return super().get_claims_for_entities(graph_name, entity_ids)
+
+    def get_child_community_reports(
+        self, graph_name, community_id, level, child_level
+    ):
+        self.block("children")
+        return super().get_child_community_reports(
+            graph_name, community_id, level, child_level
+        )
+
+    def _store_community_report_guarded(
+        self, report, graph_name, *, expected_generation
+    ):
+        self.block("report_write")
+        return super()._store_community_report_guarded(
+            report, graph_name, expected_generation=expected_generation
+        )
+
+
+@pytest.mark.asyncio
+async def test_pipeline_preflight_detection_and_report_reads_run_off_loop():
+    # Loading the BPE vocabulary is a one-time ~200ms cost, not a store read.
+    TiktokenTokenCounter().count("warm")
+    store = BlockingGuardedPipelineStore(
+        [{"id": "c0", "level": 0, "entity_count": 2}],
+        generation_reads=["generation-a", "generation-a"],
+    )
+
+    result = await with_heartbeat(_pipeline(store).build())
+
+    assert result["reports"] == 1
+    store.assert_offloaded(
+        "preflight",
+        "detection",
+        "generation",
+        "communities",
+        "context",
+        "claims",
+        "children",
+        "report_write",
+    )
+
+
+class GatedDetectionStore:
+    """Detection blocks on a test gate so cancellation timing is deterministic."""
+
+    def __init__(self):
+        self.detection_started = threading.Event()
+        self.release_detection = threading.Event()
+        self.detection_finished = threading.Event()
+        self.detection_calls = 0
+        self.follow_on_calls: list[str] = []
+
+    def count_communities_with_reports(self, graph_name):
+        return 0
+
+    def _detect_communities_with_generation(self, **kwargs):
+        self.detection_calls += 1
+        self.detection_started.set()
+        self.release_detection.wait(5)
+        self.detection_finished.set()
+        return [{"id": "c0", "level": 0, "entity_count": 1}], "generation-a"
+
+    def _get_community_generations(self, graph_name, level):
+        self.follow_on_calls.append("generation")
+        return ["generation-a"]
+
+    def get_communities(self, graph_name, level=None):
+        self.follow_on_calls.append("communities")
+        return []
+
+    def _store_community_report_guarded(
+        self, report, graph_name, *, expected_generation
+    ):
+        self.follow_on_calls.append("report_write")
+        return True
+
+    def _mark_community_report_failed_guarded(
+        self, graph_name, community_id, level, error, *, expected_generation
+    ):
+        self.follow_on_calls.append("failure_write")
+        return True
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_waits_for_detection_and_starts_no_follow_on():
+    store = GatedDetectionStore()
+    pipeline = _pipeline(store)
+    task = asyncio.create_task(pipeline.build())
+    assert await asyncio.to_thread(store.detection_started.wait, 2)
+
+    task.cancel()
+    await asyncio.sleep(0.01)
+    assert not task.done()
+
+    task.cancel()
+    await asyncio.sleep(0.01)
+    assert not task.done()
+
+    store.release_detection.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2)
+
+    assert task.cancelled()
+    assert store.detection_finished.is_set()
+    assert store.detection_calls == 1
+    assert store.follow_on_calls == []

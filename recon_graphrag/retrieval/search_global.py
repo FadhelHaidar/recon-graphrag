@@ -437,7 +437,8 @@ class GlobalSearchRetriever:
                 selection_mode="dynamic" if dynamic else "static",
             )
 
-            resolved_level = resolve_community_level(
+            resolved_level = await asyncio.to_thread(
+                resolve_community_level,
                 self.graph_store,
                 self.graph_name,
                 community_level,
@@ -464,7 +465,9 @@ class GlobalSearchRetriever:
             else:
                 assert resolved_level is not None
                 diag.levels_visited = [resolved_level]
-                reports = self._read_reports(resolved_level, self.max_reports)
+                reports = await asyncio.to_thread(
+                    self._read_reports, resolved_level, self.max_reports
+                )
             read_ms = int((time.monotonic() - phase_start) * 1000)
             diag.reports_available = len(reports)
             logger.debug(
@@ -601,7 +604,9 @@ class GlobalSearchRetriever:
                 context = point_context if point_mode else self._partials_context(scored)
                 # Resolve citations from explicit map refs and report-derived refs.
                 phase_start = time.monotonic()
-                citations = self._resolve_source_citations(diag, scored, report_keys)
+                citations = await asyncio.to_thread(
+                    self._resolve_source_citations, diag, scored, report_keys
+                )
                 logger.debug(
                     "global phase=citations ms=%d refs=%d citations=%d",
                     int((time.monotonic() - phase_start) * 1000),
@@ -686,7 +691,9 @@ class GlobalSearchRetriever:
             # Context, citations, and evidence describe only the retained batch.
             context = self._partials_context(retained)
             phase_start = time.monotonic()
-            citations = self._resolve_source_citations(diag, retained, report_keys)
+            citations = await asyncio.to_thread(
+                self._resolve_source_citations, diag, retained, report_keys
+            )
             logger.debug(
                 "global phase=citations ms=%d refs=%d citations=%d",
                 int((time.monotonic() - phase_start) * 1000),
@@ -800,18 +807,19 @@ class GlobalSearchRetriever:
         selected: dict[tuple[str, int], dict] = {}
         parents: dict[tuple[str, int], set[tuple[str, int]]] = {}
 
-        def read_level(level: int) -> dict[tuple[str, int], dict]:
+        async def read_level(level: int) -> dict[tuple[str, int], dict]:
             if level not in eligible_by_level:
                 # Child API omits status; intersect with the status-filtered read.
+                reports = await asyncio.to_thread(self._read_reports, level)
                 eligible_by_level[level] = {
                     (str(report["id"]), level): report
-                    for report in self._read_reports(level)
+                    for report in reports
                     if self._eligible_report(report, level)
                 }
             return eligible_by_level[level]
 
         fallback_level = 0
-        frontier = read_level(0)
+        frontier = await read_level(0)
         while True:
             candidates = [frontier[key] for key in sorted(frontier) if key not in visited]
             for report in candidates:
@@ -835,24 +843,29 @@ class GlobalSearchRetriever:
                 for parent in parents.get(key, ()):
                     selected.pop(parent, None)
                 child_level = report["level"] + 1
-                children = self.graph_store.get_child_community_reports(
-                    self.graph_name, str(report["id"]), report["level"], child_level
+                children = await asyncio.to_thread(
+                    self.graph_store.get_child_community_reports,
+                    self.graph_name,
+                    str(report["id"]),
+                    report["level"],
+                    child_level,
                 )
                 for child in children:
                     if not self._eligible_report(child, child_level):
                         continue
                     child_key = (str(child["id"]), child_level)
-                    if child_key not in read_level(child_level):
+                    child_rows = await read_level(child_level)
+                    if child_key not in child_rows:
                         continue
                     parents.setdefault(child_key, set()).add(key)
                     if child_key not in visited:
-                        next_frontier[child_key] = read_level(child_level)[child_key]
+                        next_frontier[child_key] = child_rows[child_key]
             if next_frontier:
                 frontier = next_frontier
             elif not selected and fallback_level < 2:
                 fallback_level += 1
                 diag.fallback_levels_attempted.append(fallback_level)
-                frontier = read_level(fallback_level)
+                frontier = await read_level(fallback_level)
             else:
                 break
         diag.levels_visited.sort()

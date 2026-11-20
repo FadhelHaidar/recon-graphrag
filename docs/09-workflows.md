@@ -504,6 +504,8 @@ high-level retry may repeat that work.
 
 Implement every method in `GraphStore` to add a new backend. The protocol covers index management, entity resolution, vector/keyword search, community detection/persistence, and validation. The Neo4j and Memgraph store tests show the shared contract alongside backend-specific query behavior.
 
+Async SDK components call these synchronous methods on worker threads. A custom implementation must support concurrent calls from multiple threads. Each call must own its session and return materialized data. The SDK uses the default executor and adds no setting. It provides no stage-wide lock and no snapshot across calls.
+
 ```python
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.extraction.types import GraphDocument

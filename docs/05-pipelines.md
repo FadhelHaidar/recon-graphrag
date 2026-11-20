@@ -581,6 +581,12 @@ Entity identity is `(graph_name, id)` on the `__Entity__` label. A domain type i
 
 Blocking database calls in pipeline writes/backfill/validation, description summarization, entity embedding, and resolver preflight/load/merge run through `asyncio.to_thread`. Cancellation does not terminate an in-flight database call or undo its writes.
 
+Local search, global search, community detection, report generation, and report embedding follow the same rule. The SDK uses the default executor. No setting controls it.
+
+A custom `GraphStore` must accept concurrent calls from multiple threads. Each call must own its session and return materialized data. The SDK adds no stage-wide lock and no snapshot across calls.
+
+Community detection runs as one shielded worker call. If the caller cancels `CommunityPipeline.build()`, the build waits for active detection to finish before it raises `CancelledError`. Detection has no generation precondition, so a detached replacement could delete a newer hierarchy. Other active report or vector writes can finish after cancellation. They use the generation, text, and revision captured before the await. Guarded stores reject a stale result. The public unguarded custom-store path keeps its weaker behavior.
+
 ### Tips
 
 - Run `store.create_indexes()` before the first build and before starting concurrent writers; see [identity constraints](04-indexing.md#identity-constraints-and-existing-graphs).
