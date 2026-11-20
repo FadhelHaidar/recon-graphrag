@@ -1,6 +1,7 @@
 """Tests for the community pipeline wrapper."""
 
 import json
+import logging
 from typing import Any, cast
 
 import pytest
@@ -313,3 +314,392 @@ def test_pipeline_rejects_unsupported_report_adapter_before_build():
 
     with pytest.raises(ValueError, match="does not support report structured output"):
         CommunityPipeline(cast(Any, FakeGraphStore()), cast(Any, LLM()), report_structured_output=True)
+
+
+class GuardedPipelineStore(FakeGraphStoreWithCommunities):
+    """Guarded store double with scripted generation reads."""
+
+    def __init__(
+        self,
+        communities,
+        *,
+        detected_generation: str = "generation-a",
+        generation_reads=None,
+    ):
+        super().__init__(communities)
+        self.detected_generation = detected_generation
+        self.generation_reads = list(generation_reads or [])
+        self.read_levels: list[int] = []
+        self.community_levels_read: list[int | None] = []
+        self.public_detect_calls = 0
+        self.public_store_calls = 0
+        self.guarded_reports: list[tuple[str, str, str | None]] = []
+        self.guarded_failures: list[tuple[str, str, int, str, str | None]] = []
+        self.report_results: list[bool] = []
+
+    def detect_communities(self, **kwargs):
+        self.public_detect_calls += 1
+        return self._communities
+
+    def _detect_communities_with_generation(self, **kwargs):
+        self.detect_kwargs = kwargs
+        return self._communities, self.detected_generation
+
+    def _get_community_generations(self, graph_name, level):
+        self.read_levels.append(level)
+        if not self.generation_reads:
+            return [self.detected_generation]
+        observed = self.generation_reads.pop(0)
+        return observed if isinstance(observed, list) else [observed]
+
+    def _store_community_report_guarded(
+        self, report, graph_name, *, expected_generation
+    ):
+        self.guarded_reports.append(
+            (graph_name, report.community_id, expected_generation)
+        )
+        return self.report_results.pop(0) if self.report_results else True
+
+    def _mark_community_report_failed_guarded(
+        self,
+        graph_name,
+        community_id,
+        level,
+        error,
+        *,
+        expected_generation,
+    ):
+        self.guarded_failures.append(
+            (graph_name, community_id, level, error, expected_generation)
+        )
+        return True
+
+    def _get_unembedded_community_reports_for_embedding(self, *args, **kwargs):
+        return []
+
+    def _upsert_community_report_vectors_guarded(self, *args, **kwargs):
+        return 0
+
+    def _mark_community_report_embedding_failed_guarded(self, *args, **kwargs):
+        return True
+
+    def get_communities(self, graph_name, level=None):
+        self.community_levels_read.append(level)
+        return super().get_communities(graph_name, level=level)
+
+    def store_community_report(self, report, graph_name):
+        self.public_store_calls += 1
+        super().store_community_report(report, graph_name)
+
+
+class PipelineReportLLM:
+    def __init__(self):
+        self.calls = 0
+
+    async def ainvoke(self, prompt, **kwargs):
+        from recon_graphrag.llm.base import LLMResponse
+
+        self.calls += 1
+        return LLMResponse(json.dumps({
+            "title": "Alice and Acme",
+            "summary": "Alice works at Acme.",
+            "rating": 7,
+            "rating_explanation": "Important relationship.",
+            "findings": [{
+                "description": "Alice is connected to Acme.",
+                "references": [{
+                    "target_id": "person:alice",
+                    "target_type": "entity",
+                }],
+            }],
+        }))
+
+
+class PipelineFakeEmbedder:
+    async def async_embed_query(self, text):
+        return [0.1, 0.2]
+
+
+def _pipeline(store, llm=None, **kwargs):
+    return CommunityPipeline(
+        cast(Any, store),
+        cast(Any, llm or PipelineReportLLM()),
+        relationship_types=["ACTED_IN"],
+        graph_name="test-graph",
+        **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_guarded_build_binds_private_detection_and_counts_acknowledged_reports():
+    store = GuardedPipelineStore(
+        [{"id": "c0", "level": 0, "entity_count": 2}],
+        generation_reads=["generation-a", "generation-a"],
+    )
+
+    result = await _pipeline(store).build()
+
+    assert result["status"] == "completed"
+    assert result["maintenance_warnings"] == []
+    assert result["reports"] == 1
+    assert store.public_detect_calls == 0
+    assert store.public_store_calls == 0
+    assert store.guarded_reports == [
+        ("test-graph", "c0", "generation-a")
+    ]
+    assert store.read_levels == [0, 0]
+
+
+@pytest.mark.asyncio
+async def test_guarded_build_stops_before_the_first_replaced_level():
+    store = GuardedPipelineStore(
+        [{"id": "c0", "level": 0, "entity_count": 2}],
+        generation_reads=["generation-b"],
+    )
+    llm = PipelineReportLLM()
+
+    result = await _pipeline(store, llm).build()
+
+    assert result["status"] == "degraded"
+    assert result["maintenance_warnings"] == [
+        {"code": "community_generation_changed", "level": 0}
+    ]
+    assert result["reports"] == 0
+    assert result["level_stats"] == []
+    assert store.community_levels_read == []
+    assert store.guarded_reports == []
+    assert llm.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_guarded_build_stops_before_the_next_replaced_level():
+    store = GuardedPipelineStore(
+        [
+            {"id": "c1", "level": 1, "entity_count": 2},
+            {"id": "c0", "level": 0, "entity_count": 2},
+        ],
+        generation_reads=["generation-a", "generation-b"],
+    )
+    llm = PipelineReportLLM()
+
+    result = await _pipeline(store, llm).build()
+
+    assert result["status"] == "degraded"
+    assert result["levels"] == [1, 0]
+    assert [stats["level"] for stats in result["level_stats"]] == [1]
+    assert result["reports"] == 1
+    assert result["maintenance_warnings"] == [
+        {"code": "community_generation_changed", "level": 0}
+    ]
+    assert store.community_levels_read == [1]
+    assert store.guarded_reports == [
+        ("test-graph", "c1", "generation-a")
+    ]
+    assert llm.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_guarded_build_stops_after_a_stale_report_rejection():
+    store = GuardedPipelineStore(
+        [
+            {"id": "c1", "level": 1, "entity_count": 2},
+            {"id": "c0", "level": 0, "entity_count": 2},
+        ],
+        generation_reads=["generation-a"],
+    )
+    store.report_results = [False]
+    llm = PipelineReportLLM()
+
+    result = await _pipeline(store, llm).build()
+
+    assert result["status"] == "degraded"
+    assert result["reports"] == 0
+    assert [stats["level"] for stats in result["level_stats"]] == [1]
+    assert store.community_levels_read == [1]
+    assert store.guarded_failures == []
+    codes = [warning["code"] for warning in result["maintenance_warnings"]]
+    assert codes == [
+        "community_report_generation_failed",
+        "community_generation_changed",
+    ]
+    assert result["maintenance_warnings"][1] == {
+        "code": "community_generation_changed",
+        "level": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_guarded_build_detects_supersession_after_the_last_report():
+    store = GuardedPipelineStore(
+        [{"id": "c0", "level": 0, "entity_count": 2}],
+        generation_reads=["generation-a", "generation-b"],
+    )
+
+    result = await _pipeline(store).build()
+
+    assert result["status"] == "degraded"
+    assert result["reports"] == 1
+    assert result["maintenance_warnings"] == [
+        {"code": "community_generation_changed", "level": 0}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_guarded_build_skips_embedding_when_replaced_before_embedding(
+    monkeypatch,
+):
+    from recon_graphrag.embeddings.community_reports import CommunityReportEmbedder
+
+    calls: list[tuple[str, str | None]] = []
+
+    async def fake_embed(self, graph_name, expected_generation):
+        calls.append((graph_name, expected_generation))
+        return 2
+
+    monkeypatch.setattr(
+        CommunityReportEmbedder,
+        "_embed_reports_for_generation",
+        fake_embed,
+        raising=False,
+    )
+    store = GuardedPipelineStore(
+        [{"id": "c0", "level": 0, "entity_count": 2}],
+        generation_reads=["generation-a", "generation-b"],
+    )
+
+    result = await _pipeline(store, embedder=PipelineFakeEmbedder()).build()
+
+    assert result["status"] == "degraded"
+    assert result["embedded_reports"] == 0
+    assert calls == []
+    assert result["maintenance_warnings"] == [
+        {"code": "community_generation_changed", "level": 0}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_guarded_build_carries_the_bound_generation_to_embedding(
+    monkeypatch,
+):
+    from recon_graphrag.embeddings.community_reports import CommunityReportEmbedder
+
+    calls: list[tuple[str, str | None]] = []
+
+    async def fake_embed(self, graph_name, expected_generation):
+        calls.append((graph_name, expected_generation))
+        return 2
+
+    monkeypatch.setattr(
+        CommunityReportEmbedder,
+        "_embed_reports_for_generation",
+        fake_embed,
+        raising=False,
+    )
+    store = GuardedPipelineStore(
+        [{"id": "c0", "level": 0, "entity_count": 2}],
+        generation_reads=["generation-a", "generation-a", "generation-a"],
+    )
+
+    result = await _pipeline(store, embedder=PipelineFakeEmbedder()).build()
+
+    assert result["status"] == "completed"
+    assert result["embedded_reports"] == 2
+    assert calls == [("test-graph", "generation-a")]
+    assert result["maintenance_warnings"] == []
+
+
+@pytest.mark.asyncio
+async def test_guarded_build_detects_supersession_after_the_last_vector(
+    monkeypatch,
+):
+    from recon_graphrag.embeddings.community_reports import CommunityReportEmbedder
+
+    async def fake_embed(self, graph_name, expected_generation):
+        return 2
+
+    monkeypatch.setattr(
+        CommunityReportEmbedder,
+        "_embed_reports_for_generation",
+        fake_embed,
+        raising=False,
+    )
+    store = GuardedPipelineStore(
+        [{"id": "c0", "level": 0, "entity_count": 2}],
+        generation_reads=["generation-a", "generation-a", "generation-b"],
+    )
+
+    result = await _pipeline(store, embedder=PipelineFakeEmbedder()).build()
+
+    assert result["status"] == "degraded"
+    assert result["embedded_reports"] == 2
+    assert result["maintenance_warnings"] == [
+        {"code": "community_generation_changed", "level": 0}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_custom_store_without_guards_warns_and_keeps_the_public_path(caplog):
+    store = FakeGraphStoreWithCommunities(
+        [{"id": "c0", "level": 0, "entity_count": 2}]
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = await _pipeline(store).build()
+
+    assert result["status"] == "completed"
+    assert result["reports"] == 1
+    assert store.detect_kwargs["graph_name"] == "test-graph"
+    assert "not provide the private community generation guards" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_store_without_private_detection_keeps_the_public_unguarded_path(
+    caplog, monkeypatch
+):
+    monkeypatch.delattr(
+        GuardedPipelineStore,
+        "_detect_communities_with_generation",
+        raising=False,
+    )
+    store = GuardedPipelineStore(
+        [{"id": "c0", "level": 0, "entity_count": 2}],
+        generation_reads=["generation-a"],
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = await _pipeline(store).build()
+
+    assert result["status"] == "completed"
+    assert result["reports"] == 1
+    assert store.public_detect_calls == 1
+    assert store.public_store_calls == 1
+    assert store.guarded_reports == []
+    assert "does not provide _detect_communities_with_generation" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_guarded_build_skips_an_embedder_without_generation_support(
+    monkeypatch, caplog
+):
+    from recon_graphrag.embeddings.community_reports import CommunityReportEmbedder
+
+    async def fail_public_embedding(self, batch_size=500):
+        raise AssertionError("public embedding path used")
+
+    monkeypatch.setattr(
+        CommunityReportEmbedder, "_embed_reports_for_generation", None
+    )
+    monkeypatch.setattr(
+        CommunityReportEmbedder, "embed_reports", fail_public_embedding
+    )
+    store = GuardedPipelineStore(
+        [{"id": "c0", "level": 0, "entity_count": 2}],
+        generation_reads=["generation-a", "generation-a"],
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = await _pipeline(store, embedder=PipelineFakeEmbedder()).build()
+
+    assert result["embedded_reports"] == 0
+    assert result["status"] == "completed"
+    assert "report embeddings are skipped" in caplog.text

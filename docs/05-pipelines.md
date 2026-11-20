@@ -708,6 +708,20 @@ result = await community.build()
 result = await community.build(level=0)
 ```
 
+### Publication, concurrency, and visibility
+
+Built-in community detection requires the `CommunityGeneration` constraint that `create_indexes()` creates. Run `store.create_indexes()` after an upgrade and before the first community build. Built-in detection fails closed when the exact constraint is missing. See [community publication constraint](04-indexing.md#community-publication-constraint).
+
+One detection invocation computes the hierarchy first. It then publishes one generation token with the replacement in one transaction. The transaction advances the graph state record, deletes the old hierarchy, writes every new community and membership with the token, rebuilds the parent edges, and reads the stats. If any step fails, the transaction rolls back and the previous hierarchy and reports remain.
+
+Each invocation owns its detection projection. Neo4j uses a projection name unique to the invocation, so concurrent invocations cannot share or drop each other's projection. No lease or build-wide lock exists. The unique state record serializes only the graph's replacement transaction. Concurrent detections can both run detection and provider work; the last committed replacement wins.
+
+The SDK does not coordinate community detection with graph building or entity resolution. Do not run detection on a graph while a build or entity resolution writes that graph. Wait for those operations to finish. Do not drop constraints, drop indexes, or purge the graph while detection runs; see [schema removal and graph purge](04-indexing.md#schema-removal-and-graph-purge).
+
+Communities become visible when the replacement transaction commits. Reports are separate later writes. A successful report write is visible per community before `build()` returns. A failed report write stores a failure marker; successful reports remain. A replacement that commits during the build invalidates the older work: guarded report and vector writes reject it, and `build()` adds a `community_generation_changed` warning and returns `status="degraded"`.
+
+The built-in stores and `CommunityPipeline` use generation-guarded report and vector writes. Direct `CommunitySummarizer.generate_all()` calls without a bound token capture one generation for each invocation. A reused summarizer captures the new generation on its next call. If an invocation cannot read exactly one generation, it writes no report. A custom store without the guarded private operations keeps the public unguarded path and logs a warning. That path cannot reject work from an older generation. Public store report and vector write methods remain available for compatibility, but they do not bind a generation token. Use the pipeline for generation-safe writes.
+
 ### Report failures and diagnostics
 
 If a report response has malformed JSON or fails report validation, generation
@@ -736,6 +750,15 @@ By default, messages are fixed diagnostics and unrecognized exception types are
 reported as `"Exception"`. Resume/preparation failures use the message
 `"Community report preparation failed."`. Healthy builds keep an empty
 `maintenance_warnings` list.
+
+A concurrent replacement can make the bound generation stale. In that case
+`build()` stops the affected work and adds this warning:
+
+```python
+{"code": "community_generation_changed", "level": 0}
+```
+
+The result uses `status="degraded"` even when no report failed.
 
 For **trusted/private debugging only**, opt in to original exception types and
 messages:
@@ -790,6 +813,26 @@ count = await CommunityReportEmbedder(
     store, embedder, "entity-graph"
 ).embed_reports()
 ```
+
+### Report vector freshness and model changes
+
+The managed report embedding pass records the input text fingerprint, content fingerprint, model fingerprint, and embedding revision on each vector. It embeds a report when the vector is missing, the stored text fingerprint differs, or the content fingerprint is absent. It also embeds when the model fingerprint differs from the current embedder. A legacy vector without fingerprints is refreshed once, automatically. Low-level public vector writes clear the certificates, so the next managed pass refreshes those vectors.
+
+A provider failure in the managed pass records `report_embedding_error`; the report stays eligible for a later managed pass. Each managed pass attempts each report key at most once, so a permanent failure does not block later reports in the same pass. A later managed pass retries it. Blank report text is marked failed without a provider call.
+
+The public `get_unembedded_community_reports()` and `upsert_community_report_vectors()` methods form the legacy manual loop. The selector returns only rows with no vector and no failure marker. The paired write sets the vector and clears the failure marker. A repeated select, embed, and upsert loop therefore ends. A report text change clears the marker and makes the row eligible again. Use `CommunityReportEmbedder` for managed refresh, model-change detection, and failure retries.
+
+If the report text, generation, or embedding revision changes during a provider call, the store rejects the late vector or failure marker. A newer committed vector advances the revision. A different model fingerprint makes the report eligible on the next managed pass. The dimension of the report vectors must match `community-report-embeddings`. If the dimension changes, [rebuild the indexes](04-indexing.md#rebuilding-indexes) and embed the reports again.
+
+`CommunityReportEmbedder.embed_reports()` uses the managed pass. On a built-in store, it samples each selected row's generation and writes with the row snapshot. `CommunityPipeline` uses the bound private pass for its detection token. Custom stores without the guarded private operations keep the legacy public path, which cannot detect stale in-flight results or model changes.
+
+### Compatibility limits
+
+Public result keys and method signatures are unchanged. `detect_communities()` still returns the stats list. `build()` still returns its existing keys. `embed_reports()` still returns a count. The public report selection method still returns the four public row keys and keeps its original missing-vector and failure-marker filters.
+
+The guarded operations are private store methods; they are not part of the public `GraphStore` protocol. A custom store can omit them and keep the old public path, but it loses generation and revision checks. The private selection adds `generation` and `embedding_revision` to its rows.
+
+Model-change detection uses the embedder identity fingerprint. The fingerprint is best effort: it covers provider class, model name, model parameters, and target dimension. It cannot detect an endpoint change or an Azure deployment change when those values stay the same. The SDK adds no separate provider identity API. The fingerprint does not prove that vectors from two models are comparable. Change the index and re-embed when the model or dimension changes.
 
 ### Strict report output and completion limits
 

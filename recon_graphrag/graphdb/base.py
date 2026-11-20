@@ -340,7 +340,7 @@ class GraphStore(Protocol):
         graph_name: str,
         limit: int = 500,
     ) -> list[dict]:
-        """Get community reports without embeddings.
+        """Get community reports without embeddings or a failure marker.
 
         Returns rows with keys: id, level, report_text, title.
         """

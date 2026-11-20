@@ -7,6 +7,13 @@ import pytest
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.neo4j.index_manager import IndexManager
 
+GENERATION_CONSTRAINT = {
+    "name": "community_generation_unique",
+    "type": "UNIQUENESS",
+    "labelsOrTypes": ["CommunityGeneration"],
+    "properties": ["graph_name"],
+}
+
 
 class FakeGraphStore:
     def __init__(self, apoc_available=True):
@@ -17,6 +24,8 @@ class FakeGraphStore:
 
     def execute_query(self, query, parameters=None):
         self.calls.append((query.strip(), parameters or {}))
+        if "SHOW CONSTRAINTS" in query:
+            return [dict(GENERATION_CONSTRAINT)]
         if "apoc.version" in query and not self.apoc_available:
             raise RuntimeError("There is no procedure with the name apoc.version")
         if "apoc.version" in query:
@@ -169,9 +178,13 @@ def test_index_manager_create_indexes_uses_graph_store_methods():
         }
     ]
     constraint_calls = [call for call in store.calls if "CREATE CONSTRAINT" in call[0]]
-    assert len(constraint_calls) == 4
-    assert (
-        "(c.graph_name, c.level, c.id) IS UNIQUE" in [c[0] for c in constraint_calls][0]
+    assert len(constraint_calls) == 5
+    assert "(c.graph_name, c.level, c.id) IS UNIQUE" in constraint_calls[0][0]
+    # Community publication: graph-scoped generation uniqueness.
+    assert any(
+        "community_generation_unique" in query
+        and "REQUIRE g.graph_name IS UNIQUE" in query
+        for query, _ in constraint_calls
     )
     # F8: per-label uid uniqueness for Document/Chunk/__Entity__.
     assert sum("REQUIRE n.uid IS UNIQUE" in c[0] for c in constraint_calls) == 3
@@ -225,3 +238,71 @@ async def test_index_manager_resolve_entities_hybrid_uses_embedder():
         im._Neo4jEntityResolver = original_resolver
 
     assert captured["kwargs"]["embedder"] is embedder
+
+
+def test_create_indexes_adds_the_generation_constraint():
+    store = FakeGraphStore()
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    manager.create_indexes()
+
+    assert any(
+        "CREATE CONSTRAINT community_generation_unique IF NOT EXISTS" in query
+        and "FOR (g:CommunityGeneration)" in query
+        and "REQUIRE g.graph_name IS UNIQUE" in query
+        for query, _ in store.calls
+    )
+
+
+def test_create_indexes_is_idempotent_for_the_generation_constraint():
+    store = FakeGraphStore()
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    manager.create_indexes()
+    manager.create_indexes()
+
+    generation_creates = [
+        query
+        for query, _ in store.calls
+        if "CREATE CONSTRAINT community_generation_unique" in query
+    ]
+    assert len(generation_creates) == 2
+
+
+def test_create_indexes_fails_closed_when_the_generation_constraint_is_missing():
+    class MissingConstraintStore(FakeGraphStore):
+        def execute_query(self, query, parameters=None):
+            if "SHOW CONSTRAINTS" in query:
+                self.calls.append((query.strip(), parameters or {}))
+                return []
+            return super().execute_query(query, parameters)
+
+    store = MissingConstraintStore()
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    with pytest.raises(RuntimeError, match="is missing"):
+        manager.create_indexes()
+
+
+def test_create_indexes_rejects_an_incompatible_generation_constraint():
+    class IncompatibleConstraintStore(FakeGraphStore):
+        def execute_query(self, query, parameters=None):
+            if "SHOW CONSTRAINTS" in query:
+                self.calls.append((query.strip(), parameters or {}))
+                return [dict(GENERATION_CONSTRAINT, properties=["token"])]
+            return super().execute_query(query, parameters)
+
+    store = IncompatibleConstraintStore()
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    with pytest.raises(RuntimeError, match="incompatible definition"):
+        manager.create_indexes()
+
+
+def test_drop_indexes_keeps_the_generation_constraint():
+    store = FakeGraphStore()
+    manager = IndexManager(cast(GraphStore, store), embedding_dim=42)
+
+    manager._drop_indexes()
+
+    assert not any("DROP CONSTRAINT" in query for query, _ in store.calls)

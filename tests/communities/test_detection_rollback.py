@@ -63,7 +63,19 @@ class StatefulStore:
             def execute_query(self, query, parameters):
                 graph_name = parameters.get("graph_name") or parameters["rows"][0]["graph_name"]
                 graph = pending[graph_name]
-                if "DETACH DELETE" in query:
+                if "CommunityGeneration" in query:
+                    stage = "state"
+                elif "c.id AS community_id" in query:
+                    stage = "stats"
+                    return [
+                        {
+                            "community_id": "stat",
+                            "level": 0,
+                            "entity_count": 1,
+                            "child_community_count": 0,
+                        }
+                    ]
+                elif "DETACH DELETE" in query:
                     stage = "delete"
                     graph.clear()
                     graph.update(communities=[], memberships=[], parents=[])
@@ -93,7 +105,7 @@ class StatefulStore:
 ])
 @pytest.mark.parametrize("failure", [
     "no_entities", "relationships", "procedure", "empty", "malformed",
-    "delete", "memberships", "parents",
+    "state", "delete", "memberships", "parents",
 ])
 def test_failed_detection_preserves_complete_snapshot(backend, detector_type, failure):
     store = StatefulStore(backend, failure)
@@ -104,7 +116,7 @@ def test_failed_detection_preserves_complete_snapshot(backend, detector_type, fa
         detector.detect()
 
     assert store.state == before
-    if failure in {"delete", "memberships", "parents"}:
+    if failure in {"state", "delete", "memberships", "parents"}:
         assert store.transactions == 1
         assert failure in store.writes
     else:

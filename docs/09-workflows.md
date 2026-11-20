@@ -928,27 +928,50 @@ summarizer = CommunitySummarizer(store, llm, graph_name="entity-graph")
 reports, stats = await summarizer.generate_all(level=0)
 ```
 
+### Publication and report freshness
+
+`create_indexes()` must run before community detection on a built-in store. Built-in detection requires the exact `CommunityGeneration` uniqueness constraint. A missing or incompatible constraint fails closed before any community changes. See [community publication constraint](04-indexing.md#community-publication-constraint).
+
+One detection invocation computes the hierarchy first. It then advances the graph's generation state record, replaces the hierarchy, writes every community and membership with that generation, and reads the stats in one transaction. A failure rolls back the complete replacement. The unique state record serializes only this replacement; no lease or build-wide lock exists.
+Each Neo4j invocation uses its own GDS projection name. Concurrent invocations cannot share or drop each other's projection. Memgraph detection reads its entity subgraph without an SDK-owned projection.
+
+The SDK does not coordinate detection with graph building or entity resolution. Stop those writers before you run community detection. Do not drop constraints, drop indexes, or purge graph data during detection; see [schema removal and graph purge](04-indexing.md#schema-removal-and-graph-purge).
+
+Communities become visible when the replacement transaction commits. Reports are later per-community writes. A successful report is visible immediately; a failed report stores a failure marker. A concurrent replacement rejects older report and vector writes from the pipeline and returns `status="degraded"` with `community_generation_changed`.
+
+A direct `CommunitySummarizer.generate_all()` call without a bound token captures one generation for each invocation. A reused summarizer captures the new generation on its next call. If an invocation cannot read exactly one generation, it writes no report. Same-generation concurrent direct summarizer writes are not ordered; run one direct pass at a time for the same community. A custom store without the guarded private operations keeps the public unguarded path and logs a warning. That path cannot reject stale work.
+
+The managed report embedding pass refreshes missing, legacy, text-changed, and model-changed vectors. Each managed pass attempts each report key at most once; a later managed pass retries failures. A late vector or failure mark from an older text, generation, or revision is rejected. The report index dimension must match the embedder that creates the vectors. The model fingerprint is best effort: an endpoint or Azure deployment switch with an unchanged fingerprint does not trigger a refresh.
+
+The public select and upsert methods keep the original manual loop. The selector returns reports with no vector and no failure marker. The paired write sets the vector and clears the marker, so the loop ends. Use `CommunityReportEmbedder` for managed refresh and failure retries.
+
 ### Destruction safety
 
 `detect_communities()` replaces the graph's communities all-or-nothing. It
-computes the new hierarchy first, then deletes and writes `Community` nodes,
-`IN_COMMUNITY` memberships, and parent links inside a single transaction. If
-projection, the Leiden procedure, or any write fails, the previous communities
-and their reports stay in the graph and the error propagates.
+computes the new hierarchy first, then advances the generation state record,
+deletes and writes `Community` nodes, `IN_COMMUNITY` memberships, and parent
+links inside a single transaction. If projection, the Leiden procedure, or any
+write fails, the previous communities, their reports, and the state record stay
+in the graph and the error propagates.
 
 `create_indexes()` is strictly additive. It inspects the existing indexes and
-reuses any index whose definition matches the configuration. A name that is
+reuses any index whose definition matches the configuration. It also installs
+the identity and `CommunityGeneration` constraints. A name that is
 taken by an incompatible definition (wrong label, properties, dimensions, or
 similarity function) raises `ValueError` instead of dropping and recreating it.
 Replacing an index therefore stays an explicit administrative action:
 
 ```python
-store.drop_indexes()   # explicit, drops the configured indexes
+store.drop_indexes()   # explicit, drops the configured indexes only
 store.create_indexes()
 ```
 
+`drop_indexes()` keeps the constraints. Stop graph builds, community detection,
+and entity resolution before you drop constraints or purge graph data.
+
 ### Backend differences (verified against live containers)
 
+- **Publication constraint.** Both backends require the unique `CommunityGeneration.graph_name` constraint from `create_indexes()`. Neo4j verifies the exact named constraint; Memgraph verifies the label and property.
 - **Hierarchy.** `max_levels` and `PARENT_COMMUNITY` edges are exercised on
   Neo4j, where GDS Leiden reports intermediate communities. MAGE's
   `leiden_community_detection.get_subgraph()` returns a single level per node,

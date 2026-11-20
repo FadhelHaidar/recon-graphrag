@@ -1570,6 +1570,18 @@ from recon_graphrag import CommunityReportEmbedder
 count = await CommunityReportEmbedder(store, embedder, "entity-graph").embed_reports()
 ```
 
+### Report vector freshness
+
+Search reads committed community reports and committed report vectors. Global search can read a report after its report write commits. DRIFT can use a report vector after the guarded vector write commits.
+
+The managed report embedding pass refreshes missing vectors, legacy vectors without fingerprints, vectors for changed report text, and vectors from a different embedder model. Legacy vectors refresh once, automatically. A failed provider call records a failure marker, and a later managed pass retries it. The pass attempts each report key at most once. A late vector or failure from an older text, generation, or revision is rejected.
+
+The public manual loop keeps the original selector. `get_unembedded_community_reports()` returns only reports with no vector and no failure marker. `upsert_community_report_vectors()` sets the vector and clears the marker, so the loop ends. A report text change clears the marker. Use `CommunityReportEmbedder` for managed refresh and failure retries.
+
+The `community-report-embeddings` dimension must match the embedder that creates report vectors. A model change triggers a refresh, but a dimension change requires an explicit index rebuild and re-embedding; see [rebuilding indexes](04-indexing.md#rebuilding-indexes). The model fingerprint is best effort: an endpoint or Azure deployment switch with an unchanged fingerprint does not trigger a refresh. Search query and result shapes do not change.
+
+Built-in stores and `CommunityPipeline` bind report and vector writes to one detection generation. A custom store without the guarded private operations uses the public path; that path cannot reject stale in-flight results or detect a model change. A missing report vector keeps the existing DRIFT fallback to local-style entity search.
+
 ---
 
 ## Current Limits

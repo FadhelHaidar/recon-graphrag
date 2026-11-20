@@ -16,6 +16,8 @@ This creates:
 | `entity-names` | Fulltext | `__Entity__.name` |
 | `community-report-embeddings` | Vector | `Community.report_embedding` |
 
+`create_indexes()` also installs the `CommunityGeneration` uniqueness constraint. Community detection requires this constraint and fails closed without it.
+
 These indexes power:
 
 - Semantic search over entities.
@@ -33,6 +35,33 @@ store.create_indexes(embedding_dim=1536)
 ```
 
 You do not need to recreate them every time you ingest more text, unless you change the embedding dimension or want to drop and rebuild the graph from scratch.
+
+Run `create_indexes()` after an upgrade that adds managed schema. Community detection requires the `CommunityGeneration` constraint, and older graphs do not have it. The call is additive.
+
+---
+
+## Community publication constraint
+
+`create_indexes()` creates the uniqueness constraint for the `CommunityGeneration` state record. The state record stores the current publication token for each graph. The unique property is `graph_name`, so one graph has one state record.
+
+| Backend | Constraint definition |
+| --- | --- |
+| Neo4j | `community_generation_unique`: `UNIQUENESS` on `(:CommunityGeneration)` property `graph_name` |
+| Memgraph | Unique constraint on `:CommunityGeneration` property `graph_name` |
+
+Neo4j setup verifies the exact constraint name, type, label, and property. Memgraph setup verifies the unique type, label, and property. A missing or incompatible constraint raises an error. Setup never accepts a different definition.
+Detection also verifies the constraint before it starts a replacement transaction. Detection fails before it changes communities when the constraint is absent.
+
+The constraint does not backfill existing communities. The next successful detection creates the state record and writes its token to every new `Community` node. `Community` nodes from an older version keep no `generation` property until a detection replaces that graph's hierarchy.
+Report vectors use a separate lazy refresh. See [report vector freshness](05-pipelines.md#report-vector-freshness-and-model-changes).
+
+### Schema removal and graph purge
+
+**Stop graph builds, community detection, and entity resolution before you drop constraints, drop indexes, or purge graph data.**
+The publication state record serializes one replacement transaction only.
+It does not lock across index removal, constraint removal, or a graph purge.
+A maintenance write that overlaps detection can remove the constraint or records that detection needs.
+Do not drop the `CommunityGeneration` constraint during normal operation.
 
 ---
 
@@ -141,6 +170,7 @@ This is useful during development to confirm that:
 
 If you change the embedding dimension, explicitly drop and recreate the managed indexes.
 Schedule maintenance: queries can fail while indexes are absent. This operation does not delete graph records.
+`drop_indexes()` drops only the managed vector and fulltext indexes. It keeps the identity and `CommunityGeneration` constraints.
 
 ```python
 store.drop_indexes()

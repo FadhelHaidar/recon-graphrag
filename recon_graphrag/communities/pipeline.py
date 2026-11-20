@@ -7,17 +7,30 @@ For changing graphs, run the community pipeline again as required.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from collections.abc import Callable
+from typing import Any, Optional, cast
 
 from recon_graphrag.communities.reports import ReportRubric, validate_report_prompt_template
-from recon_graphrag.communities.summarization import CommunitySummarizer
+from recon_graphrag.communities.summarization import (
+    CommunitySummarizer,
+    _supports_embedding_generation_guards,
+    _supports_report_generation_guards,
+)
 from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.graphdb.base import GraphStore
+from recon_graphrag.graphdb.store_base import _GENERATION_UNGUARDED
 from recon_graphrag.llm.base import BaseLLM
 from recon_graphrag.observability import run_scope, track_usage, usage_snapshot
 from recon_graphrag.utils.tokens import TokenCounter
 
 logger = logging.getLogger(__name__)
+
+
+def _supports_generation_bound_embedding(report_embedder: object) -> bool:
+    """Return True when the report embedder accepts a generation token."""
+    return callable(
+        getattr(report_embedder, "_embed_reports_for_generation", None)
+    )
 
 
 class CommunityPipeline:
@@ -136,15 +149,8 @@ class CommunityPipeline:
             existing_reports = self.graph_store.count_communities_with_reports(
                 self.graph_name
             )
-            community_stats = self.graph_store.detect_communities(
-                graph_name=self.graph_name,
-                relationship_types=self.relationship_types,
-                max_levels=self.max_levels,
-                gamma=self.gamma,
-                theta=self.theta,
-                tolerance=self.tolerance,
-                relationship_weight_property=self.relationship_weight_property,
-                random_seed=self.random_seed,
+            community_stats, bound_generation, generation_guarded = (
+                self._run_detection()
             )
             logger.info("found %s communities", len(community_stats))
             if existing_reports:
@@ -179,8 +185,24 @@ class CommunityPipeline:
                 include_error_details=self.include_error_details,
                 report_structured_output=self.report_structured_output,
             )
+            if generation_guarded:
+                summarizer._bind_community_generation(bound_generation)
+            else:
+                summarizer._use_public_report_writes()
 
+            generation_lost = False
             for lvl in levels:
+                if generation_guarded:
+                    changed_level = self._first_generation_mismatch(
+                        bound_generation, [lvl]
+                    )
+                    if changed_level is not None:
+                        self._append_generation_warning(
+                            maintenance_warnings, changed_level
+                        )
+                        generation_lost = True
+                        break
+
                 reports, stats = await summarizer.generate_all(
                     level=lvl, skip_existing=self.skip_existing
                 )
@@ -210,9 +232,28 @@ class CommunityPipeline:
                     "output_tokens": stats.output_tokens,
                 })
 
+                if summarizer._generation_changed:
+                    self._append_generation_warning(maintenance_warnings, lvl)
+                    generation_lost = True
+                    break
+
+            if generation_guarded and not generation_lost:
+                changed_level = self._first_generation_mismatch(
+                    bound_generation, levels
+                )
+                if changed_level is not None:
+                    self._append_generation_warning(
+                        maintenance_warnings, changed_level
+                    )
+                    generation_lost = True
+
             # Step 6: Embed community reports
             embedded_count = 0
-            if self.embedder and self.embed_community_reports:
+            if (
+                self.embedder
+                and self.embed_community_reports
+                and not generation_lost
+            ):
                 from recon_graphrag.embeddings.community_reports import (
                     CommunityReportEmbedder,
                 )
@@ -222,7 +263,34 @@ class CommunityPipeline:
                     embedder=self.embedder,
                     graph_name=self.graph_name,
                 )
-                embedded_count = await report_embedder.embed_reports()
+                if not generation_guarded:
+                    embedded_count = await report_embedder.embed_reports()
+                elif (
+                    _supports_embedding_generation_guards(self.graph_store)
+                    and _supports_generation_bound_embedding(report_embedder)
+                ):
+                    confirmed = await cast(
+                        Any, report_embedder
+                    )._embed_reports_for_generation(
+                        self.graph_name,
+                        expected_generation=bound_generation,
+                    )
+                    embedded_count = int(confirmed or 0)
+                    changed_level = self._first_generation_mismatch(
+                        bound_generation, levels
+                    )
+                    if changed_level is not None:
+                        self._append_generation_warning(
+                            maintenance_warnings, changed_level
+                        )
+                        generation_lost = True
+                else:
+                    logger.warning(
+                        "Community report embedding is not generation-guarded "
+                        "for %s; report embeddings are skipped to avoid stale "
+                        "vectors.",
+                        type(report_embedder).__name__,
+                    )
 
             result = {
                 "status": "degraded" if maintenance_warnings else "completed",
@@ -237,3 +305,81 @@ class CommunityPipeline:
             if token_usage is not None:
                 result["token_usage"] = token_usage
             return result
+
+    def _run_detection(self) -> tuple[list[dict], str | None, bool]:
+        """Run detection and return the stats with the bound generation."""
+        kwargs = {
+            "graph_name": self.graph_name,
+            "relationship_types": self.relationship_types,
+            "max_levels": self.max_levels,
+            "gamma": self.gamma,
+            "theta": self.theta,
+            "tolerance": self.tolerance,
+            "relationship_weight_property": self.relationship_weight_property,
+            "random_seed": self.random_seed,
+        }
+        guards_available = _supports_report_generation_guards(self.graph_store)
+        detect_with_generation = getattr(
+            self.graph_store, "_detect_communities_with_generation", None
+        )
+        if guards_available and callable(detect_with_generation):
+            detection = cast(
+                Callable[..., tuple[list[dict], Any]], detect_with_generation
+            )
+            community_stats, bound_generation = detection(**kwargs)
+            if bound_generation is _GENERATION_UNGUARDED:
+                raise ValueError(
+                    "Community detection returned the unguarded sentinel instead "
+                    "of a generation token."
+                )
+            if bound_generation is not None and not isinstance(
+                bound_generation, str
+            ):
+                raise ValueError(
+                    "Community detection returned an invalid generation token."
+                )
+            return community_stats, bound_generation, True
+
+        if guards_available:
+            logger.warning(
+                "The graph store does not provide "
+                "_detect_communities_with_generation; community report writes "
+                "use the public unguarded path."
+            )
+        else:
+            logger.warning(
+                "The graph store does not provide the private community "
+                "generation guards; community report writes use the public "
+                "unguarded path."
+            )
+        return self.graph_store.detect_communities(**kwargs), None, False
+
+    def _first_generation_mismatch(
+        self, expected_generation: str | None, levels: list[int]
+    ) -> int | None:
+        """Return the first level whose generation differs from the bound one."""
+        for lvl in levels:
+            try:
+                observed = cast(
+                    Any, self.graph_store
+                )._get_community_generations(self.graph_name, lvl)
+            except Exception as error:
+                logger.warning(
+                    "cannot verify the community generation at level %s: %s; "
+                    "guarded writes still protect stored state",
+                    lvl,
+                    error,
+                )
+                continue
+            if observed != [expected_generation]:
+                return lvl
+        return None
+
+    @staticmethod
+    def _append_generation_warning(
+        warnings: list[dict], level: int | None
+    ) -> None:
+        """Append one generation warning without repeating an identical one."""
+        warning = {"code": "community_generation_changed", "level": level}
+        if warning not in warnings:
+            warnings.append(warning)

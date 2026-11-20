@@ -1,5 +1,6 @@
 """Tests for direct Neo4jGraphStore index and vector operations."""
 
+import inspect
 from typing import cast
 
 import neo4j
@@ -553,3 +554,58 @@ def test_fetch_entity_context_custom_query_wins_over_ranking():
     query = driver.calls[-1][0]
     assert "RETURN node AS context_row" in query
     assert "source_score" not in query
+
+
+def test_private_detection_entrypoint_matches_the_public_arguments():
+    public = inspect.signature(Neo4jGraphStore.detect_communities).parameters
+    private = inspect.signature(
+        Neo4jGraphStore._detect_communities_with_generation
+    ).parameters
+    assert list(private.values()) == list(public.values())
+
+
+def test_detect_communities_returns_stats_without_the_generation(monkeypatch):
+    import recon_graphrag.communities.neo4j.detection as detection_module
+
+    captured = {}
+
+    class FakeDetector:
+        def __init__(self, graph_store, **kwargs):
+            captured["graph_store"] = graph_store
+            captured["kwargs"] = kwargs
+
+        def _detect_with_generation(self):
+            captured["invoked"] = True
+            return [{"community_id": "c", "level": 0}], "generation-token"
+
+    monkeypatch.setattr(detection_module, "CommunityDetector", FakeDetector)
+    driver = FakeDriver()
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    result = store.detect_communities("graph-a", max_levels=2)
+
+    assert result == [{"community_id": "c", "level": 0}]
+    assert captured["invoked"] is True
+    assert captured["graph_store"] is store
+    assert captured["kwargs"]["max_levels"] == 2
+    assert captured["kwargs"]["graph_name"] == "graph-a"
+
+
+def test_private_detection_entrypoint_returns_stats_and_generation(monkeypatch):
+    import recon_graphrag.communities.neo4j.detection as detection_module
+
+    class FakeDetector:
+        def __init__(self, graph_store, **kwargs):
+            self.kwargs = kwargs
+
+        def _detect_with_generation(self):
+            return [{"community_id": "c", "level": 0}], "generation-token"
+
+    monkeypatch.setattr(detection_module, "CommunityDetector", FakeDetector)
+    driver = FakeDriver()
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver))
+
+    stats, generation = store._detect_communities_with_generation("graph-a", random_seed=7)
+
+    assert stats == [{"community_id": "c", "level": 0}]
+    assert generation == "generation-token"

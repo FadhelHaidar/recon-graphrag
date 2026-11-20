@@ -501,6 +501,34 @@ class Neo4jGraphStore(BaseGraphStore):
         entity_label: str = "__Entity__",
         community_label: str = "Community",
     ) -> list[dict]:
+        stats, _ = self._detect_communities_with_generation(
+            graph_name=graph_name,
+            relationship_types=relationship_types,
+            max_levels=max_levels,
+            gamma=gamma,
+            theta=theta,
+            tolerance=tolerance,
+            relationship_weight_property=relationship_weight_property,
+            random_seed=random_seed,
+            entity_label=entity_label,
+            community_label=community_label,
+        )
+        return stats
+
+    def _detect_communities_with_generation(
+        self,
+        graph_name: str,
+        relationship_types: Optional[list[str]] = None,  # noqa: UP045 - public signature compatibility
+        max_levels: int = 3,
+        gamma: float = 1.0,
+        theta: float = 0.01,
+        tolerance: float = 1e-4,
+        relationship_weight_property: Optional[str] = None,  # noqa: UP045 - public signature compatibility
+        random_seed: Optional[int] = 42,  # noqa: UP045 - public signature compatibility
+        entity_label: str = "__Entity__",
+        community_label: str = "Community",
+    ) -> tuple[list[dict], str]:
+        """Detect communities and return the stats with this invocation's token."""
         from recon_graphrag.communities.neo4j.detection import CommunityDetector
 
         detector = CommunityDetector(
@@ -516,7 +544,7 @@ class Neo4jGraphStore(BaseGraphStore):
             entity_label=entity_label,
             community_label=community_label,
         )
-        return detector.detect()
+        return detector._detect_with_generation()
 
     def get_unembedded_entities(
         self, graph_name: str, limit: int = 500, model_fingerprint: str | None = None,

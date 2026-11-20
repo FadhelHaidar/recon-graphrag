@@ -14,6 +14,9 @@ import logging
 from typing import NoReturn, Optional
 
 from recon_graphrag.embeddings.base import BaseEmbedder
+from recon_graphrag.graphdb._community_publication import (
+    verify_memgraph_community_generation_constraint,
+)
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.cypher import (
     escape_cypher_identifier,
@@ -292,7 +295,11 @@ class IndexManager:
         )
 
     def _drop_indexes(self):
-        """Drop existing indexes so they can be recreated with updated settings."""
+        """Drop indexes so they can be recreated with updated settings.
+
+        Constraints are schema contracts, not indexes. The Community and
+        CommunityGeneration constraints stay in place.
+        """
         for name in [
             self.config.entity_vector_index,
             self.config.entity_fulltext_index,
@@ -317,11 +324,13 @@ class IndexManager:
         Memgraph supports only single-property unique constraints, so the
         composite (graph_name, level, id) community key and the per-label
         (graph_name, id) writer key are each encoded as one `uid` property
-        with the same length-prefixed encoding the writer uses (F8).
-        Unexpected failures now propagate instead of being muted so a
-        silently missing constraint cannot corrupt later ingestion.
+        with the same length-prefixed encoding the writer uses (F8). Community
+        publication needs the graph-scoped generation constraint. Unexpected
+        failures now propagate instead of being muted so a silently missing
+        constraint cannot corrupt later ingestion.
         """
         self._create_community_constraint()
+        self._create_community_generation_constraint()
         self._create_uid_constraints()
 
     def _create_community_constraint(self):
@@ -341,6 +350,28 @@ class IndexManager:
                 "before ingestion can continue safely. Original error: "
                 f"{e}"
             ) from e
+
+    def _create_community_generation_constraint(self):
+        """Create and verify the graph-scoped publication constraint.
+
+        Memgraph has no constraint names, so the exact label and property
+        definition is the check. It rejects a missing or differently defined
+        constraint, so publication never runs without the serialization anchor.
+        """
+        try:
+            self.graph_store.execute_query(
+                """
+                CREATE CONSTRAINT ON (g:CommunityGeneration)
+                ASSERT g.graph_name IS UNIQUE
+                """
+            )
+        except Exception as e:
+            if "already exists" not in str(e).lower():
+                raise RuntimeError(
+                    "Failed to create the CommunityGeneration uniqueness "
+                    f"constraint. Original error: {e}"
+                ) from e
+        verify_memgraph_community_generation_constraint(self.graph_store)
 
     # Labels whose per-graph (graph_name, id) pair must be unique.
     _UID_LABELS = ("Document", "Chunk", "__Entity__")

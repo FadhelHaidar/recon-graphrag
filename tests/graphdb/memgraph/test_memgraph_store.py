@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import inspect
+from typing import cast
+
+import neo4j
 import pytest
 
 import recon_graphrag.graphdb.memgraph.entity_resolution as entity_resolution
@@ -640,7 +644,26 @@ def test_validate_graph_build_runs_counts(store, fake_driver):
 
 
 def test_create_indexes_runs_uid_constraint(store, fake_driver):
-    fake_driver.session_obj._next_result = FakeResult([])
+    session = fake_driver.session_obj
+    empty = FakeResult([])
+    generation_constraint = FakeResult(
+        [
+            {
+                "constraint type": "unique",
+                "label": ":CommunityGeneration",
+                "properties": ["graph_name"],
+            }
+        ]
+    )
+
+    def fake_run(query, parameters=None):
+        session.queries.append(query.strip())
+        session.params.append(parameters or {})
+        if "SHOW CONSTRAINT INFO" in query:
+            return generation_constraint
+        return empty
+
+    session.run = fake_run
 
     store.create_indexes(embedding_dim=1536)
 
@@ -687,3 +710,58 @@ def test_fetch_entity_context_custom_query_wins_over_ranking(store, fake_driver)
     query = fake_driver.session_obj.queries[-1]
     assert "RETURN node AS context_row" in query
     assert "source_score" not in query
+
+
+def test_private_detection_entrypoint_matches_the_public_arguments():
+    public = inspect.signature(MemgraphGraphStore.detect_communities).parameters
+    private = inspect.signature(
+        MemgraphGraphStore._detect_communities_with_generation
+    ).parameters
+    assert list(private.values()) == list(public.values())
+
+
+def test_detect_communities_returns_stats_without_the_generation(monkeypatch):
+    import recon_graphrag.communities.memgraph.detection as detection_module
+
+    captured = {}
+
+    class FakeDetector:
+        def __init__(self, graph_store, **kwargs):
+            captured["graph_store"] = graph_store
+            captured["kwargs"] = kwargs
+
+        def _detect_with_generation(self):
+            captured["invoked"] = True
+            return [{"community_id": "c", "level": 0}], "generation-token"
+
+    monkeypatch.setattr(detection_module, "CommunityDetector", FakeDetector)
+    store = MemgraphGraphStore(cast(neo4j.Driver, FakeDriver()))
+
+    result = store.detect_communities("graph-a", max_levels=2)
+
+    assert result == [{"community_id": "c", "level": 0}]
+    assert captured["invoked"] is True
+    assert captured["graph_store"] is store
+    assert captured["kwargs"]["max_levels"] == 2
+    assert captured["kwargs"]["graph_name"] == "graph-a"
+
+
+def test_private_detection_entrypoint_returns_stats_and_generation(monkeypatch):
+    import recon_graphrag.communities.memgraph.detection as detection_module
+
+    class FakeDetector:
+        def __init__(self, graph_store, **kwargs):
+            self.kwargs = kwargs
+
+        def _detect_with_generation(self):
+            return [{"community_id": "c", "level": 0}], "generation-token"
+
+    monkeypatch.setattr(detection_module, "CommunityDetector", FakeDetector)
+    store = MemgraphGraphStore(cast(neo4j.Driver, FakeDriver()))
+
+    stats, generation = store._detect_communities_with_generation(
+        graph_name="graph-a", random_seed=7
+    )
+
+    assert stats == [{"community_id": "c", "level": 0}]
+    assert generation == "generation-token"
