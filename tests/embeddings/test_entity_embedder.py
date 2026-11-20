@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from recon_graphrag.embeddings import EntityEmbedder
+from recon_graphrag.entity_text import entity_embedding_fingerprint, text_fingerprint
 from recon_graphrag.graphdb.base import GraphStore
 
 
@@ -208,6 +209,60 @@ async def test_model_change_reembeds_unchanged_text(fake_embedder):
     assert [call[0] for call in store.upserted] == [["e1"]]
     assert entity["embedding_model_fingerprint"] != "old"
     assert embedder.model_fingerprint == store.upserted[0][2]
+
+
+@pytest.mark.asyncio
+async def test_vector_fingerprint_uses_the_exact_text_sent_to_the_embedder():
+    # A concurrent writer can change the row while the provider await is pending.
+    class MutableRowStore:
+        def __init__(self, row):
+            self.row = row
+            self.fetches = 0
+            self.upserted = []
+
+        def get_unembedded_entities(self, graph_name, limit=500, model_fingerprint=None, *, exclude_ids=None):
+            self.fetches += 1
+            return [self.row] if self.fetches == 1 else []
+
+        def upsert_vectors(self, ids, property_name, vectors, *, content_fingerprints=None, model_fingerprint=None):
+            self.upserted.append((ids, content_fingerprints, model_fingerprint))
+
+    class MutatingEmbedder:
+        def __init__(self, row):
+            self.row = row
+            self.sent_text = None
+
+        def embed_query(self, text: str, **kwargs) -> list[float]:
+            return [0.1, 0.2]
+
+        async def async_embed_query(self, text: str, **kwargs) -> list[float]:
+            self.sent_text = text
+            self.row["name"] = "Renamed"
+            self.row["description"] = "changed while embedded"
+            return [0.1, 0.2]
+
+    row = {
+        "id": "e1",
+        "labels": ["Movie"],
+        "name": "Inception",
+        "description": "dream heist",
+    }
+    store = MutableRowStore(row)
+    embedder = MutatingEmbedder(row)
+
+    await EntityEmbedder(cast(GraphStore, store), embedder).embed_entities()
+
+    assert row["name"] == "Renamed"
+    assert embedder.sent_text == "Movie: Inception - dream heist"
+    ids, fingerprints, _ = store.upserted[0]
+    assert ids == ["e1"]
+    assert fingerprints == [text_fingerprint(embedder.sent_text)]
+    # The mutated row must not certify a vector built from the old text.
+    assert fingerprints != [
+        entity_embedding_fingerprint(
+            labels=["Movie"], name="Renamed", description="changed while embedded"
+        )
+    ]
 
 
 @pytest.mark.asyncio

@@ -626,9 +626,10 @@ class MixedContextBuilder:
         included_ids = {item.id for item in packed.included}
         remaining = [item for item in all_items if item.id not in included_ids]
         extra = pack_items(remaining, overflow, self.counter)
+        extra_ids = {item.id for item in extra.included}
         merged = PackResult(
             included=packed.included + extra.included,
-            excluded=[item for item in remaining if item.id not in {x.id for x in extra.included}],
+            excluded=[item for item in remaining if item.id not in extra_ids],
             used_tokens=packed.used_tokens + extra.used_tokens,
             max_tokens=packed.max_tokens + overflow,
             truncated_item_ids=packed.truncated_item_ids + extra.truncated_item_ids,
