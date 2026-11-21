@@ -24,6 +24,7 @@ import random as _random
 import re
 import time
 import zlib
+from collections import Counter
 from typing import Any, Optional
 
 from recon_graphrag.embeddings.base import BaseEmbedder
@@ -65,6 +66,8 @@ from recon_graphrag.utils.tokens import (
 
 logger = logging.getLogger(__name__)
 
+_PrimerReportKeys = dict[tuple[str, int | None], str]
+
 
 class _LLMCallLimitReached(RuntimeError):
     """Internal signal used to enforce a per-search hard call budget."""
@@ -103,6 +106,12 @@ JSON format:
 
 If the reports contain no relevant information, set score to 0 and
 answer to "No relevant information found."
+"""
+
+PRIMER_REPORT_KEY_INSTRUCTION = """\
+Some reports above use temporary keys. Use these keys only in the
+`report_ids` JSON field. Do not copy a temporary key into `answer` or
+`follow_ups`; refer to the report in prose instead.
 """
 
 ACTION_PROMPT = """\
@@ -282,7 +291,11 @@ class DriftSearchRetriever:
         Args:
             query: User question.
             top_k: Number of entities for local follow-up retrieval.
-            community_level: Which community level to use.
+            community_level: Which community level to use. ``None`` or
+                ``"all"`` removes the level filter from the bounded
+                ``primer_top_k`` report search; it does not read every report.
+                A call-time ``None`` uses
+                ``DriftSearchConfig.community_level``.
             query_vector: Optional precomputed query vector.
             effective_search_ratio: Over-fetch multiplier for entity retrieval.
             query_params: Optional dict forwarded to the hybrid entity retriever.
@@ -329,6 +342,7 @@ class DriftSearchRetriever:
                 query_vector,
                 config,
                 call_lock,
+                unrestricted=target_selector in (None, "all"),
             )
             state.phase_ms["primer"] = int((time.monotonic() - phase_start) * 1000)
 
@@ -380,6 +394,7 @@ class DriftSearchRetriever:
                 conversation_history=conversation_history,
                 call_lock=call_lock,
                 include_graph_evidence=include_graph_evidence,
+                selected_reports=primer_result.get("selected_reports"),
             )
             # Total wall time covers reduction, citations and graph evidence.
             elapsed_ms = int((time.monotonic() - start) * 1000)
@@ -416,6 +431,8 @@ class DriftSearchRetriever:
         query_vector: list[float] | None,
         config: DriftSearchConfig,
         call_lock: asyncio.Lock,
+        *,
+        unrestricted: bool,
     ) -> dict:
         """Embed query, search community reports, parse primer JSON."""
         if query_vector is None:
@@ -430,8 +447,7 @@ class DriftSearchRetriever:
                 int((time.monotonic() - phase_start) * 1000),
             )
 
-        # None is valid: `all`/None means an unrestricted level selector.
-        if resolved_level is None:
+        if resolved_level is None and not unrestricted:
             return {
                 "fallback": True,
                 "fallback_reason": "no_community_level",
@@ -479,13 +495,15 @@ class DriftSearchRetriever:
                 }
 
         state.primer_reports = reports
+        report_keys = self._primer_report_keys(reports) if unrestricted else None
+        selected_reports = None
 
         if config.primer_folds > 1:
-            data = await self._primer_with_folds(
-                query, reports, state, config, conversation_history, call_lock,
+            data, selected_reports = await self._primer_with_folds(
+                query, reports, state, config, conversation_history, call_lock, report_keys,
             )
         else:
-            report_context = self._format_primer_reports(reports)
+            report_context = self._format_primer_reports(reports, report_keys)
             prompt = PRIMER_PROMPT.format(
                 query=query,
                 report_context=report_context,
@@ -509,6 +527,12 @@ class DriftSearchRetriever:
                     "fallback_reason": "primer_llm_failed",
                     "query_vector": query_vector,
                 }
+            if report_keys is not None:
+                selected_reports = self._resolve_primer_reports(
+                    reports, report_keys, data["report_ids"],
+                )
+
+        self._normalize_primer_report_text(data, report_keys)
 
         primer_action = DriftAction(
             id="primer",
@@ -521,11 +545,17 @@ class DriftSearchRetriever:
             context=self._format_primer_reports(reports),
             follow_ups=data.get("follow_ups", []),
             references=data.get("references", []),
-            report_ids=data.get("report_ids", []),
+            report_ids=data.get("report_ids", []) if selected_reports is None else [
+                self._primer_report_identity(report)[0] for report in selected_reports
+            ],
         )
         state.actions.append(primer_action)
 
-        return {"fallback": False, "query_vector": query_vector}
+        return {
+            "fallback": False,
+            "query_vector": query_vector,
+            "selected_reports": selected_reports,
+        }
 
     async def _hyde_rerank(
         self,
@@ -535,7 +565,7 @@ class DriftSearchRetriever:
         state: DriftQueryState,
         config: DriftSearchConfig,
         call_lock: asyncio.Lock,
-        resolved_level: int,
+        resolved_level: int | None,
         primer_top_k: int,
     ) -> list[dict]:
         """Generate hypothetical answer, re-embed, re-search reports."""
@@ -582,12 +612,13 @@ class DriftSearchRetriever:
         config: DriftSearchConfig,
         conversation_history: str,
         call_lock: asyncio.Lock,
-    ) -> dict:
-        """Split reports into folds, run primer LLM calls in parallel, merge follow-ups."""
+        report_keys: _PrimerReportKeys | None,
+    ) -> tuple[dict, list[dict] | None]:
+        """Run primer folds in parallel and combine follow-ups and report selections."""
         folds = self._split_into_folds(reports, config.primer_folds)
 
         async def _process_fold(fold_reports: list[dict]) -> dict | None:
-            report_context = self._format_primer_reports(fold_reports)
+            report_context = self._format_primer_reports(fold_reports, report_keys)
             prompt = PRIMER_PROMPT.format(
                 query=query,
                 report_context=report_context,
@@ -615,8 +646,10 @@ class DriftSearchRetriever:
         all_follow_ups: list[str] = []
         all_report_ids: list[str] = []
         all_references: list[dict] = []
+        explicit_reports: list[dict] = []
+        seen_reports: list[dict] = []
 
-        for data in results:
+        for data, fold_reports in zip(results, folds, strict=True):
             if data is None:
                 continue
             score = float(data.get("score", 0))
@@ -624,8 +657,24 @@ class DriftSearchRetriever:
                 best_score = score
                 best_data = data
             all_follow_ups.extend(data.get("follow_ups", []))
-            all_report_ids.extend(data.get("report_ids", []))
+            report_ids = data.get("report_ids", [])
+            all_report_ids.extend(report_ids)
             all_references.extend(data.get("references", []))
+            if report_keys is not None:
+                if report_ids:
+                    explicit_reports.extend(self._resolve_primer_reports(
+                        fold_reports, report_keys, report_ids,
+                    ))
+                else:
+                    seen_reports.extend(fold_reports)
+
+        selected_reports = None
+        if report_keys is not None:
+            # Attempted selections must not widen to rows from other folds.
+            selected_reports = list({
+                self._primer_report_identity(report): report
+                for report in (explicit_reports if all_report_ids else seen_reports)
+            }.values())
 
         if best_data is None:
             return {
@@ -634,12 +683,12 @@ class DriftSearchRetriever:
                 "follow_ups": [],
                 "report_ids": [],
                 "references": [],
-            }
+            }, selected_reports
 
         best_data["follow_ups"] = list(dict.fromkeys(all_follow_ups))
         best_data["report_ids"] = list(dict.fromkeys(all_report_ids))
         best_data["references"] = all_references
-        return best_data
+        return best_data, selected_reports
 
     @staticmethod
     def _split_into_folds(reports: list[dict], n_folds: int) -> list[list[dict]]:
@@ -971,7 +1020,11 @@ class DriftSearchRetriever:
         return chosen or list(state.primer_reports)
 
     async def _reduction_graph_evidence(
-        self, state: DriftQueryState, completed: list[DriftAction], packed_ids: set[str]
+        self,
+        state: DriftQueryState,
+        completed: list[DriftAction],
+        packed_ids: set[str],
+        selected_reports: list[dict] | None = None,
     ) -> dict:
         """Merge evidence of the actions packed into the final reduction."""
         builder = GraphEvidenceBuilder(
@@ -980,13 +1033,16 @@ class DriftSearchRetriever:
         for action in completed:
             if action.id in packed_ids and action.graph:
                 builder.add_payload(action.graph)
-        if "primer" in packed_ids:
-            await builder.expand_communities(
-                self._primer_report_selection(state), origin="primer"
-            )
+        primer_packed = "primer" in packed_ids
+        if selected_reports is None:
+            reports = self._primer_report_selection(state)
+        else:
+            reports = selected_reports if primer_packed else []
+        if primer_packed:
+            await builder.expand_communities(reports, origin="primer")
         primer_reports = [
             {"id": str(report.get("id")), "level": report.get("level")}
-            for report in self._primer_report_selection(state)
+            for report in reports
         ]
         builder.set_provenance(
             retained_actions=sorted(packed_ids),
@@ -1006,6 +1062,7 @@ class DriftSearchRetriever:
         conversation_history: str,
         call_lock: asyncio.Lock,
         include_graph_evidence: bool = False,
+        selected_reports: list[dict] | None = None,
     ) -> SearchResult:
         """Sort actions by score, pack context, synthesize final answer."""
         completed = [a for a in state.actions if a.status == "completed" and a.answer]
@@ -1042,7 +1099,7 @@ class DriftSearchRetriever:
         # Resolve references only from a packed primer action and from reports
         # the primer explicitly selected.
         report_refs = (
-            self._extract_report_refs_from_state(state)
+            self._extract_report_refs_from_state(state, selected_reports)
             if "primer" in packed_ids
             else []
         )
@@ -1065,7 +1122,7 @@ class DriftSearchRetriever:
                 })
 
         graph = (
-            await self._reduction_graph_evidence(state, completed, packed_ids)
+            await self._reduction_graph_evidence(state, completed, packed_ids, selected_reports)
             if include_graph_evidence
             else {}
         )
@@ -1396,13 +1453,109 @@ class DriftSearchRetriever:
 
 
     @staticmethod
-    def _format_primer_reports(reports: list[dict]) -> str:
+    def _primer_report_identity(report: dict) -> tuple[str, int | None]:
+        return str(report.get("id", "?")), report.get("level")
+
+    @classmethod
+    def _primer_report_keys(cls, reports: list[dict]) -> _PrimerReportKeys:
+        identities = [cls._primer_report_identity(report) for report in reports]
+        counts = Counter(rid for rid, _ in identities)
+        reserved = set(counts)
+        keys: _PrimerReportKeys = {}
+        for index, identity in enumerate(identities):
+            rid, _ = identity
+            key = rid
+            if counts[rid] > 1:
+                key = f"selected-report:{index}"
+                while key in reserved:
+                    key += ":"
+                reserved.add(key)
+            keys[identity] = key
+        return keys
+
+    @classmethod
+    def _resolve_primer_reports(
+        cls, reports: list[dict], keys: _PrimerReportKeys, report_ids: list[str],
+    ) -> list[dict]:
+        if not report_ids:
+            return reports
+        selected = set(report_ids)
+        return [report for report in reports
+                if keys[cls._primer_report_identity(report)] in selected]
+
+    @classmethod
+    def _normalize_primer_report_text(
+        cls, data: dict, report_keys: _PrimerReportKeys | None,
+    ) -> None:
+        aliases = (
+            cls._primer_report_aliases(report_keys)
+            if report_keys is not None
+            else {}
+        )
+        if not aliases:
+            return
+        data["answer"] = cls._replace_primer_report_aliases(
+            data.get("answer", ""), aliases,
+        )
+        data["follow_ups"] = [
+            cls._replace_primer_report_aliases(question, aliases)
+            for question in data.get("follow_ups", [])
+        ]
+
+    @classmethod
+    def _primer_report_aliases(
+        cls,
+        report_keys: _PrimerReportKeys,
+        reports: list[dict] | None = None,
+    ) -> dict[str, tuple[str, int | None]]:
+        identities = (
+            [cls._primer_report_identity(report) for report in reports]
+            if reports is not None
+            else list(report_keys)
+        )
+        aliases: dict[str, tuple[str, int | None]] = {}
+        for identity in identities:
+            key = report_keys[identity]
+            real_id, level = identity
+            if key != real_id:
+                aliases[key] = (real_id, level)
+        return aliases
+
+    @classmethod
+    def _replace_primer_report_aliases(
+        cls, text: str, aliases: dict[str, tuple[str, int | None]],
+    ) -> str:
+        if not text or not aliases:
+            return text
+        alternatives = "|".join(
+            re.escape(key) for key in sorted(aliases, key=len, reverse=True)
+        )
+        # Keep identifier punctuation inside the matched token so an alias is
+        # never replaced inside a longer real ID or unrelated word.
+        pattern = re.compile(
+            rf"(?<![A-Za-z0-9_:\-])(?:{alternatives})(?![A-Za-z0-9_:\-])"
+        )
+
+        def replace(match: re.Match[str]) -> str:
+            real_id, level = aliases[match.group(0)]
+            return f"{real_id} (level {level})"
+
+        return pattern.sub(replace, text)
+
+    @classmethod
+    def _format_primer_reports(
+        cls, reports: list[dict], report_keys: _PrimerReportKeys | None = None,
+    ) -> str:
         parts = []
         for r in reports:
-            rid = r.get("id", "?")
+            rid = r.get("id", "?") if report_keys is None else report_keys[
+                cls._primer_report_identity(r)
+            ]
             level = r.get("level", "?")
             report_text = r.get("report_text", "")
             parts.append(f"Report {rid} (level {level}):\n{report_text}")
+        if report_keys is not None and cls._primer_report_aliases(report_keys, reports):
+            parts.append(PRIMER_REPORT_KEY_INSTRUCTION)
         return "\n\n".join(parts) if parts else "No community reports available."
 
     @staticmethod
@@ -1412,30 +1565,30 @@ class DriftSearchRetriever:
         return f"\n## Conversation History\n{history}\n"
 
 
-    def _extract_report_refs_from_state(self, state: DriftQueryState) -> list[dict]:
+    def _extract_report_refs_from_state(
+        self, state: DriftQueryState, selected_reports: list[dict] | None = None,
+    ) -> list[dict]:
         """Extract references from primer reports via JSON or [refs: ...] text."""
         refs: list[dict] = []
         seen: set[tuple[str, str]] = set()
         allowed_types = {"entity", "relationship", "claim"}
 
-        primer = next((action for action in state.actions if action.id == "primer"), None)
-        selected_report_ids = set(primer.report_ids if primer else [])
-        available_report_ids = {
-            str(report.get("id")) for report in state.primer_reports if report.get("id")
-        }
-        selected_report_ids &= available_report_ids
-        if not selected_report_ids:
-            selected_report_ids = available_report_ids
+        reports = selected_reports
+        if reports is None:
+            primer = next((action for action in state.actions if action.id == "primer"), None)
+            available_ids = {
+                str(report.get("id")) for report in state.primer_reports if report.get("id")
+            }
+            selected_ids = (set(primer.report_ids) & available_ids) if primer else set()
+            reports = [report for report in state.primer_reports
+                       if str(report.get("id")) in (selected_ids or available_ids)]
+            for ref in primer.references if primer else []:
+                key = (str(ref.get("target_type", "")), str(ref.get("target_id", "")))
+                if key[0] in allowed_types and key[1] and key not in seen:
+                    seen.add(key)
+                    refs.append({"target_type": key[0], "target_id": key[1]})
 
-        for ref in primer.references if primer else []:
-            key = (str(ref.get("target_type", "")), str(ref.get("target_id", "")))
-            if key[0] in allowed_types and key[1] and key not in seen:
-                seen.add(key)
-                refs.append({"target_type": key[0], "target_id": key[1]})
-
-        for report in state.primer_reports:
-            if str(report.get("id")) not in selected_report_ids:
-                continue
+        for report in reports:
             report_json = report.get("report_json", "")
             json_refs: list[dict] = []
             if report_json:

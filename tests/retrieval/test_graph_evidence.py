@@ -83,6 +83,43 @@ class DriftEvidenceStore(ExpansionStore, drift_fakes.FakeGraphStore):
     pass
 
 
+class ReportCitationStore(ExpansionStore, drift_fakes.FakeGraphStore):
+    """DRIFT store with report-backed chunk citations and no entity chunks."""
+
+    def __init__(self):
+        super().__init__()
+        self.chunk_requests: list[list[str]] = []
+
+    def fetch_entity_context(
+        self, matches, retrieval_query=None, query_params=None, mode="local", graph_name=None
+    ):
+        return []
+
+    def execute_query(self, query, parameters=None):
+        parameters = parameters or {}
+        if "RETURN max(c.level) AS level" in query:
+            return [{"level": 0}]
+        if "UNWIND $entity_ids AS eid" in query:
+            return [
+                {"chunk_id": "chunk:report"}
+                for entity_id in parameters.get("entity_ids", [])
+                if entity_id == "person:alice"
+            ]
+        return []
+
+    def resolve_chunk_citations(self, graph_name, chunk_ids):
+        self.chunk_requests.append(list(chunk_ids))
+        return [
+            {
+                "document_id": "doc:report",
+                "chunk_id": chunk_id,
+                "document_name": "Report source",
+                "excerpt": "Alice leads Acme.",
+            }
+            for chunk_id in chunk_ids
+        ]
+
+
 class GlobalEvidenceStore(ExpansionStore, global_fakes.FakeGraphStore):
     pass
 
@@ -408,6 +445,77 @@ async def test_drift_primer_expands_only_when_packed():
     assert packed["provenance"]["primer_reports"] == [
         {"id": "report:c0:0", "level": 0}
     ]
+
+
+@pytest.mark.asyncio
+async def test_drift_unrestricted_expansion_uses_selected_report_level():
+    store = DriftEvidenceStore()
+    retriever = DriftSearchRetriever(
+        cast(Any, store), cast(Any, drift_fakes.FakeLLM()), cast(Any, drift_fakes.FakeEmbedder()),
+    )
+    from recon_graphrag.retrieval.drift_types import DriftQueryState
+
+    state = DriftQueryState(query="Who?")
+    primer = drift_action("primer", "Primer answer.", 10.0)
+    primer.report_ids = ["report:c0:0"]
+    state.actions = [primer]
+    state.primer_reports = [
+        {"id": "report:c0:0", "level": 0, "report_text": "Alice leads Acme."},
+        {"id": "report:c0:0", "level": 2, "report_text": "Bob writes code."},
+    ]
+
+    graph = await retriever._reduction_graph_evidence(
+        state,
+        [primer],
+        {"primer"},
+        selected_reports=[
+            {"id": "report:c0:0", "level": 2, "report_text": "Bob writes code."}
+        ],
+    )
+
+    assert store.expansion_calls == [("entity-graph", "report:c0:0", 2, 25)]
+    assert graph["provenance"]["primer_reports"] == [
+        {"id": "report:c0:0", "level": 2}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_drift_unpacked_unrestricted_primer_contributes_nothing():
+    store = ReportCitationStore()
+    llm = drift_fakes.FakeLLM(
+        responses=[
+            json.dumps({
+                "answer": "Primer answer " + ("with detail " * 20),
+                "score": 10,
+                "follow_ups": ["What else?"],
+                "report_ids": ["report:c0:0"],
+            }),
+            json.dumps({"answer": "Action answer.", "score": 90, "follow_ups": []}),
+        ]
+    )
+    retriever = DriftSearchRetriever(
+        cast(Any, store), cast(Any, llm), cast(Any, drift_fakes.FakeEmbedder()),
+        config=drift_fakes.DriftSearchConfig(
+            community_level=None,
+            use_hyde=False,
+            action_use_mixed_context=False,
+            reduce_budget_tokens=25,
+        ),
+    )
+
+    result = await retriever.search(
+        "Who leads Acme?", include_graph_evidence=True, synthesize_response=False,
+    )
+
+    trace = result.metadata["drift_trace"]
+    assert trace["primer_report_ids"] == ["report:c0:0"]
+    assert result.graph["provenance"]["retained_actions"] == ["action:1"]
+    # The unpacked primer resolves no report citations and expands no members.
+    assert result.citations == []
+    assert store.chunk_requests == []
+    assert store.expansion_calls == []
+    assert result.graph["provenance"]["primer_reports"] == []
+    assert result.graph["nodes"] == []
 
 
 @pytest.mark.asyncio

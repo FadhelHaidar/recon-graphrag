@@ -160,7 +160,7 @@ stored community reports and synthesizes a corpus-level answer.
 
 | Parameter | Description |
 | --- | --- |
-| `community_level` | Which community level to search. Use `"coarsest"` when you do not know the numeric levels. |
+| `community_level` | Which community level to search. Omit it, or pass `None`, for dynamic selection. Global static search requires a resolved level. Use `"coarsest"` when you do not know the numeric levels. Global search does not accept `"all"`. |
 | `random_seed` | Seed for reproducible report shuffling. Defaults to `42`. |
 | `map_budget_tokens` | Constructor option on `GlobalSearchRetriever`; maximum report text packed into one map prompt. |
 | `reduce_budget_tokens` | Constructor option on `GlobalSearchRetriever`; maximum formatted partial-answer text packed into the final reduce prompt. The budget includes separators. The prompt template and general-knowledge instruction do not count against it. It is not an output-length cap. |
@@ -351,6 +351,21 @@ result = await drift_search.search(
 )
 ```
 
+A call-time `community_level` of `None` uses
+`DriftSearchConfig.community_level`. A configured `None` or `"all"` gives DRIFT
+an unrestricted selector. The selector removes the level filter from the
+bounded `primer_top_k` report search; it does not read every report. An
+unresolved `"finest"` selector falls back to local-style retrieval with
+`drift_fallback_reason="no_community_level"`.
+
+For unrestricted searches, reports that share an ID at different levels stay
+distinct. DRIFT cites and expands only the report rows that the primer selects.
+When the primer selects no report, it uses the report rows shown to its
+successful prompt folds. A missing or empty `report_ids` list counts as no
+selection and uses that fallback. An explicitly nonempty selection that
+resolves no valid keys adds no evidence and does not fall back. Rows from a
+failed fold never enter the fallback.
+
 **Example walkthrough:**
 
 ```text
@@ -387,7 +402,7 @@ after three because no further questions remained.
 | Parameter | Description |
 | --- | --- |
 | `top_k` | Number of entities to retrieve. |
-| `community_level` | Which community level to use. |
+| `community_level` | Community level for primer reports. `"all"` or a configured `None` removes the level filter from the bounded `primer_top_k` report search; it does not read every report. A call-time `None` uses `DriftSearchConfig.community_level`. |
 | `query_params` | Optional dict forwarded to the underlying hybrid entity retriever. |
 | `conversation_history` | Optional conversation history string injected into prompts. |
 
@@ -424,7 +439,7 @@ questions.
 | `max_rounds` | `3` | Maximum traversal rounds. `0` disables traversal. Work still pending after the last round stops with `max_rounds_reached`. |
 | `max_llm_calls` | `20` | Hard cap on total LLM calls across all phases (primer, actions, reduction). Prevents runaway costs. |
 | `action_concurrency` | `3` | Maximum number of actions evaluated concurrently during traversal. |
-| `community_level` | `"coarsest"` | Default community level for primer report search. Overridden by the `community_level` search parameter if provided. |
+| `community_level` | `"coarsest"` | Default community level for primer report search. A value of `None` or `"all"` removes the level filter from the bounded `primer_top_k` search. Overridden by the `community_level` search parameter if provided. |
 | `reduce_budget_tokens` | `12000` | Token budget for packing scored action answers into the final reduction prompt. |
 | `use_hyde` | `True` | Enable HyDE (Hypothetical Document Embedding) for primer. Generates a hypothetical answer from a random report template, re-embeds, and re-searches for better report retrieval. |
 | `primer_folds` | `1` | Number of folds to split primer reports into for parallel LLM decomposition. When > 1, reports are split into N folds, processed in parallel, and follow-ups are merged. |
@@ -451,7 +466,8 @@ also affected because the fourth field is gone, so prefer keyword arguments and
 re-check any call site that passed three or more arguments positionally.
 
 DRIFT returns citations for retrieved local source chunks and for references in
-the selected primer reports.
+the selected primer reports. When reports share an ID across levels, only the
+selected report row contributes references and citations.
 Like local search, DRIFT accepts `synthesize_citation_metadata=True` and optional
 `synthesis_metadata_keys=[...]` to include compact citation metadata in the
 answer synthesis context.
@@ -1193,8 +1209,10 @@ community_level=1           # Exact stored level
 Passing `community_level=0` selects the coarsest, most global community reports.
 
 `community_level="all"` means "no level filter" for APIs that support it.
-Built-in global search does not run across every level at once; it requires one
-resolved level.
+DRIFT search accepts this selector and removes the level filter from its bounded
+`primer_top_k` report search; it does not read every report. Built-in global
+search does not accept `"all"`. Global static search requires one resolved
+level. Omit `community_level`, or pass `None`, to use Global dynamic selection.
 
 ---
 
