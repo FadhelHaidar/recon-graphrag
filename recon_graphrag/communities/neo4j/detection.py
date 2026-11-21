@@ -7,29 +7,40 @@ PARENT_COMMUNITY relationships.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Any, Optional
+from uuid import uuid4
 
+from recon_graphrag.graphdb._community_publication import (
+    new_community_generation_token,
+    replace_community_hierarchy,
+    verify_neo4j_community_generation_constraint,
+)
 from recon_graphrag.graphdb.base import GraphStore
-from recon_graphrag.graphdb.store_base import QueryExecutor, replacement_transaction
-
+from recon_graphrag.graphdb.store_base import QueryExecutor
 
 DEFAULT_GRAPH_NAME = "entity-graph"
 
 
 class CommunityDetector:
-    """Run Leiden community detection via Neo4j GDS on the entity graph."""
+    """Run Leiden community detection via Neo4j GDS on the entity graph.
+
+    Detection requires the ``CommunityGeneration`` uniqueness constraint that
+    ``create_indexes()`` creates. Detection fails closed without that exact
+    constraint.
+    """
 
     def __init__(
         self,
         graph_store: GraphStore,
-        relationship_types: Optional[list[str]] = None,
+        relationship_types: Optional[list[str]] = None,  # noqa: UP045 - public signature compatibility
         max_levels: int = 3,
         gamma: float = 1.0,
         theta: float = 0.01,
         tolerance: float = 1e-4,
         graph_name: str = DEFAULT_GRAPH_NAME,
-        relationship_weight_property: Optional[str] = None,
-        random_seed: Optional[int] = 42,
+        relationship_weight_property: Optional[str] = None,  # noqa: UP045 - public signature compatibility
+        random_seed: Optional[int] = 42,  # noqa: UP045 - public signature compatibility
         entity_label: str = "__Entity__",
         community_label: str = "Community",
     ):
@@ -58,29 +69,53 @@ class CommunityDetector:
         """Run Leiden and create hierarchical Community nodes.
 
         Steps:
-        1. Drop existing projection if it exists
-        2. Project the entity graph (undirected)
-        3. Run gds.leiden.stream with hierarchical levels
+        1. Create a projection name unique to this invocation
+        2. Project the entity graph (undirected) into that projection
+        3. Run gds.leiden.stream with hierarchical levels on that projection
         4. Build every community, membership, and parent row
-        5. In one transaction: replace existing communities for this graph_name,
-           create Community nodes for every Leiden level, link entities at every
+        5. In one transaction: publish this invocation's generation token,
+           replace existing communities for this graph_name, create Community
+           nodes for every Leiden level with that token, link entities at every
            level, and build the PARENT_COMMUNITY hierarchy
-        6. Clean up the GDS projection
+        6. Clean up only this invocation's GDS projection
+
+        Each invocation owns its projection, so concurrent invocations,
+        including calls on one detector instance, cannot share or drop each
+        other's projections. The projection name does not change the stored
+        graph scope. A creation or validation failure still cleans up the
+        invocation's projection without hiding the primary failure.
 
         Existing communities survive any failure before the replacement
-        transaction commits.
+        transaction commits. The invocation token is not returned here; use
+        ``_detect_with_generation`` when a caller needs it.
 
         Returns list of {community_id, level, entity_count, child_community_count}.
         """
-        self._drop_projection()
-        self._project_graph()
-        try:
-            leiden_results = self._run_leiden()
-            self._write_community_hierarchy(leiden_results)
-        finally:
-            self._drop_projection()
+        stats, _ = self._detect_with_generation()
+        return stats
 
-        return self._get_community_stats()
+    def _detect_with_generation(self) -> tuple[list[dict[str, Any]], str]:
+        """Run detection and return its stats with this invocation's token.
+
+        The token is minted for this invocation and never read back from the
+        graph. A failed detection returns no token and advances no generation.
+        """
+        token = new_community_generation_token()
+        projection_name = self._new_projection_name()
+        try:
+            self._project_graph(projection_name)
+            leiden_results = self._run_leiden(projection_name)
+            stats = self._write_community_hierarchy(leiden_results, token)
+        except BaseException:
+            self._discard_projection(projection_name)
+            raise
+
+        self._drop_projection(projection_name)
+        return stats, token
+
+    def _new_projection_name(self) -> str:
+        """Return a projection name that belongs to one detection invocation."""
+        return f"{self.graph_name}-{uuid4().hex}"
 
     @staticmethod
     def _escape_cypher_identifier(identifier: str) -> str:
@@ -97,7 +132,7 @@ class CommunityDetector:
             query, {"graph_name": self.graph_name}
         )
 
-    def _project_graph(self):
+    def _project_graph(self, projection_name: str):
         entity_label = self._escape_cypher_identifier(self.entity_label)
         count = self.graph_store.execute_query(
             f"""
@@ -133,7 +168,7 @@ class CommunityDetector:
         WHERE r.graph_name = $graph_name
           AND type(r) IN $relationship_types
         WITH gds.graph.project(
-            $graph_name,
+            $projection_name,
             source,
             target,
             {relationship_config},
@@ -145,6 +180,7 @@ class CommunityDetector:
         """
         params = {
             "graph_name": self.graph_name,
+            "projection_name": projection_name,
             "relationship_types": valid_types,
         }
         if self.relationship_weight_property:
@@ -186,13 +222,18 @@ class CommunityDetector:
 
         return valid_types
 
-    def _drop_projection(self):
+    def _drop_projection(self, projection_name: str):
         self.graph_store.execute_query(
-            "CALL gds.graph.drop($graph_name, false)",
-            {"graph_name": self.graph_name},
+            "CALL gds.graph.drop($projection_name, false)",
+            {"projection_name": projection_name},
         )
 
-    def _run_leiden(self) -> list[dict[str, Any]]:
+    def _discard_projection(self, projection_name: str) -> None:
+        """Drop a failed invocation's projection without hiding its error."""
+        with suppress(Exception):
+            self._drop_projection(projection_name)
+
+    def _run_leiden(self, projection_name: str) -> list[dict[str, Any]]:
         config_lines = [
             "maxLevels: $max_levels",
             "gamma: $gamma",
@@ -201,7 +242,7 @@ class CommunityDetector:
             "includeIntermediateCommunities: true",
         ]
         params: dict[str, Any] = {
-            "graph_name": self.graph_name,
+            "projection_name": projection_name,
             "max_levels": self.max_levels,
             "gamma": self.gamma,
             "theta": self.theta,
@@ -220,7 +261,7 @@ class CommunityDetector:
 
         config = ",\n".join(config_lines)
         query = f"""
-        CALL gds.leiden.stream($graph_name, {{
+        CALL gds.leiden.stream($projection_name, {{
             {config}
         }})
         YIELD nodeId, communityId, intermediateCommunityIds
@@ -256,14 +297,31 @@ class CommunityDetector:
                 compact_path.append(community_id)
         return compact_path
 
-    def _write_community_hierarchy(self, leiden_results: list[dict[str, Any]]):
+    def _write_community_hierarchy(
+        self, leiden_results: list[dict[str, Any]], token: str
+    ) -> list[dict[str, Any]]:
         membership_rows, parent_edges = self._build_hierarchy_rows(leiden_results)
+        return replace_community_hierarchy(
+            self.graph_store,
+            graph_name=self.graph_name,
+            token=token,
+            verify_constraint=verify_neo4j_community_generation_constraint,
+            write_hierarchy=lambda executor, generation: self._replace_community_rows(
+                executor, membership_rows, parent_edges, generation
+            ),
+            read_stats=self._get_community_stats,
+        )
 
-        executor: QueryExecutor
-        with replacement_transaction(self.graph_store) as executor:
-            self._cleanup_communities(executor)
-            self._write_entity_memberships(membership_rows, executor)
-            self._write_parent_community_edges(parent_edges, executor)
+    def _replace_community_rows(
+        self,
+        executor: QueryExecutor,
+        membership_rows: list[dict[str, Any]],
+        parent_edges: set[tuple[str, int, str, int]],
+        generation: str,
+    ) -> None:
+        self._cleanup_communities(executor)
+        self._write_entity_memberships(membership_rows, executor, generation)
+        self._write_parent_community_edges(parent_edges, executor)
 
     def _build_hierarchy_rows(
         self, leiden_results: list[dict[str, Any]]
@@ -310,7 +368,9 @@ class CommunityDetector:
         )
         return membership_rows, parent_edges
 
-    def _write_entity_memberships(self, rows: list[dict[str, Any]], executor=None):
+    def _write_entity_memberships(
+        self, rows: list[dict[str, Any]], executor, generation: str
+    ):
         entity_label = self._escape_cypher_identifier(self.entity_label)
         community_label = self._escape_cypher_identifier(self.community_label)
         query = f"""
@@ -323,12 +383,17 @@ class CommunityDetector:
             id: row.community_id
         }})
         ON CREATE SET c.created = timestamp()
-        SET c.updated = timestamp()
+        SET c.updated = timestamp(), c.generation = $generation
         MERGE (e)-[rel:IN_COMMUNITY]->(c)
         ON CREATE SET rel.created = timestamp()
         """
-        (executor or self.graph_store).execute_query(
-            query, {"rows": rows, "graph_name": self.graph_name}
+        executor.execute_query(
+            query,
+            {
+                "rows": rows,
+                "graph_name": self.graph_name,
+                "generation": generation,
+            },
         )
 
     def _write_parent_community_edges(
@@ -367,7 +432,7 @@ class CommunityDetector:
             query, {"rows": rows, "graph_name": self.graph_name}
         )
 
-    def _get_community_stats(self) -> list[dict[str, Any]]:
+    def _get_community_stats(self, executor=None) -> list[dict[str, Any]]:
         entity_label = self._escape_cypher_identifier(self.entity_label)
         community_label = self._escape_cypher_identifier(self.community_label)
         query = f"""
@@ -381,4 +446,6 @@ class CommunityDetector:
                count(DISTINCT child) AS child_community_count
         ORDER BY c.level, entity_count DESC
         """
-        return self.graph_store.execute_query(query, {"graph_name": self.graph_name})
+        return (executor or self.graph_store).execute_query(
+            query, {"graph_name": self.graph_name}
+        )

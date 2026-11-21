@@ -11,12 +11,12 @@ from recon_graphrag.extraction.types import (
 )
 
 
-class _PropertyValidationError(ValueError):
+class _ExtractionValidationError(ValueError):
     """Trusted parser field context, separate from arbitrary provider messages."""
 
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, reason: str) -> None:
         self.path = path
-        self.reason = "expected an object"
+        self.reason = reason
         super().__init__(f"{self.path}: {self.reason}")
 
 
@@ -24,6 +24,7 @@ class GraphExtractionParser:
     def parse(self, content: str) -> GraphExtraction:
         payload = self._extract_json(content)
         data = json.loads(payload)
+        nodes_data, relationships_data = self._parse_envelope(data)
 
         nodes = [
             ExtractedNode(
@@ -31,7 +32,7 @@ class GraphExtractionParser:
                 label=str(node["label"]),
                 properties=self._parse_properties(node, f"nodes[{index}].properties"),
             )
-            for index, node in enumerate(data.get("nodes") or [])
+            for index, node in enumerate(nodes_data)
             if node.get("id") and node.get("label")
         ]
 
@@ -44,18 +45,36 @@ class GraphExtractionParser:
                     rel, f"relationships[{index}].properties"
                 ),
             )
-            for index, rel in enumerate(data.get("relationships") or [])
+            for index, rel in enumerate(relationships_data)
             if rel.get("source_id") and rel.get("target_id") and rel.get("type")
         ]
 
         return GraphExtraction(nodes=nodes, relationships=relationships)
+
+    def _parse_envelope(self, data: object) -> tuple[list, list]:
+        """Return node and relationship containers from a recognized envelope."""
+        if not isinstance(data, dict) or not ({"nodes", "relationships"} & data.keys()):
+            raise _ExtractionValidationError(
+                "extraction", "expected an object with nodes or relationships"
+            )
+        return (
+            self._parse_container(data.get("nodes"), "nodes"),
+            self._parse_container(data.get("relationships"), "relationships"),
+        )
+
+    def _parse_container(self, value: object, field: str) -> list:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise _ExtractionValidationError(field, "expected an array or null")
+        return value
 
     def _parse_properties(self, item: dict, path: str) -> dict:
         properties = item.get("properties")
         if properties is None:
             return {}
         if not isinstance(properties, dict):
-            raise _PropertyValidationError(path)
+            raise _ExtractionValidationError(path, "expected an object")
         return dict(properties)
 
     def _extract_json(self, content: str) -> str:

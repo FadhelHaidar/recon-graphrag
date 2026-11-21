@@ -413,8 +413,8 @@ class GlobalSearchRetriever:
                 ``map_strategy="scored_points"``.
             include_graph_evidence: When True, attach the member entities and
                 relationships of the community reports behind the partial
-                answers that reached the final reduce prompt (extra database
-                reads). Reports only mapped or read are not expanded.
+                answers included in the result (extra database reads). Reports
+                only mapped or read are not expanded.
         """
         point_mode = self.map_strategy == "scored_points"
         if point_mode:
@@ -437,7 +437,8 @@ class GlobalSearchRetriever:
                 selection_mode="dynamic" if dynamic else "static",
             )
 
-            resolved_level = resolve_community_level(
+            resolved_level = await asyncio.to_thread(
+                resolve_community_level,
                 self.graph_store,
                 self.graph_name,
                 community_level,
@@ -464,7 +465,9 @@ class GlobalSearchRetriever:
             else:
                 assert resolved_level is not None
                 diag.levels_visited = [resolved_level]
-                reports = self._read_reports(resolved_level, self.max_reports)
+                reports = await asyncio.to_thread(
+                    self._read_reports, resolved_level, self.max_reports
+                )
             read_ms = int((time.monotonic() - phase_start) * 1000)
             diag.reports_available = len(reports)
             logger.debug(
@@ -597,28 +600,19 @@ class GlobalSearchRetriever:
 
             scored.sort(key=lambda p: (-p.helpfulness, p.batch_id))
 
-            if point_mode:
-                context = point_context
-            else:
-                # Build context from scored reports
-                context_parts = []
-                for p in scored:
-                    context_parts.append(
-                        f"[Batch {p.batch_id}] (score: {p.helpfulness})\n{p.answer}"
-                    )
-                context = "\n\n---\n\n".join(context_parts)
-
-            # Resolve citations from explicit map references and report-derived refs.
-            phase_start = time.monotonic()
-            citations = self._resolve_source_citations(diag, scored, report_keys)
-            logger.debug(
-                "global phase=citations ms=%d refs=%d citations=%d",
-                int((time.monotonic() - phase_start) * 1000),
-                diag.source_references_extracted,
-                diag.source_citations_resolved,
-            )
-
             if not synthesize_response:
+                context = point_context if point_mode else self._partials_context(scored)
+                # Resolve citations from explicit map refs and report-derived refs.
+                phase_start = time.monotonic()
+                citations = await asyncio.to_thread(
+                    self._resolve_source_citations, diag, scored, report_keys
+                )
+                logger.debug(
+                    "global phase=citations ms=%d refs=%d citations=%d",
+                    int((time.monotonic() - phase_start) * 1000),
+                    diag.source_references_extracted,
+                    diag.source_citations_resolved,
+                )
                 diag.reduce_partials_used = 0
                 diag.elapsed_ms = int((time.monotonic() - start) * 1000)
                 metadata = {**_diag_to_dict(diag), **point_meta}
@@ -644,22 +638,75 @@ class GlobalSearchRetriever:
                     graph=graph,
                 )
 
+            if use_general_knowledge:
+                # The activated opt-in path keeps its legacy packing rules.
+                usable = scored
+            else:
+                # Only a nonblank string answer is usable evidence to synthesize.
+                usable = [
+                    p
+                    for p in scored
+                    if isinstance(p.answer, str) and p.answer.strip()
+                ]
+
+            retained, partial_text = self._pack_reduce_partials(usable)
+            direct: PartialAnswer | None = None
+            if not retained and not use_general_knowledge:
+                # No usable whole partial fits the reduce budget. Answer with the
+                # highest-ranked usable partial verbatim instead of asking the
+                # LLM to synthesize from an empty prompt.
+                direct = usable[0] if usable else None
+                if direct is None:
+                    diag.elapsed_ms = int((time.monotonic() - start) * 1000)
+                    metadata = _diag_to_dict(diag)
+                    token_usage = usage_snapshot(self.llm)
+                    if token_usage is not None:
+                        metadata["token_usage"] = token_usage
+                    return SearchResult(
+                        query=query,
+                        mode="global",
+                        answer="No relevant information found in community reports.",
+                        metadata=metadata,
+                    )
+                retained = [direct]
+                logger.debug(
+                    "global phase=reduce skipped=no_whole_partial_fits batch=%s",
+                    direct.batch_id,
+                )
+
+            if direct is not None:
+                answer = direct.answer
+            else:
+                phase_start = time.monotonic()
+                answer = await self._synthesize(
+                    query, partial_text, use_general_knowledge=use_general_knowledge
+                )
+                diag.reduce_partials_used = len(retained)
+                logger.debug(
+                    "global phase=reduce ms=%d partials=%d",
+                    int((time.monotonic() - phase_start) * 1000),
+                    len(retained),
+                )
+
+            # Context, citations, and evidence describe only the retained batch.
+            context = self._partials_context(retained)
             phase_start = time.monotonic()
-            answer, retained_ids = await self._reduce_phase(
-                query, scored, use_general_knowledge=use_general_knowledge
+            citations = await asyncio.to_thread(
+                self._resolve_source_citations, diag, retained, report_keys
             )
-            diag.reduce_partials_used = len(scored)
             logger.debug(
-                "global phase=reduce ms=%d partials=%d",
+                "global phase=citations ms=%d refs=%d citations=%d",
                 int((time.monotonic() - phase_start) * 1000),
-                len(scored),
+                diag.source_references_extracted,
+                diag.source_citations_resolved,
             )
+
             phase_start = time.monotonic()
             graph = (
                 await self._graph_evidence(
-                    [p for p in scored if p.batch_id in retained_ids],
+                    retained,
                     report_keys,
-                    synthesis_included=True,
+                    synthesis_included=direct is None,
                 )
                 if include_graph_evidence
                 else {}
@@ -760,18 +807,19 @@ class GlobalSearchRetriever:
         selected: dict[tuple[str, int], dict] = {}
         parents: dict[tuple[str, int], set[tuple[str, int]]] = {}
 
-        def read_level(level: int) -> dict[tuple[str, int], dict]:
+        async def read_level(level: int) -> dict[tuple[str, int], dict]:
             if level not in eligible_by_level:
                 # Child API omits status; intersect with the status-filtered read.
+                reports = await asyncio.to_thread(self._read_reports, level)
                 eligible_by_level[level] = {
                     (str(report["id"]), level): report
-                    for report in self._read_reports(level)
+                    for report in reports
                     if self._eligible_report(report, level)
                 }
             return eligible_by_level[level]
 
         fallback_level = 0
-        frontier = read_level(0)
+        frontier = await read_level(0)
         while True:
             candidates = [frontier[key] for key in sorted(frontier) if key not in visited]
             for report in candidates:
@@ -795,24 +843,29 @@ class GlobalSearchRetriever:
                 for parent in parents.get(key, ()):
                     selected.pop(parent, None)
                 child_level = report["level"] + 1
-                children = self.graph_store.get_child_community_reports(
-                    self.graph_name, str(report["id"]), report["level"], child_level
+                children = await asyncio.to_thread(
+                    self.graph_store.get_child_community_reports,
+                    self.graph_name,
+                    str(report["id"]),
+                    report["level"],
+                    child_level,
                 )
                 for child in children:
                     if not self._eligible_report(child, child_level):
                         continue
                     child_key = (str(child["id"]), child_level)
-                    if child_key not in read_level(child_level):
+                    child_rows = await read_level(child_level)
+                    if child_key not in child_rows:
                         continue
                     parents.setdefault(child_key, set()).add(key)
                     if child_key not in visited:
-                        next_frontier[child_key] = read_level(child_level)[child_key]
+                        next_frontier[child_key] = child_rows[child_key]
             if next_frontier:
                 frontier = next_frontier
             elif not selected and fallback_level < 2:
                 fallback_level += 1
                 diag.fallback_levels_attempted.append(fallback_level)
-                frontier = read_level(fallback_level)
+                frontier = await read_level(fallback_level)
             else:
                 break
         diag.levels_visited.sort()
@@ -1462,46 +1515,52 @@ class GlobalSearchRetriever:
         raise ValueError("Map response did not contain a JSON object")
 
     # Reduce phase
-    async def _reduce_phase(
-        self, query: str, partials: list[PartialAnswer], *, use_general_knowledge: bool = False,
-    ) -> tuple[str, set[str]]:
-        """Synthesize partial answers into final answer.
+    @staticmethod
+    def _partials_context(partials: list[PartialAnswer]) -> str:
+        """Format partial answers as the global search context text."""
+        return "\n\n---\n\n".join(
+            f"[Batch {p.batch_id}] (score: {p.helpfulness})\n{p.answer}"
+            for p in partials
+        )
 
-        Returns the answer and the batch ids actually packed into the reduce
-        prompt; partials past the token budget never reach synthesis.
+    def _pack_reduce_partials(
+        self, partials: list[PartialAnswer]
+    ) -> tuple[list[PartialAnswer], str]:
+        """Pack whole partial answers into the reduce budget.
+
+        ``reduce_budget_tokens`` bounds only the formatted partial-answer text,
+        including separators. Prompt template and general-knowledge text do not
+        count. The complete packed text is measured with the configured counter.
+        An oversized partial is skipped, and later smaller partials can still
+        fit. Returns the packed partials and their formatted text.
         """
         counter = self.token_counter
-
-        # Build partial answer text, respecting token budget
+        budget = self.reduce_budget_tokens
+        packed: list[PartialAnswer] = []
         parts: list[str] = []
-        retained_ids: set[str] = set()
-        used_tokens = 0
-        prompt_overhead = counter.count(
-            self.reduce_prompt.format(query=query, partial_text="")
-        )
-        available = self.reduce_budget_tokens - prompt_overhead
-
-        for p in partials:
+        for partial in partials:
             refs = ", ".join(
-                f"{r['target_type']}:{r['target_id']}" for r in p.references
+                f"{r['target_type']}:{r['target_id']}" for r in partial.references
             )
-            text = f"[Score {p.helpfulness}] {p.answer}"
+            text = f"[Score {partial.helpfulness}] {partial.answer}"
             if refs:
                 text += f"\nReferences: {refs}"
-            tokens = counter.count(text)
-            if used_tokens + tokens > available and parts:
-                break
+            # Skip an oversized partial and keep packing: no text slicing.
+            candidate = "\n\n".join([*parts, text])
+            if counter.count(candidate) > budget:
+                continue
+            packed.append(partial)
             parts.append(text)
-            retained_ids.add(p.batch_id)
-            used_tokens += tokens
+        return packed, "\n\n".join(parts)
 
-        partial_text = "\n\n".join(parts)
+    async def _synthesize(
+        self, query: str, partial_text: str, *, use_general_knowledge: bool = False
+    ) -> str:
+        """Send the packed partial-answer text to the reduce LLM."""
         reduce_prompt = self.reduce_prompt
         if use_general_knowledge:
             reduce_prompt = reduce_prompt + GENERAL_KNOWLEDGE_INSTRUCTION
-        prompt = reduce_prompt.format(
-            query=query, partial_text=partial_text
-        )
+        prompt = reduce_prompt.format(query=query, partial_text=partial_text)
         with token_stage("retrieval.global_reduce"):
             response = await self.llm.ainvoke(prompt)
-        return response.content, retained_ids
+        return response.content

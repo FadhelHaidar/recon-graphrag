@@ -114,6 +114,7 @@ _COMMON_RESERVED = (
     "description_summary_fallback",
     "description_sources",
     "strength_sources",
+    "__recon_write_lock",
     "embedding_input_fingerprint",
     "embedding_content_fingerprint",
     "embedding_model_fingerprint",

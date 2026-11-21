@@ -13,10 +13,9 @@ authors = [{name = "Recon-GraphRAG contributors"}]
 keywords = ["graphrag", "neo4j", "memgraph", "knowledge-graph", "retrieval", "rag"]
 
 dependencies = [
-    "neo4j>=5.11",
+    "neo4j>=5.28.8,<7",
     "openai>=2.36.0",
     "rapidfuzz>=3.0",
-    "sentence-transformers>=5.4.1",
     "tiktoken>=0.8",
     "tqdm>=4.66",
 ]
@@ -27,7 +26,13 @@ anthropic = [
 ]
 ollama = ["ollama"]
 excel = ["openpyxl>=3.1"]
-all = ["anthropic>=0.34.0", "ollama", "openpyxl>=3.1"]
+local-embeddings = ["sentence-transformers>=5.4.1"]
+all = [
+    "anthropic>=0.34.0",
+    "ollama",
+    "openpyxl>=3.1",
+    "sentence-transformers>=5.4.1",
+]
 evaluation = ["pydantic>=2.0"]
 dev = ["pytest>=8.0", "pytest-asyncio>=1.3.0", "pydantic>=2.0", "openpyxl>=3.1"]
 

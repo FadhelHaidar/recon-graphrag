@@ -242,6 +242,10 @@ How it works:
   fields as disambiguation context.
 - A table with no `text_columns`, `entity_resolution_strategy="normalized"`
   (default), and `summarize_descriptions=False` ingests with **zero LLM calls**.
+- CSV and Excel wrappers derive a default document ID from the canonical file
+  path. Excel also includes the actual selected worksheet title. `source`
+  remains the file name. See
+  [Document replacement and legacy graphs](#document-replacement-and-legacy-graphs).
 
 ### `GraphBuilderPipeline` key parameters
 
@@ -455,6 +459,8 @@ Shared evidence and descriptions remain. The writer deletes only unreferenced en
 
 Use stable `metadata["document_id"]` to identify updates explicitly. Otherwise the ID hashes the exact source/title, or the text when neither is supplied. Changing text without stable source/ID metadata creates a separate document; it cannot be recognized as a replacement automatically. Replacing the same ID in another graph is independent.
 
+CSV and Excel wrappers derive a default document ID from the canonical file path. Excel also includes the actual selected worksheet title. The ID is a hash, and `source` remains the file name. A truthy explicit `metadata["document_id"]` overrides the default. A truthy explicit `metadata["source"]` keeps its source-derived ID. The SDK does not migrate old IDs. A moved, renamed, or copied file gets a new ID. A new import can create a duplicate document. Pass the old ID as `document_id` to replace a legacy record. Pass a stable logical `document_id` for portable ingestion.
+
 Description ownership (`description_sources`) and optional relationship strength ownership (`strength_sources`) are internal flat lists of JSON-encoded contribution records, compatible with both databases. Do not supply these fields. If legacy descriptions or strength have unknown ownership, the writer raises a migration diagnostic before writing. Identical text is not ownership evidence. Rebuild the affected documents/graph from their sources through the current writer; index creation alone cannot reconstruct ownership. Already mismerged identities also require rebuilding.
 
 Changed description inputs invalidate summaries and vectors.
@@ -464,6 +470,20 @@ SDK bookkeeping changes do not invalidate summaries.
 The generic normalized-resolution dispatcher also forwards configured conflict properties.
 The pipeline continues to use the direct strategy methods.
 Entity resolution clears previous summary status after a merge.
+On Memgraph, each merge group runs in one database transaction.
+If a statement in the group fails, the transaction rolls back the complete group.
+Before the first merge, the resolver checks every group for foreign or unscoped incident relationships.
+That preflight does not make the complete resolution run atomic: a later group failure does not roll back earlier committed groups.
+The resolver re-reads current membership and ownership in each attempt.
+A group with a missing member or a changed entity identity is skipped.
+A skipped group contributes no merged nodes.
+`merged_nodes` counts only nodes from a committed group.
+The resolver retries deadlock, serialization, or unique-constraint aborts up to 3 times, with the writer policy.
+It does not retry validation failures or merge invariant failures.
+A residual relationship stops the plain `DELETE` and fails the group.
+Memgraph entity resolution requires a store with `_transaction()` support.
+A custom store without this hook fails before mutation; it does not use auto-commit.
+Neo4j merge behavior is unchanged.
 Relationship contributions retain each unique nonempty description from the document.
 Their counts, source chunks, frequency weights, and first-observation strength keep their existing meanings.
 
@@ -513,19 +533,37 @@ The writer commits after the last write. If a statement fails, it rolls back the
 The transaction covers only the document write. Chunking, extraction, summarization, and embedding run outside it.
 A failure later in the build leaves the written document in place.
 
+Before the writer reads shared contribution state, it locks each affected `__Entity__` identity.
+One sorted batch acquires the complete lock set.
+The lock is a transient, SDK-owned property.
+The writer removes it before commit, and a rollback removes it automatically.
+Writers that share an entity or a relationship endpoint therefore serialize on that identity.
+Writers of documents with disjoint entities can still write in parallel.
+The lock covers built-in Neo4j and Memgraph stores after `create_indexes()` installs identity constraints.
+It covers distinct document IDs only.
+Concurrent writes of one document ID are unsupported.
+Concurrent entity resolution on the same graph is also unsupported.
+The lock cannot remap an entity ID that resolution merged or deleted.
+Under heavy contention, the bounded retries can still surface a conflict to the caller.
+The lock does not guarantee success.
+
 Concurrent writes of different documents have no defined order and can cause each other to abort.
-The writer retries deadlock or serialization aborts and shared-entity uniqueness failures up to 3 times, with a short delay.
+The writer retries deadlock or serialization aborts, lock closure conflicts, and shared-entity uniqueness failures up to 3 times, with a short delay.
 Retries reuse the same extracted document. Rollback removes partial changes, so retries do not duplicate them.
 After a uniqueness conflict, a retry can match the node that the other writer committed.
+A retry also reads the state and rebuilds all rows from scratch.
 If all retries fail, the error reaches the caller without changes from that document transaction.
 The writer does not automatically retry other failures.
 
 Stores without the transaction hook use auto-commit writes. These custom stores and test doubles retain partial-write risk and receive no retries.
 Custom writers must define their own guarantees.
+The concurrency guarantees cover writes of different documents on built-in stores.
+They do not cover concurrent writes of the same document.
+They also do not cover a write that overlaps entity resolution on the same graph.
 
 `write_stats` gives database-confirmed write counts for each record kind, not submitted input counts.
 Before writing, the writer checks references to relationship endpoints, evidence entities, and claim entities or chunks.
-A missing entity reference raises `ValueError` before the first write, unless the graph already stores the entity.
+A missing entity reference raises `ValueError` before the first document record write, unless the graph already stores the entity.
 A chunk reference must name a chunk in the submitted document version. Replacement removes chunks that the version omits.
 The writer requires both endpoints before writing a relationship.
 
@@ -548,6 +586,12 @@ Concurrent writes that create the same key can still produce two edges on a back
 Entity identity is `(graph_name, id)` on the `__Entity__` label. A domain type is an added label, not part of the identity. Writing an existing identity adds the incoming label and keeps the stored node, its edges, and its description contributions. A new type label therefore reuses the node instead of creating a second one. If the graph already stores several nodes for one identity, the writer stops before writing and reports the affected IDs. It does not merge those nodes; rebuild or deduplicate them, then retry.
 
 Blocking database calls in pipeline writes/backfill/validation, description summarization, entity embedding, and resolver preflight/load/merge run through `asyncio.to_thread`. Cancellation does not terminate an in-flight database call or undo its writes.
+
+Local search, global search, community detection, report generation, and report embedding follow the same rule. The SDK uses the default executor. No setting controls it.
+
+A custom `GraphStore` must accept concurrent calls from multiple threads. Each call must own its session and return materialized data. The SDK adds no stage-wide lock and no snapshot across calls.
+
+Community detection runs as one shielded worker call. If the caller cancels `CommunityPipeline.build()`, the build waits for active detection to finish before it raises `CancelledError`. Detection has no generation precondition, so a detached replacement could delete a newer hierarchy. Other active report or vector writes can finish after cancellation. They use the generation, text, and revision captured before the await. Guarded stores reject a stale result. The public unguarded custom-store path keeps its weaker behavior.
 
 ### Tips
 
@@ -676,6 +720,20 @@ result = await community.build()
 result = await community.build(level=0)
 ```
 
+### Publication, concurrency, and visibility
+
+Built-in community detection requires the `CommunityGeneration` constraint that `create_indexes()` creates. Run `store.create_indexes()` after an upgrade and before the first community build. Built-in detection fails closed when the exact constraint is missing. See [community publication constraint](04-indexing.md#community-publication-constraint).
+
+One detection invocation computes the hierarchy first. It then publishes one generation token with the replacement in one transaction. The transaction advances the graph state record, deletes the old hierarchy, writes every new community and membership with the token, rebuilds the parent edges, and reads the stats. If any step fails, the transaction rolls back and the previous hierarchy and reports remain.
+
+Each invocation owns its detection projection. Neo4j uses a projection name unique to the invocation, so concurrent invocations cannot share or drop each other's projection. No lease or build-wide lock exists. The unique state record serializes only the graph's replacement transaction. Concurrent detections can both run detection and provider work; the last committed replacement wins.
+
+The SDK does not coordinate community detection with graph building or entity resolution. Do not run detection on a graph while a build or entity resolution writes that graph. Wait for those operations to finish. Do not drop constraints, drop indexes, or purge the graph while detection runs; see [schema removal and graph purge](04-indexing.md#schema-removal-and-graph-purge).
+
+Communities become visible when the replacement transaction commits. Reports are separate later writes. A successful report write is visible per community before `build()` returns. A failed report write stores a failure marker; successful reports remain. A replacement that commits during the build invalidates the older work: guarded report and vector writes reject it, and `build()` adds a `community_generation_changed` warning and returns `status="degraded"`.
+
+The built-in stores and `CommunityPipeline` use generation-guarded report and vector writes. Direct `CommunitySummarizer.generate_all()` calls without a bound token capture one generation for each invocation. A reused summarizer captures the new generation on its next call. If an invocation cannot read exactly one generation, it writes no report. A custom store without the guarded private operations keeps the public unguarded path and logs a warning. That path cannot reject work from an older generation. Public store report and vector write methods remain available for compatibility, but they do not bind a generation token. Use the pipeline for generation-safe writes.
+
 ### Report failures and diagnostics
 
 If a report response has malformed JSON or fails report validation, generation
@@ -704,6 +762,15 @@ By default, messages are fixed diagnostics and unrecognized exception types are
 reported as `"Exception"`. Resume/preparation failures use the message
 `"Community report preparation failed."`. Healthy builds keep an empty
 `maintenance_warnings` list.
+
+A concurrent replacement can make the bound generation stale. In that case
+`build()` stops the affected work and adds this warning:
+
+```python
+{"code": "community_generation_changed", "level": 0}
+```
+
+The result uses `status="degraded"` even when no report failed.
 
 For **trusted/private debugging only**, opt in to original exception types and
 messages:
@@ -758,6 +825,26 @@ count = await CommunityReportEmbedder(
     store, embedder, "entity-graph"
 ).embed_reports()
 ```
+
+### Report vector freshness and model changes
+
+The managed report embedding pass records the input text fingerprint, content fingerprint, model fingerprint, and embedding revision on each vector. It embeds a report when the vector is missing, the stored text fingerprint differs, or the content fingerprint is absent. It also embeds when the model fingerprint differs from the current embedder. A legacy vector without fingerprints is refreshed once, automatically. Low-level public vector writes clear the certificates, so the next managed pass refreshes those vectors.
+
+A provider failure in the managed pass records `report_embedding_error`; the report stays eligible for a later managed pass. Each managed pass attempts each report key at most once, so a permanent failure does not block later reports in the same pass. A later managed pass retries it. Blank report text is marked failed without a provider call.
+
+The public `get_unembedded_community_reports()` and `upsert_community_report_vectors()` methods form the legacy manual loop. The selector returns only rows with no vector and no failure marker. The paired write sets the vector and clears the failure marker. A repeated select, embed, and upsert loop therefore ends. A report text change clears the marker and makes the row eligible again. Use `CommunityReportEmbedder` for managed refresh, model-change detection, and failure retries.
+
+If the report text, generation, or embedding revision changes during a provider call, the store rejects the late vector or failure marker. A newer committed vector advances the revision. A different model fingerprint makes the report eligible on the next managed pass. The dimension of the report vectors must match `community-report-embeddings`. If the dimension changes, [rebuild the indexes](04-indexing.md#rebuilding-indexes) and embed the reports again.
+
+`CommunityReportEmbedder.embed_reports()` uses the managed pass. On a built-in store, it samples each selected row's generation and writes with the row snapshot. `CommunityPipeline` uses the bound private pass for its detection token. Custom stores without the guarded private operations keep the legacy public path, which cannot detect stale in-flight results or model changes.
+
+### Compatibility limits
+
+Public result keys and method signatures are unchanged. `detect_communities()` still returns the stats list. `build()` still returns its existing keys. `embed_reports()` still returns a count. The public report selection method still returns the four public row keys and keeps its original missing-vector and failure-marker filters.
+
+The guarded operations are private store methods; they are not part of the public `GraphStore` protocol. A custom store can omit them and keep the old public path, but it loses generation and revision checks. The private selection adds `generation` and `embedding_revision` to its rows.
+
+Model-change detection uses the embedder identity fingerprint. The fingerprint is best effort: it covers provider class, model name, model parameters, and target dimension. It cannot detect an endpoint change or an Azure deployment change when those values stay the same. The SDK adds no separate provider identity API. The fingerprint does not prove that vectors from two models are comparable. Change the index and re-embed when the model or dimension changes.
 
 ### Strict report output and completion limits
 

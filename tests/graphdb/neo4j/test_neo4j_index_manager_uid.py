@@ -7,6 +7,13 @@ import pytest
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.neo4j.index_manager import IndexManager
 
+GENERATION_CONSTRAINT = {
+    "name": "community_generation_unique",
+    "type": "UNIQUENESS",
+    "labelsOrTypes": ["CommunityGeneration"],
+    "properties": ["graph_name"],
+}
+
 
 class FakeGraphStore:
     """Fake store preflight/backfill behavior for uid constraint setup."""
@@ -23,6 +30,8 @@ class FakeGraphStore:
 
     def execute_query(self, query, parameters=None):
         self.calls.append((query.strip(), parameters or {}))
+        if "SHOW CONSTRAINTS" in query:
+            return [dict(GENERATION_CONSTRAINT)]
         if "apoc.version" in query and not self.apoc_available:
             raise RuntimeError("There is no procedure with the name apoc.version")
         if "apoc.version" in query:
@@ -109,8 +118,13 @@ def test_create_indexes_creates_three_uid_constraints_and_community():
         for q, _ in store.calls
         if "CREATE CONSTRAINT" in q and "IS UNIQUE" in q and "uid" not in q
     ]
-    assert len(community) == 1
-    assert "(c.graph_name, c.level, c.id) IS UNIQUE" in community[0]
+    assert len(community) == 2
+    assert any("(c.graph_name, c.level, c.id) IS UNIQUE" in q for q in community)
+    assert any(
+        "FOR (g:CommunityGeneration)" in q
+        and "REQUIRE g.graph_name IS UNIQUE" in q
+        for q in community
+    )
 
 
 def test_create_indexes_backfills_missing_uid():
@@ -168,6 +182,8 @@ def test_unexpected_preflight_error_propagates():
     manager, store = _make_manager()
 
     def raise_host_error(query, parameters=None):
+        if "SHOW CONSTRAINTS" in query:
+            return [dict(GENERATION_CONSTRAINT)]
         if "duplicates > 1" in query:
             raise RuntimeError("connection reset by peer")
         return []

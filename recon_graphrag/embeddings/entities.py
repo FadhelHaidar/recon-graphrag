@@ -14,8 +14,8 @@ from tqdm.asyncio import tqdm_asyncio
 from recon_graphrag.embeddings.base import BaseEmbedder
 from recon_graphrag.entity_text import (
     embedder_fingerprint,
-    entity_embedding_fingerprint,
     entity_embedding_text,
+    text_fingerprint,
     value_to_text,
 )
 from recon_graphrag.graphdb.base import GraphStore
@@ -118,14 +118,9 @@ class EntityEmbedder:
                 elif result is not None:
                     ids.append(result[0])
                     embeddings.append(result[1])
-                    fingerprints.append(
-                        entity_embedding_fingerprint(
-                            labels=entity.get("labels"),
-                            name=entity.get("name", ""),
-                            description=entity.get("description", ""),
-                            entity_type=entity.get("type"),
-                        )
-                    )
+                    # Fingerprint the exact text sent to the provider; the
+                    # entity row can change while the await is pending.
+                    fingerprints.append(text_fingerprint(result[2]))
 
             if ids:
                 await asyncio.to_thread(

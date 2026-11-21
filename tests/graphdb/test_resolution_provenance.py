@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 
-import pytest
+import pytest  # pyright: ignore[reportMissingImports]
 
 from recon_graphrag.graphdb._provenance import (
     encode_contributions,
@@ -73,7 +73,17 @@ def test_memgraph_merge_unions_node_and_both_edge_direction_provenance():
         def execute_query(self, query, parameters=None):
             result = super().execute_query(query, parameters)
             if 'RETURN id(n) AS node_id, properties(n) AS props' in query:
-                return [{'node_id': entity.node_id, 'props': deepcopy(entity.properties)} for entity in entities]
+                return [
+                    {
+                        'node_id': entity.node_id,
+                        'props': {
+                            **deepcopy(entity.properties),
+                            'id': entity.entity_id,
+                            'graph_name': entity.graph_name,
+                        },
+                    }
+                    for entity in entities
+                ]
             return result
 
     store = Store()
@@ -121,6 +131,18 @@ def test_mixed_legacy_ownership_rejected_before_mutation(
     class Store(store_class):
         def execute_query(self, query, parameters=None):
             result = super().execute_query(query, parameters)
+            if 'RETURN id(n) AS node_id, properties(n) AS props' in query:
+                return [
+                    {
+                        'node_id': entity.node_id,
+                        'props': {
+                            **deepcopy(entity.properties),
+                            'id': entity.entity_id,
+                            'graph_name': entity.graph_name,
+                        },
+                    }
+                    for entity in entities
+                ]
             if 'properties(r) AS rel_props' in query:
                 return rows
             return result

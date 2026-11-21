@@ -1,6 +1,6 @@
 """Entity merges must retarget scalar claim objects, regardless of subject."""
 
-import pytest
+import pytest  # pyright: ignore[reportMissingImports]
 
 from recon_graphrag.graphdb.entity_resolution import _EntityRecord
 from recon_graphrag.graphdb.memgraph.entity_resolution import _MemgraphEntityResolver
@@ -21,6 +21,19 @@ def merge_group():
     ]
 
 
+def make_store(store_class, group):
+    if store_class is MemgraphStore:
+        return store_class(node_props={
+            entity.node_id: {
+                **entity.properties,
+                "id": entity.entity_id,
+                "graph_name": entity.graph_name,
+            }
+            for entity in group
+        })
+    return store_class()
+
+
 @pytest.mark.parametrize("resolver_class,store_class", [
     (_Neo4jEntityResolver, Neo4jStore),
     (_MemgraphEntityResolver, MemgraphStore),
@@ -28,9 +41,10 @@ def merge_group():
 def test_claim_object_rewrite_is_graph_scoped_and_independent_of_subject(
     resolver_class, store_class,
 ):
-    store = store_class()
-    assert resolver_class(store)._merge_groups([merge_group()], "name") == 3
-    calls = store.calls if hasattr(store, "calls") else store.queries
+    group = merge_group()
+    store = make_store(store_class, group)
+    assert resolver_class(store)._merge_groups([group], "name") == 3
+    calls = getattr(store, "calls", None) or store.queries
     rewrites = [(query, params) for query, params in calls
                 if "SET c.object_entity_id" in query]
     assert len(rewrites) == 1
@@ -66,14 +80,23 @@ def test_memgraph_claim_rewrite_precedes_deletion_and_failure_stops_deletion():
                 raise RuntimeError("claim rewrite failed")
             return result
 
-    store = MemgraphStore()
-    _MemgraphEntityResolver(store)._merge_groups([merge_group()], "name")
+    group = merge_group()
+    store = make_store(MemgraphStore, group)
+    _MemgraphEntityResolver(store)._merge_groups([group], "name")
     queries = [query for query, _ in store.queries]
     rewrite_index = next(i for i, query in enumerate(queries) if "SET c.object_entity_id" in query)
     delete_index = next(i for i, query in enumerate(queries) if "DELETE n" in query)
     assert rewrite_index < delete_index
 
-    failing_store = FailingStore()
+    failing_store = FailingStore(node_props={
+        entity.node_id: {
+            **entity.properties,
+            "id": entity.entity_id,
+            "graph_name": entity.graph_name,
+        }
+        for entity in group
+    })
     with pytest.raises(RuntimeError, match="claim rewrite failed"):
-        _MemgraphEntityResolver(failing_store)._merge_groups([merge_group()], "name")
+        _MemgraphEntityResolver(failing_store)._merge_groups([group], "name")
+    assert failing_store.transactions[0].rolled_back is True
     assert not any("DELETE n" in query for query, _ in failing_store.queries)

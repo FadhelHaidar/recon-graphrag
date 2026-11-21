@@ -7,6 +7,7 @@ We recommend using [`uv`](https://docs.astral.sh/uv/) for fast, reliable Python 
 ## Requirements
 
 - **Python** >= 3.11
+- **Neo4j Python driver** >= 5.28.8 and < 7. The package installs a compatible driver.
 - One supported graph database:
   - **Neo4j** with **APOC** for merge helpers and **GDS** for Leiden community detection
   - **Memgraph** with **MAGE** for Leiden community detection
@@ -100,25 +101,29 @@ uv run python your_script.py
 
 ## Optional extras
 
-The core package includes the OpenAI client, `sentence-transformers`, and the Neo4j driver. Optional extras add providers, Excel support, and development tools.
+The core package includes the OpenAI client, RapidFuzz, tiktoken, tqdm, and the Neo4j driver. Optional extras add local embeddings, other providers, Excel support, and development tools.
 
 | Extra | Installs | Enables |
 | --------- | --------- | --------- |
 | `[anthropic]` | `anthropic` | Anthropic LLM provider |
 | `[excel]` | `openpyxl` | Excel row ingestion |
+| `[local-embeddings]` | `sentence-transformers` | Local Sentence-Transformers embedder |
 | `[ollama]` | `ollama` | Ollama local LLM/embedder provider |
-| `[all]` | `anthropic`, `ollama`, `openpyxl` | Anthropic, Ollama, and Excel support |
+| `[all]` | `anthropic`, `ollama`, `openpyxl`, `sentence-transformers` | Anthropic, Ollama, Excel, and local embeddings |
 | `[dev]` | `pytest`, `pytest-asyncio`, `pydantic`, `openpyxl` | Running the test suite |
 | `[evaluation]` | `pydantic` | Evaluation helpers |
 
 With `uv`:
 
 ```bash
-# All optional providers
+# All optional providers and local embeddings
 uv add "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/recon-graphrag.git"
 
-# Ollama provider only (OpenAI, sentence-transformers, and Neo4j are already included)
+# Ollama provider only (OpenAI and Neo4j are already included)
 uv add "recon-graphrag[ollama] @ git+https://github.com/FadhelHaidar/recon-graphrag.git"
+
+# Local Sentence-Transformers embeddings
+uv add "recon-graphrag[local-embeddings] @ git+https://github.com/FadhelHaidar/recon-graphrag.git"
 
 uv sync
 ```
@@ -250,6 +255,21 @@ Or with `pip`:
 
 ```bash
 pip install "recon-graphrag[ollama] @ git+https://github.com/FadhelHaidar/recon-graphrag.git"
+```
+
+### `ImportError: Could not import the local embedding dependencies`
+
+You are using the `sentence-transformer` embedder without the local embedding dependencies. Install the `[local-embeddings]` extra:
+
+```bash
+uv add "recon-graphrag[local-embeddings] @ git+https://github.com/FadhelHaidar/recon-graphrag.git"
+uv sync
+```
+
+Or with `pip`:
+
+```bash
+pip install "recon-graphrag[local-embeddings] @ git+https://github.com/FadhelHaidar/recon-graphrag.git"
 ```
 
 ### Neo4j connection errors

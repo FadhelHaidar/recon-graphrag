@@ -54,6 +54,64 @@ def test_parse_missing_arrays():
     assert result.relationships == []
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"error": "temporary failure"}',
+        '{"error": {"code": 503, "message": "private value"}}',
+        '{"detail": "private value"}',
+        "{}",
+    ],
+)
+def test_parse_rejects_object_without_extraction_envelope(payload):
+    with pytest.raises(ValueError) as error:
+        GraphExtractionParser().parse(payload)
+    assert str(error.value) == (
+        "extraction: expected an object with nodes or relationships"
+    )
+
+
+@pytest.mark.parametrize("payload", ["[]", '"private value"', "null", "42"])
+def test_parse_rejects_non_object_json(payload):
+    with pytest.raises(ValueError) as error:
+        GraphExtractionParser().parse(payload)
+    assert str(error.value) == (
+        "extraction: expected an object with nodes or relationships"
+    )
+
+
+@pytest.mark.parametrize("kind", ["nodes", "relationships"])
+@pytest.mark.parametrize("container", [{}, "private value", 0, False, 1.5])
+def test_parse_rejects_non_array_containers(kind, container):
+    with pytest.raises(ValueError) as error:
+        GraphExtractionParser().parse(json.dumps({kind: container}))
+    assert str(error.value) == f"{kind}: expected an array or null"
+
+
+@pytest.mark.parametrize(
+    "payload, node_count, relationship_count",
+    [
+        ('{"nodes": []}', 0, 0),
+        ('{"relationships": []}', 0, 0),
+        ('{"nodes": null}', 0, 0),
+        ('{"relationships": null}', 0, 0),
+        ('{"nodes": [{"id": "n", "label": "Thing"}]}', 1, 0),
+        (
+            '{"relationships": [{"source_id": "a", "target_id": "b", '
+            '"type": "LINK"}]}',
+            0,
+            1,
+        ),
+    ],
+)
+def test_parse_accepts_supported_envelope_forms(
+    payload, node_count, relationship_count
+):
+    result = GraphExtractionParser().parse(payload)
+    assert len(result.nodes) == node_count
+    assert len(result.relationships) == relationship_count
+
+
 def test_parse_skips_nodes_without_id_or_label():
     parser = GraphExtractionParser()
     data = {

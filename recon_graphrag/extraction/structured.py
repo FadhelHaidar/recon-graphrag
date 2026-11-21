@@ -13,6 +13,7 @@ later via label-scoped entity resolution in the pipeline finalize step.
 from __future__ import annotations
 
 import csv
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -367,8 +368,11 @@ def iter_csv(
         yield from csv.DictReader(handle, **fmtparams)
 
 
-def iter_excel(path: str | Path, sheet: str | None = None) -> Iterator[dict]:
-    """Yield rows from an Excel worksheet as dicts (first row = header)."""
+@contextmanager
+def _open_excel_worksheet(
+    path: str | Path, sheet: str | None
+) -> Iterator[tuple[str, Iterator[dict]]]:
+    """Open a workbook once and yield the selected worksheet title and rows."""
     try:
         from openpyxl import load_workbook
     except ImportError as exc:
@@ -384,10 +388,17 @@ def iter_excel(path: str | Path, sheet: str | None = None) -> Iterator[dict]:
             raise ValueError(f"workbook has no active sheet: {path}")
         rows = worksheet.iter_rows(values_only=True)
         header = [str(cell) if cell is not None else "" for cell in next(rows, ())]
-        for row in rows:
-            yield dict(zip(header, row))
+        yield worksheet.title, (
+            dict(zip(header, row, strict=False)) for row in rows
+        )
     finally:
         workbook.close()
+
+
+def iter_excel(path: str | Path, sheet: str | None = None) -> Iterator[dict]:
+    """Yield rows from an Excel worksheet as dicts (first row = header)."""
+    with _open_excel_worksheet(path, sheet) as (_, rows):
+        yield from rows
 
 
 def iter_sql(connection: Any, query: str, params: Any = None) -> Iterator[dict]:

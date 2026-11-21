@@ -1,4 +1,8 @@
-from recon_graphrag.graphdb.store_base import BaseGraphStore
+from recon_graphrag.graphdb.store_base import (
+    BaseGraphStore,
+    _dedupe_search_rows,
+    _should_expand_search,
+)
 from recon_graphrag.models.artifacts import CommunityReport
 
 
@@ -9,6 +13,92 @@ class FakeBaseStore(BaseGraphStore):
     def execute_query(self, query: str, parameters: dict | None = None):
         self.calls.append((query.strip(), parameters or {}))
         return []
+
+
+def test_should_expand_search_requires_graph_scope():
+    rows = [{"id": "a", "score": 1.0}]
+
+    assert not _should_expand_search(
+        rows,
+        target=2,
+        initial_width=10,
+        cap=1000,
+        key_fields=("id",),
+        graph_scoped=False,
+    )
+    assert _should_expand_search(
+        rows,
+        target=2,
+        initial_width=10,
+        cap=1000,
+        key_fields=("id",),
+        graph_scoped=True,
+    )
+
+
+def test_should_expand_search_needs_room_below_the_cap():
+    rows = []
+
+    assert not _should_expand_search(
+        rows,
+        target=2,
+        initial_width=0,
+        cap=1000,
+        key_fields=("id",),
+        graph_scoped=True,
+    )
+    assert not _should_expand_search(
+        rows,
+        target=2,
+        initial_width=1000,
+        cap=1000,
+        key_fields=("id",),
+        graph_scoped=True,
+    )
+
+
+def test_should_expand_search_counts_distinct_report_keys():
+    rows = [
+        {"id": "community:1", "level": 0, "score": 1.0},
+        {"id": "community:1", "level": 0, "score": 0.5},
+        {"id": "community:1", "level": 1, "score": 0.4},
+    ]
+
+    assert _should_expand_search(
+        rows,
+        target=3,
+        initial_width=15,
+        cap=500,
+        key_fields=("id", "level"),
+        graph_scoped=True,
+    )
+
+
+def test_dedupe_search_rows_keeps_best_score_then_identity_tie():
+    rows = [
+        {"id": "a", "score": 0.2},
+        {"id": "c", "score": 0.9},
+        {"id": "a", "score": 0.7},
+        {"id": "b", "score": 0.9},
+    ]
+
+    assert _dedupe_search_rows(rows, ("id",)) == [
+        {"id": "b", "score": 0.9},
+        {"id": "c", "score": 0.9},
+        {"id": "a", "score": 0.7},
+    ]
+
+
+def test_base_store_relationship_count_traverses_each_relationship_once():
+    store = FakeBaseStore()
+
+    store.get_relationship_count()
+
+    query, params = store.calls[-1]
+    # An undirected pattern returns each stored relationship once per direction,
+    # so it counts an entity self-loop twice.
+    assert "MATCH (:__Entity__)-[r]->(:__Entity__) RETURN count(r) AS cnt" in query
+    assert params == {}
 
 
 def test_base_store_get_community_stats_uses_shared_result_shape():

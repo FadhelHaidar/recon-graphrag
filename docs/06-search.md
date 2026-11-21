@@ -163,7 +163,7 @@ stored community reports and synthesizes a corpus-level answer.
 | `community_level` | Which community level to search. Use `"coarsest"` when you do not know the numeric levels. |
 | `random_seed` | Seed for reproducible report shuffling. Defaults to `42`. |
 | `map_budget_tokens` | Constructor option on `GlobalSearchRetriever`; maximum report text packed into one map prompt. |
-| `reduce_budget_tokens` | Constructor option on `GlobalSearchRetriever`; maximum partial-answer text packed into the final reduce prompt. |
+| `reduce_budget_tokens` | Constructor option on `GlobalSearchRetriever`; maximum formatted partial-answer text packed into the final reduce prompt. The budget includes separators. The prompt template and general-knowledge instruction do not count against it. It is not an output-length cap. |
 | `map_concurrency` | Constructor option on `GlobalSearchRetriever`; max concurrent map calls. Defaults to `5`. |
 | `max_map_calls` | Constructor option on `GlobalSearchRetriever`; max total map batches, and therefore max map calls. Defaults to `None` (unlimited). Batches beyond the cap are never built. |
 | `max_map_tokens` | Constructor option on `GlobalSearchRetriever`; sum of complete formatted map-prompt token counts, including query/template overhead and separators, using `token_counter`. Stop before the first batch that does not fit (possibly sending no map calls). Defaults to `None` (unlimited). This is not a billed-token or output-token cap. |
@@ -612,6 +612,9 @@ What gets included, per mode:
 - **Global** — only partial answers that fit the actual reduce-stage token
   packing are considered; the community reports behind them are expanded at the
   searched level. Reports that were merely read or mapped are not expanded.
+  For synthesized answers, `context` and `citations` cover the same retained
+  partials. When no whole partial fits, only the returned partial answer is
+  considered.
 
 `Community` nodes are never returned as vertices: a contributing report shows up
 as its member entities and relationships, with the report id and level kept in
@@ -900,11 +903,47 @@ Partial answers with `helpfulness == 0` are discarded. The rest are sorted from
 highest to lowest helpfulness. In this example, the single batch scored 75, so
 it survives.
 
-#### Step 6 — Reduce phase: one final LLM call
+#### Step 6 — Reduce phase: at most one final LLM call
 
 The surviving partial answers are packed into the reduce prompt (subject to
 `reduce_budget_tokens`) and sent to the LLM. The reduce prompt asks the LLM to
 combine the partial answers into one coherent final answer.
+
+The reduce budget covers only the formatted partial-answer text, including
+the separators between partials. The prompt template and general-knowledge
+instruction do not count against it. Each partial is measured whole against
+the token counter. An oversized partial is skipped, and later smaller
+partials can still fit. The retriever never splits a partial.
+
+When synthesis runs, `context` and `citations` describe only the partials
+packed into the reduce prompt. Same for `graph` when
+`include_graph_evidence=True`. The `reduce_partials_used` metadata value
+reports that packed count. With `synthesize_response=False`, `context` and
+`citations` describe all scored partials.
+
+If no whole partial fits, the retriever does not call the reduce LLM. It
+returns the highest-ranked partial answer with nonblank text, word for word.
+The `answer` field holds that text. `context` and `citations` describe only
+that batch. When `include_graph_evidence=True`, `graph` also describes that
+batch, and its provenance records `synthesis_included: false`. The
+`reduce_partials_used` metadata value stays `0`. If no scored partial has
+usable text, the answer is the standard no-relevant-information message, and
+`context`, `citations`, and `graph` stay empty.
+
+On this evidence-backed path, only a nonblank string answer counts as usable
+evidence. A blank or nonstring answer never reaches synthesis and never
+answers the query. The packing and fallback selection use the same filtered,
+ranked list.
+
+These no-call rules describe the evidence-backed path. The opt-in general
+knowledge path is separate. When `allow_general_knowledge=True` and no scored
+partial exists, that path is already active. It still calls the reduce LLM
+with the general-knowledge instruction, even when the packed partial text is
+empty. A failed budget packing never activates this path.
+
+The reduce budget limits input text. It is not an output-length cap. It does
+not limit the length of the synthesized answer. Set the provider `max_tokens`
+model parameter to limit answer length.
 
 **Input to the reduce LLM:**
 
@@ -1167,7 +1206,7 @@ There are three separate token budgets. They happen at different times:
 | --- | --- | --- | --- |
 | `max_context_tokens` | `CommunityPipeline` / `CommunitySummarizer` | Indexing time | How much entity, relationship, and claim context fits into one community report-generation prompt. |
 | `map_budget_tokens` | `GlobalSearchRetriever` | Query time | How many stored community reports fit into one map prompt. |
-| `reduce_budget_tokens` | `GlobalSearchRetriever` | Query time | How many scored partial answers fit into the final reduce prompt. |
+| `reduce_budget_tokens` | `GlobalSearchRetriever` | Query time | How much formatted partial-answer text, including separators, fits into the final reduce prompt. |
 
 `max_context_tokens` shapes the report that gets stored on a `Community`.
 `map_budget_tokens` and `reduce_budget_tokens` shape how those already-stored
@@ -1283,6 +1322,74 @@ Neo4j passes the raw keyword query to Lucene full-text search. Memgraph rewrites
 the text into a Tantivy query, preserving phrases and joining escaped tokens
 with `OR`.
 
+### Bounded Candidate Expansion
+
+A graph or level filter runs after the index returns candidates. If too few
+scoped matches survive, search retries the same index read once at a wider
+width. This behavior is best effort. It does not guarantee exact recall. It
+applies to the built-in Neo4j and Memgraph stores. A custom store keeps its own
+search behavior.
+
+The first read keeps the existing query and width:
+
+- Entity vector and keyword search request `max(k * 5, k)` candidates when a
+  label or graph filter applies. Without a filter, they request `k`.
+- Community report vector search requests `max(top_k * 5, top_k)` candidates.
+- The first read keeps its graph, label, and level predicates. It keeps its
+  score order and returns at most the requested target.
+
+The entity `k` is the hybrid candidate target. Local and DRIFT derive it from
+`top_k` and `effective_search_ratio`.
+
+Entity search retries only when all of these conditions are true:
+
+- The call has a `graph_name` filter.
+- The first width is greater than 0 and less than 1000.
+- The scoped rows contain fewer than `k` distinct entity IDs.
+
+Community report search retries only when both conditions are true:
+
+- The first width is greater than 0 and less than 500.
+- The scoped rows contain fewer than `top_k` distinct `(id, level)` pairs.
+
+Report search always has graph scope. It also keeps its optional level filter.
+
+A retry is one wider read:
+
+| Search | First width | Retry width | Identity key |
+| --- | --- | --- | --- |
+| Entity vector | `max(k * 5, k)` with a label or graph filter | 1000 | `id` |
+| Entity keyword | `max(k * 5, k)` with a label or graph filter | 1000 | `id` |
+| Community report vector | `max(top_k * 5, top_k)` | 500 | `(id, level)` |
+
+The retry keeps the same predicates and score order. It does not run without
+graph scope. It does not run when the first width already reaches the cap.
+
+A successful retry replaces the first read. Search never merges two snapshots.
+Retry rows are deduplicated by identity. The best native score wins for each
+identity. Rows are ordered by native score in descending order. Equal scores
+use identity order, so ties do not depend on database row order. The result is
+trimmed to the requested count. A wider read that returns fewer rows or no rows
+is still authoritative.
+
+A database or driver error on the retry does not fail a nonempty result. Search
+logs a warning and returns the first read. Other retry errors propagate. If the
+first read is empty, the original error path applies. A failed first read never
+enters the retry. The Memgraph text-index translation stays the same: a missing
+`text_search.search` procedure or Tantivy error returns an empty result.
+
+Raw prefilter yields are unavailable. The index procedure yields candidates,
+and the same statement applies the scope filter. A true raw count needs either
+an extra count read or an aggregate that changes the legacy first query. Both
+are excluded. Debug logs report the scoped unique match count for each round.
+Treat those counts as post-filter diagnostics, not raw index yields.
+
+The policy adds at most one bounded read per starved search call. It has no
+wall-time cap. A wider read still uses approximate nearest-neighbor or
+full-text semantics. It cannot prove that no other valid result exists.
+Report vector reads use the same committed vectors as before. Expansion does
+not bypass the report freshness checks.
+
 ---
 
 ## Traversal Limits
@@ -1350,9 +1457,9 @@ selection and get no automatic ranking.
 | `map_concurrency` | `5` | Max concurrent map LLM calls. |
 | `max_map_calls` | `None` (unlimited) | Hard cap on total map batches, applied while batching: reports beyond the cap are never read into a batch and no map call is made for them. |
 | `max_map_tokens` | `None` (unlimited) | Sum of complete formatted map-prompt counts under `token_counter`, including repeated query/template overhead and separators. Stops before the first batch that would exceed the remaining allowance; sends no partial final batch. A cap below the first prompt sends no map calls. Approximate counters provide estimated, not provider-billed, token bounds. |
-| `reduce_budget_tokens` | `12000` | Tokens for packing scored partial answers into the final reduce prompt. |
+| `reduce_budget_tokens` | `12000` | Formatted partial-answer text only, including separators, for the final reduce prompt. The prompt template and general-knowledge instruction do not count. Oversized partials are skipped whole so later smaller partials can fit. On the evidence-backed path, no reduce call runs when no whole partial fits: the top-ranked nonblank partial answer is returned unchanged. An already-activated `allow_general_knowledge` path still reduces. This budget is not an output-length cap. |
 | Map calls (total) | One per retained batch | Depends on report sizes, prompt overhead, packing and configured caps; not an exact `ceil(total_report_tokens / map_budget_tokens)` calculation. |
-| Reduce calls | At most `1` | Skipped when synthesis is disabled or no usable map answers remain. |
+| Reduce calls | At most `1` | The retriever skips reduction when synthesis is disabled. On the evidence-backed path, it also skips reduction when no usable partial fits the budget. |
 
 **Example:** Suppose 20 reports total about 40k tokens and packing produces four
 batches with `map_budget_tokens=12000`:
@@ -1531,6 +1638,26 @@ from recon_graphrag import CommunityReportEmbedder
 count = await CommunityReportEmbedder(store, embedder, "entity-graph").embed_reports()
 ```
 
+### Report vector freshness
+
+Search reads committed community reports and committed report vectors. Global search can read a report after its report write commits. DRIFT can use a report vector after the guarded vector write commits.
+
+The managed report embedding pass refreshes missing vectors, legacy vectors without fingerprints, vectors for changed report text, and vectors from a different embedder model. Legacy vectors refresh once, automatically. A failed provider call records a failure marker, and a later managed pass retries it. The pass attempts each report key at most once. A late vector or failure from an older text, generation, or revision is rejected.
+
+The public manual loop keeps the original selector. `get_unembedded_community_reports()` returns only reports with no vector and no failure marker. `upsert_community_report_vectors()` sets the vector and clears the marker, so the loop ends. A report text change clears the marker. Use `CommunityReportEmbedder` for managed refresh and failure retries.
+
+The `community-report-embeddings` dimension must match the embedder that creates report vectors. A model change triggers a refresh, but a dimension change requires an explicit index rebuild and re-embedding; see [rebuilding indexes](04-indexing.md#rebuilding-indexes). The model fingerprint is best effort: an endpoint or Azure deployment switch with an unchanged fingerprint does not trigger a refresh. Search query and result shapes do not change.
+
+Built-in stores and `CommunityPipeline` bind report and vector writes to one detection generation. A custom store without the guarded private operations uses the public path; that path cannot reject stale in-flight results or detect a model change. A missing report vector keeps the existing DRIFT fallback to local-style entity search.
+
+### Async store calls
+
+Search APIs are async, but `GraphStore` methods are synchronous. Local search, global search, and DRIFT call store methods on worker threads through `asyncio.to_thread`. The SDK uses the default executor and adds no setting.
+
+A custom store must accept concurrent calls from multiple threads. Each call must own its session and return materialized data. The SDK adds no stage-wide lock and no snapshot across calls. A search that spans several calls can observe a newer graph state between calls.
+
+Cancellation does not stop an active worker call. A cancelled search can let one completed read finish. A cancelled search does not write graph state.
+
 ---
 
 ## Current Limits
@@ -1542,6 +1669,8 @@ count = await CommunityReportEmbedder(store, embedder, "entity-graph").embed_rep
   multi-hop paths.
 - Global search uses one community level at a time.
 - Global search uses bounded parallel map calls.
+- Filtered entity and report search expands once at a bounded cap. It does not
+  guarantee exact recall or a maximum latency.
 
 ---
 

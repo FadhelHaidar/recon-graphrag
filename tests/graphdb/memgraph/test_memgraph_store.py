@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import inspect
+from typing import cast
+
+import neo4j
 import pytest
 
 import recon_graphrag.graphdb.memgraph.entity_resolution as entity_resolution
@@ -45,10 +49,16 @@ class FakeSession:
         self.queries: list[str] = []
         self.params: list[dict] = []
         self._next_result: FakeResult = FakeResult([])
+        self._next_results: list[FakeResult | Exception] = []
 
     def run(self, query: str, parameters: dict | None = None):
         self.queries.append(query.strip())
         self.params.append(parameters or {})
+        if self._next_results:
+            response = self._next_results.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
         return self._next_result
 
     def begin_transaction(self):
@@ -392,6 +402,13 @@ def test_vector_search_runs_vector_procedure(store, fake_driver):
 
 
 def test_community_report_vector_search_uses_memgraph_procedure(store, fake_driver):
+    fake_driver.session_obj._next_result = FakeResult(
+        [
+            {"id": f"community:{i}", "level": 0, "score": 0.9 - i / 10}
+            for i in range(3)
+        ]
+    )
+
     store.vector_search_community_reports([0.1, 0.2], "graph-a", top_k=3, level=0)
 
     query = fake_driver.session_obj.queries[-1]
@@ -400,6 +417,7 @@ def test_community_report_vector_search_uses_memgraph_procedure(store, fake_driv
     assert "c.graph_name = $graph_name" in query
     assert params["candidate_k"] == 15
     assert params["level"] == 0
+    assert len(fake_driver.session_obj.queries) == 1
 
 
 def test_vector_search_overfetches_when_label_filtering(store, fake_driver):
@@ -419,7 +437,9 @@ def test_vector_search_overfetches_when_label_filtering(store, fake_driver):
 
 
 def test_vector_search_graph_filter_overfetches_and_scopes(store, fake_driver):
-    fake_driver.session_obj._next_result = FakeResult([])
+    fake_driver.session_obj._next_result = FakeResult(
+        [{"id": i, "score": 1.0 - i / 10} for i in range(5)]
+    )
 
     store.vector_search(
         index_name="entity-embeddings",
@@ -434,10 +454,13 @@ def test_vector_search_graph_filter_overfetches_and_scopes(store, fake_driver):
     assert params["graph_name"] == "graph-a"
     assert params["k"] == 25  # over-fetch before post-filter trims to top_k
     assert params["top_k"] == 5
+    assert len(fake_driver.session_obj.queries) == 1
 
 
 def test_keyword_search_graph_filter_overfetches_and_scopes(store, fake_driver):
-    fake_driver.session_obj._next_result = FakeResult([])
+    fake_driver.session_obj._next_result = FakeResult(
+        [{"id": i, "score": 1.0 - i / 10} for i in range(5)]
+    )
 
     store.keyword_search(
         index_name="entity-names",
@@ -452,6 +475,7 @@ def test_keyword_search_graph_filter_overfetches_and_scopes(store, fake_driver):
     assert params["graph_name"] == "graph-a"
     assert params["k"] == 25
     assert params["top_k"] == 5
+    assert len(fake_driver.session_obj.queries) == 1
 
 
 def test_keyword_search_runs_text_search_procedure(store, fake_driver):
@@ -527,6 +551,387 @@ def test_keyword_search_returns_empty_when_tantivy_rejects_query(store, fake_dri
     )
 
     assert result == []
+
+
+def test_vector_search_retries_once_at_cap_when_graph_scoped_matches_starve(
+    store, fake_driver
+):
+    first_rows = [{"id": 1, "score": 0.9}]
+    wider_rows = [
+        {"id": 1, "score": 0.9},
+        {"id": 2, "score": 0.8},
+        {"id": 3, "score": 0.7},
+    ]
+    fake_driver.session_obj._next_results = [
+        FakeResult(first_rows),
+        FakeResult(wider_rows),
+    ]
+
+    result = store.vector_search(
+        index_name="entity-embeddings",
+        query_vector=[0.1, 0.2],
+        k=5,
+        label="__Entity__",
+        filters={"graph_name": "graph-a"},
+    )
+
+    assert result == wider_rows
+    assert len(fake_driver.session_obj.queries) == 2
+    assert fake_driver.session_obj.params[0]["k"] == 25
+    assert fake_driver.session_obj.params[0]["top_k"] == 5
+    assert fake_driver.session_obj.params[1]["k"] == 1000
+    assert fake_driver.session_obj.params[1]["top_k"] == 1000
+    assert "node:`__Entity__`" in fake_driver.session_obj.queries[1]
+    assert "node.graph_name = $graph_name" in fake_driver.session_obj.queries[1]
+
+
+def test_vector_search_retry_uses_best_score_and_identity_tie(store, fake_driver):
+    fake_driver.session_obj._next_results = [
+        FakeResult([]),
+        FakeResult(
+            [
+                {"id": 1, "score": 0.2},
+                {"id": 3, "score": 0.9},
+                {"id": 1, "score": 0.7},
+                {"id": 2, "score": 0.9},
+            ]
+        ),
+    ]
+
+    result = store.vector_search(
+        index_name="entity-embeddings",
+        query_vector=[0.1, 0.2],
+        k=5,
+        filters={"graph_name": "graph-a"},
+    )
+
+    assert result == [
+        {"id": 2, "score": 0.9},
+        {"id": 3, "score": 0.9},
+        {"id": 1, "score": 0.7},
+    ]
+
+
+def test_vector_search_does_not_retry_without_graph_scope(store, fake_driver):
+    result = store.vector_search(
+        index_name="entity-embeddings",
+        query_vector=[0.1, 0.2],
+        k=5,
+        label="__Entity__",
+    )
+
+    assert result == []
+    assert len(fake_driver.session_obj.queries) == 1
+
+
+def test_vector_search_does_not_retry_when_initial_width_reaches_cap(
+    store, fake_driver
+):
+    result = store.vector_search(
+        index_name="entity-embeddings",
+        query_vector=[0.1, 0.2],
+        k=200,
+        filters={"graph_name": "graph-a"},
+    )
+
+    assert result == []
+    assert len(fake_driver.session_obj.queries) == 1
+    assert fake_driver.session_obj.params[0]["k"] == 1000
+    assert fake_driver.session_obj.params[0]["top_k"] == 200
+
+
+def test_vector_search_retry_error_returns_nonempty_first_round(
+    store, fake_driver, caplog
+):
+    first_rows = [{"id": 1, "score": 0.9}, {"id": 2, "score": 0.8}]
+    fake_driver.session_obj._next_results = [
+        FakeResult(first_rows),
+        neo4j.exceptions.ServiceUnavailable("driver lost"),
+    ]
+
+    with caplog.at_level("WARNING"):
+        result = store.vector_search(
+            index_name="entity-embeddings",
+            query_vector=[0.1, 0.2],
+            k=5,
+            filters={"graph_name": "graph-a"},
+        )
+
+    assert result == first_rows
+    assert len(fake_driver.session_obj.queries) == 2
+    assert "retry failed" in caplog.text
+
+
+def test_vector_search_retry_error_with_empty_first_round_propagates(
+    store, fake_driver
+):
+    fake_driver.session_obj._next_results = [
+        FakeResult([]),
+        neo4j.exceptions.ServiceUnavailable("driver lost"),
+    ]
+
+    with pytest.raises(neo4j.exceptions.ServiceUnavailable, match="driver lost"):
+        store.vector_search(
+            index_name="entity-embeddings",
+            query_vector=[0.1, 0.2],
+            k=5,
+            filters={"graph_name": "graph-a"},
+        )
+
+
+def test_vector_search_retry_propagates_unrelated_error(store, fake_driver):
+    fake_driver.session_obj._next_results = [
+        FakeResult([{"id": 1, "score": 0.9}]),
+        TypeError("invalid query parameters"),
+    ]
+
+    with pytest.raises(TypeError, match="invalid query parameters"):
+        store.vector_search(
+            index_name="entity-embeddings",
+            query_vector=[0.1, 0.2],
+            k=5,
+            filters={"graph_name": "graph-a"},
+        )
+
+    assert len(fake_driver.session_obj.queries) == 2
+
+
+def test_keyword_search_retries_once_at_cap_when_graph_scoped_matches_starve(
+    store, fake_driver
+):
+    first_rows = [{"id": 1, "score": 12.0}]
+    wider_rows = [{"id": 1, "score": 12.0}, {"id": 2, "score": 8.0}]
+    fake_driver.session_obj._next_results = [
+        FakeResult(first_rows),
+        FakeResult(wider_rows),
+    ]
+
+    result = store.keyword_search(
+        index_name="entity-names",
+        query_text="Alice",
+        k=5,
+        filters={"graph_name": "graph-a"},
+    )
+
+    assert result == wider_rows
+    assert len(fake_driver.session_obj.queries) == 2
+    assert fake_driver.session_obj.params[0]["k"] == 25
+    assert fake_driver.session_obj.params[1]["k"] == 1000
+    assert fake_driver.session_obj.params[1]["top_k"] == 1000
+
+
+def test_keyword_search_retry_empty_is_authoritative(store, fake_driver):
+    fake_driver.session_obj._next_results = [
+        FakeResult([{"id": 1, "score": 12.0}]),
+        FakeResult([]),
+    ]
+
+    result = store.keyword_search(
+        index_name="entity-names",
+        query_text="Alice",
+        k=5,
+        filters={"graph_name": "graph-a"},
+    )
+
+    assert result == []
+    assert len(fake_driver.session_obj.queries) == 2
+
+
+def test_keyword_search_retry_preserves_missing_tantivy_translation(
+    store, fake_driver
+):
+    fake_driver.session_obj._next_results = [
+        FakeResult([]),
+        neo4j.exceptions.Neo4jError(
+            "text_search.search: Tantivy error: Syntax Error"
+        ),
+    ]
+
+    result = store.keyword_search(
+        index_name="entity-names",
+        query_text="Alice",
+        k=5,
+        filters={"graph_name": "graph-a"},
+    )
+
+    assert result == []
+    assert len(fake_driver.session_obj.queries) == 2
+
+
+def test_keyword_search_retry_propagates_unrelated_error(store, fake_driver):
+    fake_driver.session_obj._next_results = [
+        FakeResult([{"id": 1, "score": 12.0}]),
+        RuntimeError("text_search.search: local defect"),
+    ]
+
+    with pytest.raises(RuntimeError, match="local defect"):
+        store.keyword_search(
+            index_name="entity-names",
+            query_text="Alice",
+            k=5,
+            filters={"graph_name": "graph-a"},
+        )
+
+    assert len(fake_driver.session_obj.queries) == 2
+
+
+def test_keyword_search_retry_driver_error_propagates_when_first_round_empty(
+    store, fake_driver
+):
+    fake_driver.session_obj._next_results = [
+        FakeResult([]),
+        neo4j.exceptions.ServiceUnavailable("driver lost"),
+    ]
+
+    with pytest.raises(neo4j.exceptions.ServiceUnavailable, match="driver lost"):
+        store.keyword_search(
+            index_name="entity-names",
+            query_text="Alice",
+            k=5,
+            filters={"graph_name": "graph-a"},
+        )
+
+    assert len(fake_driver.session_obj.queries) == 2
+
+
+def test_keyword_search_retry_driver_error_returns_nonempty_first_round(
+    store, fake_driver
+):
+    first_rows = [{"id": 1, "score": 12.0}, {"id": 2, "score": 8.0}]
+    fake_driver.session_obj._next_results = [
+        FakeResult(first_rows),
+        neo4j.exceptions.Neo4jError(
+            "text_search.search: Tantivy error: Syntax Error"
+        ),
+    ]
+
+    result = store.keyword_search(
+        index_name="entity-names",
+        query_text="Alice",
+        k=5,
+        filters={"graph_name": "graph-a"},
+    )
+
+    assert result == first_rows
+    assert len(fake_driver.session_obj.queries) == 2
+
+
+def test_keyword_search_first_round_missing_tantivy_does_not_retry(
+    store, fake_driver
+):
+    fake_driver.session_obj._next_results = [
+        RuntimeError("text_search.search: Tantivy error: Syntax Error")
+    ]
+
+    result = store.keyword_search(
+        index_name="entity-names",
+        query_text="Alice",
+        k=5,
+        filters={"graph_name": "graph-a"},
+    )
+
+    assert result == []
+    assert len(fake_driver.session_obj.queries) == 1
+
+
+def test_community_report_search_retries_once_at_cap_when_matches_starve(
+    store, fake_driver
+):
+    first_rows = [{"id": "community:1", "level": 0, "score": 0.9}]
+    wider_rows = [
+        {"id": "community:1", "level": 0, "score": 0.9},
+        {"id": "community:2", "level": 0, "score": 0.8},
+        {"id": "community:3", "level": 0, "score": 0.7},
+    ]
+    fake_driver.session_obj._next_results = [
+        FakeResult(first_rows),
+        FakeResult(wider_rows),
+    ]
+
+    result = store.vector_search_community_reports(
+        [0.1, 0.2], "graph-a", top_k=3, level=0
+    )
+
+    assert result == wider_rows
+    assert len(fake_driver.session_obj.queries) == 2
+    assert fake_driver.session_obj.params[0]["candidate_k"] == 15
+    assert fake_driver.session_obj.params[1]["candidate_k"] == 500
+    assert fake_driver.session_obj.params[1]["top_k"] == 500
+    assert fake_driver.session_obj.params[1]["level"] == 0
+
+
+def test_community_report_search_retry_dedupes_by_id_and_level(store, fake_driver):
+    fake_driver.session_obj._next_results = [
+        FakeResult([]),
+        FakeResult(
+            [
+                {"id": "community:1", "level": 0, "score": 0.4},
+                {"id": "community:2", "level": 0, "score": 0.8},
+                {"id": "community:1", "level": 1, "score": 0.8},
+                {"id": "community:1", "level": 0, "score": 0.7},
+            ]
+        ),
+    ]
+
+    result = store.vector_search_community_reports([0.1, 0.2], "graph-a", top_k=3)
+
+    assert result == [
+        {"id": "community:1", "level": 1, "score": 0.8},
+        {"id": "community:2", "level": 0, "score": 0.8},
+        {"id": "community:1", "level": 0, "score": 0.7},
+    ]
+
+
+def test_community_report_search_does_not_retry_when_initial_width_reaches_cap(
+    store, fake_driver
+):
+    result = store.vector_search_community_reports([0.1, 0.2], "graph-a", top_k=100)
+
+    assert result == []
+    assert len(fake_driver.session_obj.queries) == 1
+    assert fake_driver.session_obj.params[0]["candidate_k"] == 500
+    assert fake_driver.session_obj.params[0]["top_k"] == 100
+
+
+def test_community_report_search_retry_error_returns_nonempty_first_round(
+    store, fake_driver
+):
+    first_rows = [
+        {"id": "community:1", "level": 0, "score": 0.9},
+        {"id": "community:2", "level": 0, "score": 0.8},
+    ]
+    fake_driver.session_obj._next_results = [
+        FakeResult(first_rows),
+        neo4j.exceptions.ServiceUnavailable("driver lost"),
+    ]
+
+    result = store.vector_search_community_reports(
+        [0.1, 0.2], "graph-a", top_k=3, level=0
+    )
+
+    assert result == first_rows
+    assert len(fake_driver.session_obj.queries) == 2
+
+
+def test_community_report_search_retry_propagates_unrelated_error(
+    store, fake_driver
+):
+    fake_driver.session_obj._next_results = [
+        FakeResult(
+            [
+                {"id": "community:1", "level": 0, "score": 0.9},
+                {"id": "community:2", "level": 0, "score": 0.8},
+            ]
+        ),
+        TypeError("invalid report parameters"),
+    ]
+
+    with pytest.raises(TypeError, match="invalid report parameters"):
+        store.vector_search_community_reports(
+            [0.1, 0.2], "graph-a", top_k=3, level=0
+        )
+
+    assert len(fake_driver.session_obj.queries) == 2
 
 
 def test_store_community_report_sets_structured_fields(store, fake_driver):
@@ -612,7 +1017,7 @@ def test_validate_graph_build_runs_counts(store, fake_driver):
             return FakeResult([{"cnt": 5}])
         if "FROM_CHUNK" in query:
             return FakeResult([{"cnt": 3}])
-        if "MATCH (:__Entity__)-[r]-(:__Entity__)" in query:
+        if "MATCH (:__Entity__)-[r]->(:__Entity__)" in query:
             return FakeResult([{"cnt": 2}])
         if "MATCH (c:Community)" in query and "report_text" in query:
             return FakeResult([{"cnt": 6}])
@@ -640,7 +1045,26 @@ def test_validate_graph_build_runs_counts(store, fake_driver):
 
 
 def test_create_indexes_runs_uid_constraint(store, fake_driver):
-    fake_driver.session_obj._next_result = FakeResult([])
+    session = fake_driver.session_obj
+    empty = FakeResult([])
+    generation_constraint = FakeResult(
+        [
+            {
+                "constraint type": "unique",
+                "label": ":CommunityGeneration",
+                "properties": ["graph_name"],
+            }
+        ]
+    )
+
+    def fake_run(query, parameters=None):
+        session.queries.append(query.strip())
+        session.params.append(parameters or {})
+        if "SHOW CONSTRAINT INFO" in query:
+            return generation_constraint
+        return empty
+
+    session.run = fake_run
 
     store.create_indexes(embedding_dim=1536)
 
@@ -687,3 +1111,58 @@ def test_fetch_entity_context_custom_query_wins_over_ranking(store, fake_driver)
     query = fake_driver.session_obj.queries[-1]
     assert "RETURN node AS context_row" in query
     assert "source_score" not in query
+
+
+def test_private_detection_entrypoint_matches_the_public_arguments():
+    public = inspect.signature(MemgraphGraphStore.detect_communities).parameters
+    private = inspect.signature(
+        MemgraphGraphStore._detect_communities_with_generation
+    ).parameters
+    assert list(private.values()) == list(public.values())
+
+
+def test_detect_communities_returns_stats_without_the_generation(monkeypatch):
+    import recon_graphrag.communities.memgraph.detection as detection_module
+
+    captured = {}
+
+    class FakeDetector:
+        def __init__(self, graph_store, **kwargs):
+            captured["graph_store"] = graph_store
+            captured["kwargs"] = kwargs
+
+        def _detect_with_generation(self):
+            captured["invoked"] = True
+            return [{"community_id": "c", "level": 0}], "generation-token"
+
+    monkeypatch.setattr(detection_module, "CommunityDetector", FakeDetector)
+    store = MemgraphGraphStore(cast(neo4j.Driver, FakeDriver()))
+
+    result = store.detect_communities("graph-a", max_levels=2)
+
+    assert result == [{"community_id": "c", "level": 0}]
+    assert captured["invoked"] is True
+    assert captured["graph_store"] is store
+    assert captured["kwargs"]["max_levels"] == 2
+    assert captured["kwargs"]["graph_name"] == "graph-a"
+
+
+def test_private_detection_entrypoint_returns_stats_and_generation(monkeypatch):
+    import recon_graphrag.communities.memgraph.detection as detection_module
+
+    class FakeDetector:
+        def __init__(self, graph_store, **kwargs):
+            self.kwargs = kwargs
+
+        def _detect_with_generation(self):
+            return [{"community_id": "c", "level": 0}], "generation-token"
+
+    monkeypatch.setattr(detection_module, "CommunityDetector", FakeDetector)
+    store = MemgraphGraphStore(cast(neo4j.Driver, FakeDriver()))
+
+    stats, generation = store._detect_communities_with_generation(
+        graph_name="graph-a", random_seed=7
+    )
+
+    assert stats == [{"community_id": "c", "level": 0}]
+    assert generation == "generation-token"

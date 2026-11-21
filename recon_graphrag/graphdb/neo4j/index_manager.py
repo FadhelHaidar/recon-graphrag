@@ -10,6 +10,10 @@ import logging
 from typing import Optional
 
 from recon_graphrag.embeddings.base import BaseEmbedder
+from recon_graphrag.graphdb._community_publication import (
+    COMMUNITY_GENERATION_CONSTRAINT_NAME,
+    verify_neo4j_community_generation_constraint,
+)
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.cypher import escape_cypher_identifier
 from recon_graphrag.graphdb.neo4j.entity_resolution import _Neo4jEntityResolver
@@ -158,7 +162,11 @@ class IndexManager:
         )
 
     def _drop_indexes(self):
-        """Drop existing indexes so they can be recreated with updated settings."""
+        """Drop indexes so they can be recreated with updated settings.
+
+        Constraints are schema contracts, not indexes. The Community and
+        CommunityGeneration constraints stay in place.
+        """
         for name in [
             self.config.entity_vector_index,
             self.config.entity_fulltext_index,
@@ -176,10 +184,12 @@ class IndexManager:
 
         Community hierarchy needs a composite uniqueness constraint; the
         writer needs per-label uid uniqueness for safe concurrent upserts
-        (F8). Unexpected failures now propagate instead of being muted so
-        a silently missing constraint cannot corrupt later ingestion.
+        (F8); community publication needs the graph-scoped generation
+        constraint. Unexpected failures now propagate instead of being muted
+        so a silently missing constraint cannot corrupt later ingestion.
         """
         self._create_community_constraint()
+        self._create_community_generation_constraint()
         self._create_uid_constraints()
 
     def _create_community_constraint(self):
@@ -197,6 +207,29 @@ class IndexManager:
                 "duplicate communities already in the graph must be resolved "
                 "before ingestion can continue safely."
             ) from e
+
+    def _create_community_generation_constraint(self):
+        """Create and verify the graph-scoped publication constraint.
+
+        The check rejects a constraint that reuses the expected name with a
+        different definition. It also rejects a missing constraint after
+        creation, so publication never runs without the serialization anchor.
+        """
+        try:
+            self.graph_store.execute_query(
+                f"""
+                CREATE CONSTRAINT {COMMUNITY_GENERATION_CONSTRAINT_NAME} IF NOT EXISTS
+                FOR (g:CommunityGeneration)
+                REQUIRE g.graph_name IS UNIQUE
+                """
+            )
+        except Exception as e:
+            raise RuntimeError(
+                "Failed to create the CommunityGeneration uniqueness constraint; "
+                "community publication requires an exact unique graph_name "
+                f"constraint. Original error: {e}"
+            ) from e
+        verify_neo4j_community_generation_constraint(self.graph_store)
 
     # Labels whose per-graph (graph_name, id) pair must be unique.
     _UID_LABELS = ("Document", "Chunk", "__Entity__")

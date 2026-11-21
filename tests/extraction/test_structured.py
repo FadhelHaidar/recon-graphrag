@@ -241,6 +241,22 @@ def test_iter_excel(tmp_path):
     assert rows == [{"name": "Widget", "price": 9.99}]
 
 
+def test_iter_excel_selects_named_sheet(tmp_path):
+    openpyxl = pytest.importorskip("openpyxl")
+    path = tmp_path / "rows.xlsx"
+    workbook = openpyxl.Workbook()
+    workbook.active.title = "First"
+    workbook.active.append(["name", "price"])
+    workbook.active.append(["Widget", 9.99])
+    second = workbook.create_sheet("Second")
+    second.append(["name", "price"])
+    second.append(["Gadget", 1.5])
+    workbook.save(path)
+
+    rows = list(iter_excel(path, sheet="Second"))
+    assert rows == [{"name": "Gadget", "price": 1.5}]
+
+
 def test_custom_identity_schema_and_metadata():
     mapping = RowMapping([ColumnEntity("Thing", "key", identity_property="record_key")])
     schema = mapping.to_schema()

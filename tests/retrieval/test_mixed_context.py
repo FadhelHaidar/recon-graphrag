@@ -9,6 +9,7 @@ import pytest
 from recon_graphrag.llm import LLMResponse
 from recon_graphrag.retrieval.search_local import LocalSearchRetriever
 from recon_graphrag.retrieval.mixed_context import MixedContextBuilder
+from recon_graphrag.utils.tokens import PackItem, PackResult
 
 
 class FakeGraphStore:
@@ -438,6 +439,37 @@ class TestCommunityReportOverlapRanking:
         _, result = _build(rows, token_budget=400)
 
         assert result.included_community_ids == ["c-incident", "c-vendor"]
+
+
+class TestOverflowPacking:
+    def test_admits_and_excludes_remaining_items_in_order(self):
+        builder = MixedContextBuilder(cast(Any, FakeGraphStore()), graph_name="entity-graph")
+        packed = PackResult(
+            included=[PackItem(id="kept", text="a" * 40)],
+            excluded=[],
+            used_tokens=10,
+            max_tokens=10,
+            truncated_item_ids=["kept"],
+        )
+        candidates = [
+            packed.included[0],
+            PackItem(id="admit-first", text="b" * 4),
+            PackItem(id="too-large", text="c" * 100),
+            PackItem(id="admit-second", text="d" * 4),
+        ]
+
+        merged, remaining = builder._pack_overflow(packed, candidates, overflow=10)
+
+        assert [item.id for item in merged.included] == [
+            "kept",
+            "admit-first",
+            "admit-second",
+        ]
+        assert [item.id for item in merged.excluded] == ["too-large"]
+        assert merged.used_tokens == 12
+        assert merged.max_tokens == 20
+        assert merged.truncated_item_ids == ["kept"]
+        assert remaining == 8
 
 
 class TestLocalSearchMixedContext:

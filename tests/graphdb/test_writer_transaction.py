@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from contextlib import contextmanager
 from typing import Any, cast
 
@@ -9,6 +10,7 @@ import pytest
 
 from recon_graphrag.graphdb.memgraph.store import MemgraphGraphStore
 from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
+from recon_graphrag.pipelines.writer import CypherGraphWriter
 from tests.pipelines.writer_scenarios import (
     StatefulFakeGraphStore,
     make_graph_document,
@@ -43,6 +45,12 @@ class FakeSession:
         if self.fail_on and self.fail_on in query:
             raise RuntimeError("connection dropped")
         self.queries.append(query)
+        params = parameters or {}
+        if "UNWIND $rows AS row" in query and "__recon_write_lock" in query:
+            rows = params["rows"]
+            return [{"locked": [row["id"] for row in rows], "requested": len(rows)}]
+        if "REMOVE e.__recon_write_lock" in query:
+            return [{"released": len(params["ids"])}]
         return []
 
     def begin_transaction(self) -> FakeTransaction:
@@ -125,7 +133,11 @@ def test_validation_error_rolls_back_before_writing(store_and_session, fail_on):
         store.write_graph_document(document)
 
     assert session.transactions[0].rolled_back is True
-    assert [query for query in session.queries if "MERGE" in query] == []
+    assert [
+        query
+        for query in session.queries
+        if "MERGE" in query and "__recon_write_lock" not in query
+    ] == []
 
 
 class DeadlockError(Exception):
@@ -165,6 +177,198 @@ def test_deadlock_is_retried_inside_the_writer(name):
     assert session.transactions[0].rolled_back is True
     assert session.transactions[1].committed is True
     assert session.queries, "the retry must actually write the document"
+
+
+def test_lock_batch_precedes_the_authoritative_state_read(store_and_session):
+    store, session = store_and_session
+
+    store.write_graph_document(make_graph_document())
+
+    queries = session.queries
+    lock_index = next(
+        index for index, query in enumerate(queries) if "__recon_write_lock" in query
+    )
+    state_index = next(
+        index
+        for index, query in enumerate(queries)
+        if "RETURN e.id AS id," in query and "e.type AS type" in query
+    )
+    target_index = next(
+        index
+        for index, query in enumerate(queries)
+        if "UNWIND $relationship_keys AS row" in query
+    )
+    assert lock_index < state_index < target_index
+    lock_query = queries[lock_index]
+    # The importing-WITH form works on older Neo4j 5.x; the variable-scope
+    # CALL (row) form needs a newer server.
+    assert re.search(r"CALL \{\s+WITH row\b", lock_query)
+    assert "CALL (row)" not in lock_query
+    assert "REMOVE e.__recon_write_lock" in queries[-1]
+
+
+class TransactionalStatefulStore(StatefulFakeGraphStore):
+    """Stateful fake with the private transaction hook the writer probes."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.transaction_count = 0
+
+    @contextmanager
+    def _transaction(self):
+        self.transaction_count += 1
+        yield self
+
+
+def test_replacement_lock_set_covers_previous_entities():
+    from tests.pipelines.test_writer_replacement import build_document
+
+    store = TransactionalStatefulStore()
+    writer = CypherGraphWriter(cast(Any, store))
+    writer.write_graph_document(
+        build_document(
+            chunks=["a:c0"],
+            document_id="a",
+            entities=[("e1", "Alice", "Old fact."), ("e2", "Bob", None)],
+        )
+    )
+    store.queries.clear()
+    store.lock_batches.clear()
+
+    writer.write_graph_document(
+        build_document(
+            chunks=["a:c1"],
+            document_id="a",
+            entities=[("e2", "Bob", "New fact.")],
+        )
+    )
+
+    locked = {row["id"] for row in store.lock_batches[0]}
+    assert locked == {"e1", "e2"}
+    assert store.lock_releases and "e1" in store.lock_releases[-1]
+    lock_index = next(
+        index
+        for index, query in enumerate(store.queries)
+        if "UNWIND $rows AS row" in query and "__recon_write_lock" in query
+    )
+    state_index = next(
+        index
+        for index, query in enumerate(store.queries)
+        if "RETURN e.id AS id," in query and "e.type AS type" in query
+    )
+    assert lock_index < state_index
+
+
+def test_auto_commit_store_never_runs_a_lock_query():
+    store = StatefulFakeGraphStore()
+
+    CypherGraphWriter(cast(Any, store)).write_graph_document(make_graph_document())
+
+    assert not any("__recon_write_lock" in query for query in store.queries)
+    assert store.lock_batches == []
+
+
+def test_missing_reference_is_not_created_by_the_lock_batch():
+    from tests.pipelines.test_writer_replacement import build_document
+
+    store = TransactionalStatefulStore()
+    writer = CypherGraphWriter(cast(Any, store))
+    document = build_document(
+        chunks=["chunk:1"],
+        entities=[("e1", "Alice", None)],
+        relationships=[("KNOWS", "e1", "ghost", None)],
+    )
+
+    with pytest.raises(ValueError, match="ghost"):
+        writer.write_graph_document(document)
+
+    assert store.get_node("ghost") is None
+    assert not any("UNWIND $relationships AS row" in query for query in store.queries)
+
+
+class OmitPriorLockStore(TransactionalStatefulStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.omitted: str | None = None
+
+    def _write_entity_locks(self, params: dict) -> list:
+        result = super()._write_entity_locks(params)
+        if self.omitted is not None:
+            result[0]["locked"] = [
+                entity_id
+                for entity_id in result[0]["locked"]
+                if entity_id != self.omitted
+            ]
+        return result
+
+
+def test_unlocked_prior_entity_retries_then_surfaces_a_conflict():
+    from tests.pipelines.test_writer_replacement import build_document
+
+    store = OmitPriorLockStore()
+    writer = CypherGraphWriter(cast(Any, store))
+    writer.write_graph_document(
+        build_document(
+            chunks=["a:c0"],
+            document_id="a",
+            entities=[("e1", "Alice", "Old fact.")],
+        )
+    )
+    store.omitted = "e1"
+    store.transaction_count = 0
+    mark = len(store.queries)
+
+    with pytest.raises(Exception, match="lock"):
+        writer.write_graph_document(
+            build_document(chunks=["a:c1"], document_id="a")
+        )
+
+    assert store.transaction_count == 3
+    assert not any(
+        "UNWIND $documents AS row" in query for query in store.queries[mark:]
+    )
+
+
+def test_transient_lock_does_not_invalidate_a_retained_summary():
+    from tests.pipelines.test_writer_replacement import build_document
+
+    store = TransactionalStatefulStore()
+    writer = CypherGraphWriter(cast(Any, store))
+    document = build_document(
+        chunks=["chunk"], entities=[("alice", "Alice", "Source fact")]
+    )
+    document.entities[0].properties["role"] = "Engineer"
+    writer.write_graph_document(document)
+    node = store.get_node("alice")
+    assert node is not None
+    node.update(description="Previous summary", description_summary_status="success")
+
+    writer.write_graph_document(document)
+
+    assert node["description_summary_status"] == "success"
+    assert node["description"] == "Previous summary"
+
+
+def test_lock_property_does_not_pollute_the_written_entity():
+    from tests.pipelines.test_writer_replacement import build_document
+
+    store = TransactionalStatefulStore()
+    writer = CypherGraphWriter(cast(Any, store))
+    writer.write_graph_document(
+        build_document(chunks=["a:c0"], document_id="a", entities=[])
+    )
+    writer.write_graph_document(
+        build_document(
+            chunks=["a:c0"],
+            document_id="a",
+            entities=[("e1", "Alice", "A fact.")],
+        )
+    )
+
+    node = store.get_node("e1")
+    assert node is not None
+    assert "__recon_write_lock" not in node
+    assert store.lock_releases
 
 
 @pytest.mark.parametrize("name", ["neo4j", "memgraph"])
@@ -265,6 +469,8 @@ def test_replacement_rows_are_rebuilt_for_every_attempt():
         build_document(chunks=["a:c0"], entities=[("e1", "Alice", "Old fact.")])
     )
     store.failures = 1
+    store.lock_batches.clear()
+    store.lock_releases.clear()
 
     calls: list[tuple[Any, list[dict[str, Any]]]] = []
     original = writer._rebuild_entity_rows
@@ -290,3 +496,9 @@ def test_replacement_rows_are_rebuilt_for_every_attempt():
         "the retry must recompute the same rows from unchanged state"
     )
     assert calls[1][0].entities["e1"]["descriptions"] == ["Old fact."]
+    assert len(store.lock_batches) == 2, (
+        "each attempt must acquire its own entity locks"
+    )
+    assert len(store.lock_releases) == 1, (
+        "only the successful attempt must release its locks"
+    )

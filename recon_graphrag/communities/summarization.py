@@ -20,6 +20,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from typing import Any, cast
 
 from tqdm.asyncio import tqdm_asyncio
 
@@ -42,6 +43,7 @@ from recon_graphrag.communities.reports import (
     validate_report_prompt_template,
 )
 from recon_graphrag.graphdb.base import GraphStore
+from recon_graphrag.graphdb.store_base import _GENERATION_UNGUARDED
 from recon_graphrag.llm.base import BaseLLM, LLMResponse
 from recon_graphrag.models.artifacts import CommunityReport, report_to_text
 from recon_graphrag.observability import run_scope, token_stage, usage_delta, usage_snapshot
@@ -53,6 +55,33 @@ from recon_graphrag.utils.tokens import (
 )
 
 logger = logging.getLogger(__name__)
+
+_REPORT_GENERATION_GUARD_METHODS = (
+    "_store_community_report_guarded",
+    "_mark_community_report_failed_guarded",
+    "_get_community_generations",
+)
+_EMBEDDING_GENERATION_GUARD_METHODS = (
+    "_get_unembedded_community_reports_for_embedding",
+    "_upsert_community_report_vectors_guarded",
+    "_mark_community_report_embedding_failed_guarded",
+)
+
+
+def _supports_report_generation_guards(store: object) -> bool:
+    """Return True when a store exposes every guarded report operation."""
+    return all(
+        callable(getattr(store, name, None))
+        for name in _REPORT_GENERATION_GUARD_METHODS
+    )
+
+
+def _supports_embedding_generation_guards(store: object) -> bool:
+    """Return True when a store exposes every guarded embedding operation."""
+    return all(
+        callable(getattr(store, name, None))
+        for name in _EMBEDDING_GENERATION_GUARD_METHODS
+    )
 
 
 @dataclass
@@ -73,7 +102,16 @@ class BuildStats:
 
 
 class CommunitySummarizer:
-    """Generate LLM reports for each community in the knowledge graph."""
+    """Generate LLM reports for each community in the knowledge graph.
+
+    ``CommunityPipeline`` binds the detection token with
+    ``_bind_community_generation``. Direct use without a bound token captures
+    one generation for each ``generate_all`` invocation before it reads the
+    communities. A reused summarizer captures again on its next direct call.
+    If the level does not report one generation, the invocation writes no
+    report. A custom store without the guarded operations keeps the public
+    unguarded path and logs one warning.
+    """
 
     def __init__(
         self,
@@ -104,6 +142,10 @@ class CommunitySummarizer:
         self.include_error_details = include_error_details
         validate_report_prompt_template(report_prompt)
         self._report_parser = ReportParser()
+        self._bound_generation: str | None | object = _GENERATION_UNGUARDED
+        self._generation_binding = "auto"
+        self._generation_changed = False
+        self._unguarded_warning_logged = False
 
     async def generate_all(
         self, level: int = 0, skip_existing: bool = False
@@ -123,11 +165,79 @@ class CommunitySummarizer:
         """
         with run_scope():
             before = usage_snapshot(self.llm)
-            communities = self.graph_store.get_communities(self.graph_name, level=level)
+            # Workers use the invocation-local flag. The instance flag stays
+            # for the pipeline's post-call check.
+            generation_changed = False
+            self._generation_changed = False
+
+            def _mark_generation_changed() -> None:
+                nonlocal generation_changed
+                generation_changed = True
+                self._generation_changed = True
+
+            supports_guards = _supports_report_generation_guards(
+                self.graph_store
+            )
+            observed_generations: list[str | None] | None = None
+            generation_read_error: Exception | None = None
+            capture_generation = (
+                self._generation_binding == "auto" and supports_guards
+            )
+            if capture_generation:
+                # Read the generation before the community list. A replacement
+                # between the two reads then leaves the bound token older than
+                # the list, so guarded writes reject the work.
+                try:
+                    observed_generations = await asyncio.to_thread(
+                        cast(Any, self.graph_store)._get_community_generations,
+                        self.graph_name,
+                        level,
+                    )
+                except Exception as error:
+                    generation_read_error = error
+
+            communities = await asyncio.to_thread(
+                self.graph_store.get_communities, self.graph_name, level=level
+            )
             if not communities:
                 logger.info("no communities found at level %s", level)
                 return [], BuildStats(level=level)
 
+            invocation_generation: str | None | object = _GENERATION_UNGUARDED
+            if self._generation_binding == "auto":
+                if not supports_guards:
+                    self._log_unguarded_once()
+                elif generation_read_error is not None:
+                    _mark_generation_changed()
+                    logger.error(
+                        "cannot capture a community generation for level %s: "
+                        "%s; no report is written",
+                        level,
+                        generation_read_error,
+                    )
+                    return [], BuildStats(level=level)
+                elif not observed_generations or len(observed_generations) != 1:
+                    _mark_generation_changed()
+                    logger.error(
+                        "cannot capture one community generation for level %s "
+                        "(observed %r); no report is written",
+                        level,
+                        observed_generations,
+                    )
+                    return [], BuildStats(level=level)
+                else:
+                    # Auto capture belongs to this invocation only. A reused
+                    # summarizer must observe the next hierarchy replacement.
+                    invocation_generation = observed_generations[0]
+            elif self._generation_binding == "bound":
+                invocation_generation = self._bound_generation
+                if not supports_guards:
+                    self._log_unguarded_once()
+
+            guarded = (
+                supports_guards
+                and invocation_generation is not _GENERATION_UNGUARDED
+            )
             start = time.monotonic()
             stats = BuildStats(level=level)
             outcomes: list[dict | None] = [None] * len(communities)
@@ -158,12 +268,21 @@ class CommunitySummarizer:
                 input_fingerprint: str | None = None
                 child_rows: list[dict] | None = None
                 if skip_existing:
-                    report_context = self._fetch_community_context_obj(cid, level)
-                    child_rows = self._fetch_child_report_rows(cid, level)
+                    report_context = await asyncio.to_thread(
+                        self._fetch_community_context_obj, cid, level
+                    )
+                    child_rows = await asyncio.to_thread(
+                        self._fetch_child_report_rows, cid, level
+                    )
                     input_fingerprint = self._report_input_fingerprint(
                         report_context, cid, level, child_rows=child_rows
                     )
-                    if self._has_existing_report(cid, level, input_fingerprint):
+                    if await asyncio.to_thread(
+                        self._has_existing_report,
+                        cid,
+                        level,
+                        input_fingerprint,
+                    ):
                         stats.skipped += 1
                         logger.debug("skipping community %s (report unchanged)", cid)
                         return None
@@ -190,7 +309,32 @@ class CommunitySummarizer:
                             input_fingerprint=input_fingerprint,
                         )
                     report_text = report_to_text(report)
-                    self.graph_store.store_community_report(report, self.graph_name)
+                    if guarded:
+                        accepted = await asyncio.to_thread(
+                            cast(
+                                Any, self.graph_store
+                            )._store_community_report_guarded,
+                            report,
+                            self.graph_name,
+                            expected_generation=invocation_generation,
+                        )
+                    else:
+                        await asyncio.to_thread(
+                            self.graph_store.store_community_report,
+                            report,
+                            self.graph_name,
+                        )
+                        accepted = True
+                    if not accepted:
+                        _mark_generation_changed()
+                        stats.failed += 1
+                        _record_error(
+                            cid,
+                            RuntimeError("stale generation"),
+                            "Community report storage rejected: the community "
+                            "generation changed.",
+                        )
+                        return None
                     stats.succeeded += 1
                     return {
                         "id": cid,
@@ -202,12 +346,27 @@ class CommunitySummarizer:
                     stats.failed += 1
                     _record_error(cid, e, "Community report generation or storage failed.")
                     with contextlib.suppress(Exception):
-                        self.graph_store.mark_community_report_failed(
-                            self.graph_name,
-                            cid,
-                            level,
-                            str(e),
-                        )
+                        if guarded:
+                            marked = await asyncio.to_thread(
+                                cast(
+                                    Any, self.graph_store
+                                )._mark_community_report_failed_guarded,
+                                self.graph_name,
+                                cid,
+                                level,
+                                str(e),
+                                expected_generation=invocation_generation,
+                            )
+                            if not marked:
+                                _mark_generation_changed()
+                        else:
+                            await asyncio.to_thread(
+                                self.graph_store.mark_community_report_failed,
+                                self.graph_name,
+                                cid,
+                                level,
+                                str(e),
+                            )
                     logger.warning("error reporting community %s: %s", cid, e)
                     return None
 
@@ -218,6 +377,8 @@ class CommunitySummarizer:
 
             async def _community_worker(bar) -> None:
                 for position, comm in pending_communities:
+                    if generation_changed:
+                        break
                     try:
                         outcomes[position] = await _process_one(comm)
                     except Exception as error:  # noqa: BLE001 - reported, not raised
@@ -229,6 +390,8 @@ class CommunitySummarizer:
                             "unexpected error reporting community: %s", error
                         )
                     bar.update(1)
+                    if generation_changed:
+                        break
 
             with tqdm_asyncio(
                 total=len(communities),
@@ -258,7 +421,33 @@ class CommunitySummarizer:
             stats.llm_calls = delta_totals.get("calls", 0)
             stats.input_tokens = delta_totals.get("input_tokens", 0)
             stats.output_tokens = delta_totals.get("output_tokens", 0)
+            self._generation_changed = generation_changed
             return results, stats
+
+    def _bind_community_generation(self, expected_generation: str | None) -> None:
+        """Bind the detection token for every report write in this summarizer."""
+        if expected_generation is _GENERATION_UNGUARDED:
+            raise ValueError(
+                "A bound generation must be a token or None, not the "
+                "unguarded sentinel."
+            )
+        self._bound_generation = expected_generation
+        self._generation_binding = "bound"
+
+    def _use_public_report_writes(self) -> None:
+        """Keep the public report writes without capturing a generation."""
+        self._generation_binding = "unguarded"
+
+    def _log_unguarded_once(self) -> None:
+        """Log one explicit notice for a store without generation guards."""
+        if self._unguarded_warning_logged:
+            return
+        self._unguarded_warning_logged = True
+        logger.warning(
+            "Community report writes are not generation-guarded for %s; "
+            "the public unguarded path is used.",
+            type(self.graph_store).__name__,
+        )
 
     def _overrides_generate_report(self) -> bool:
         """Return True when a subclass or instance replaced report generation."""
@@ -300,14 +489,24 @@ class CommunitySummarizer:
         Fetches context, builds a structured prompt, parses the LLM response,
         validates references, and attempts one repair on failure.
         """
-        context = context or self._fetch_community_context_obj(community_id, level)
+        context = (
+            await asyncio.to_thread(
+                self._fetch_community_context_obj, community_id, level
+            )
+            if context is None
+            else context
+        )
         child_rows: list[dict] | None = None
         if not input_fingerprint:
             # Fingerprinting needs child rows even for an empty context.
-            child_rows = self._fetch_child_report_rows(community_id, level)
+            child_rows = await asyncio.to_thread(
+                self._fetch_child_report_rows, community_id, level
+            )
         elif self.max_context_tokens is not None and (context.edges or context.entities):
             # Budgeted prompts need child rows; empty reports return first.
-            child_rows = self._fetch_child_report_rows(community_id, level)
+            child_rows = await asyncio.to_thread(
+                self._fetch_child_report_rows, community_id, level
+            )
         return await self._generate_report_prepared(
             community_id, level, context, input_fingerprint, child_rows
         )

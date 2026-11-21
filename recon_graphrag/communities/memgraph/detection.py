@@ -18,17 +18,26 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from recon_graphrag.graphdb._community_publication import (
+    new_community_generation_token,
+    replace_community_hierarchy,
+    verify_memgraph_community_generation_constraint,
+)
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.cypher import (
     escape_cypher_identifier,
 )
-from recon_graphrag.graphdb.store_base import QueryExecutor, replacement_transaction
+from recon_graphrag.graphdb.store_base import QueryExecutor
 
 DEFAULT_GRAPH_NAME = "entity-graph"
 
 
 class CommunityDetector:
     """Run MAGE Leiden community detection on the entity graph in Memgraph.
+
+    Detection requires the ``CommunityGeneration`` uniqueness constraint that
+    ``create_indexes()`` creates. Detection fails closed without that exact
+    constraint.
 
     random_seed is accepted for API symmetry with the Neo4j backend but is not
     used by MAGE, whose Leiden implementation does not expose a seed parameter.
@@ -78,15 +87,27 @@ class CommunityDetector:
            because MAGE does not expose a separate tolerance parameter.
         2. Normalize the returned community paths and build every community,
            membership, and parent row.
-        3. In one transaction: replace existing communities for this graph_name,
-           create Community nodes and IN_COMMUNITY relationships, then build the
+        3. In one transaction: publish this invocation's generation token,
+           replace existing communities for this graph_name, create Community
+           nodes and IN_COMMUNITY relationships with that token, then build the
            PARENT_COMMUNITY hierarchy between adjacent levels.
 
         Existing communities survive any failure before the replacement
-        transaction commits.
+        transaction commits. The invocation token is not returned here; use
+        ``_detect_with_generation`` when a caller needs it.
 
         Returns list of {community_id, level, entity_count, child_community_count}.
         """
+        stats, _ = self._detect_with_generation()
+        return stats
+
+    def _detect_with_generation(self) -> tuple[list[dict[str, Any]], str]:
+        """Run detection and return its stats with this invocation's token.
+
+        The token is minted for this invocation and never read back from the
+        graph. A failed detection returns no token and advances no generation.
+        """
+        token = new_community_generation_token()
         leiden_results = self._run_leiden()
         if not leiden_results:
             raise RuntimeError("Leiden returned no community assignments.")
@@ -95,8 +116,8 @@ class CommunityDetector:
         if not paths:
             raise RuntimeError("Leiden returned no community assignments.")
 
-        self._write_community_hierarchy(paths)
-        return self._get_community_stats()
+        stats = self._write_community_hierarchy(paths, token)
+        return stats, token
 
     def _cleanup_communities(self, executor=None):
         community_label = escape_cypher_identifier(self.community_label)
@@ -243,62 +264,84 @@ class CommunityDetector:
             paths[entity_id] = compact_path
         return paths
 
-    def _write_community_hierarchy(self, paths: dict[int, list[int]]):
+    def _write_community_hierarchy(
+        self, paths: dict[int, list[int]], token: str
+    ) -> list[dict[str, Any]]:
         community_rows, membership_rows, parent_rows = self._build_hierarchy_rows(paths)
+        return replace_community_hierarchy(
+            self.graph_store,
+            graph_name=self.graph_name,
+            token=token,
+            verify_constraint=verify_memgraph_community_generation_constraint,
+            write_hierarchy=lambda executor, generation: self._replace_community_rows(
+                executor,
+                community_rows,
+                membership_rows,
+                parent_rows,
+                generation,
+            ),
+            read_stats=self._get_community_stats,
+        )
 
+    def _replace_community_rows(
+        self,
+        executor: QueryExecutor,
+        community_rows: list[dict[str, Any]],
+        membership_rows: list[dict[str, Any]],
+        parent_rows: list[dict[str, Any]],
+        generation: str,
+    ) -> None:
         community_label = escape_cypher_identifier(self.community_label)
         entity_label = escape_cypher_identifier(self.entity_label)
 
-        executor: QueryExecutor
-        with replacement_transaction(self.graph_store) as executor:
-            self._cleanup_communities(executor)
+        self._cleanup_communities(executor)
+        executor.execute_query(
+            f"""
+            UNWIND $rows AS row
+            MERGE (c:{community_label} {{
+                graph_name: row.graph_name,
+                level: row.level,
+                id: row.community_id
+            }})
+            ON CREATE SET c.created = timestamp(), c.uid = row.uid
+            SET c.updated = timestamp(), c.uid = row.uid, c.generation = $generation
+            """,
+            {"rows": community_rows, "generation": generation},
+        )
+        executor.execute_query(
+            f"""
+            UNWIND $rows AS row
+            MATCH (e:{entity_label})
+            WHERE id(e) = row.entity_id
+            MATCH (c:{community_label} {{
+                graph_name: $graph_name,
+                level: row.level,
+                id: row.community_id
+            }})
+            MERGE (e)-[rel:IN_COMMUNITY]->(c)
+            ON CREATE SET rel.created = timestamp()
+            """,
+            {"rows": membership_rows, "graph_name": self.graph_name},
+        )
+        if parent_rows:
             executor.execute_query(
                 f"""
                 UNWIND $rows AS row
-                MERGE (c:{community_label} {{
-                    graph_name: row.graph_name,
-                    level: row.level,
-                    id: row.community_id
-                }})
-                ON CREATE SET c.created = timestamp(), c.uid = row.uid
-                SET c.updated = timestamp(), c.uid = row.uid
-                """,
-                {"rows": community_rows},
-            )
-            executor.execute_query(
-                f"""
-                UNWIND $rows AS row
-                MATCH (e:{entity_label})
-                WHERE id(e) = row.entity_id
-                MATCH (c:{community_label} {{
+                MATCH (child:{community_label} {{
                     graph_name: $graph_name,
-                    level: row.level,
-                    id: row.community_id
+                    id: row.child_id,
+                    level: row.child_level
                 }})
-                MERGE (e)-[rel:IN_COMMUNITY]->(c)
+                MATCH (parent:{community_label} {{
+                    graph_name: $graph_name,
+                    id: row.parent_id,
+                    level: row.parent_level
+                }})
+                MERGE (child)-[rel:PARENT_COMMUNITY]->(parent)
                 ON CREATE SET rel.created = timestamp()
                 """,
-                {"rows": membership_rows, "graph_name": self.graph_name},
+                {"rows": parent_rows, "graph_name": self.graph_name},
             )
-            if parent_rows:
-                executor.execute_query(
-                    f"""
-                    UNWIND $rows AS row
-                    MATCH (child:{community_label} {{
-                        graph_name: $graph_name,
-                        id: row.child_id,
-                        level: row.child_level
-                    }})
-                    MATCH (parent:{community_label} {{
-                        graph_name: $graph_name,
-                        id: row.parent_id,
-                        level: row.parent_level
-                    }})
-                    MERGE (child)-[rel:PARENT_COMMUNITY]->(parent)
-                    ON CREATE SET rel.created = timestamp()
-                    """,
-                    {"rows": parent_rows, "graph_name": self.graph_name},
-                )
 
     def _build_hierarchy_rows(
         self, paths: dict[int, list[int]]
@@ -381,7 +424,7 @@ class CommunityDetector:
 
         return community_rows, membership_rows, parent_rows
 
-    def _get_community_stats(self) -> list[dict[str, Any]]:
+    def _get_community_stats(self, executor=None) -> list[dict[str, Any]]:
         entity_label = escape_cypher_identifier(self.entity_label)
         community_label = escape_cypher_identifier(self.community_label)
         query = f"""
@@ -396,4 +439,6 @@ class CommunityDetector:
                child_community_count
         ORDER BY c.level, entity_count DESC, community_id
         """
-        return self.graph_store.execute_query(query, {"graph_name": self.graph_name})
+        return (executor or self.graph_store).execute_query(
+            query, {"graph_name": self.graph_name}
+        )

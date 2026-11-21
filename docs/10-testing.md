@@ -8,6 +8,7 @@ This guide explains how to run the Recon-GraphRAG test suite. It covers mandator
 The short version:
 
 - Run mandatory tests while developing: `pytest -m "not integration"`
+- Mandatory tests use fake or monkeypatched clients. They do not require the `[local-embeddings]` extra.
 - Run provider smoke tests when changing provider setup.
 - Run database tests when changing graph store behavior.
 - Run workflow tests when changing pipeline orchestration with deterministic fakes.
@@ -60,6 +61,7 @@ and E2E tests can incur costs. External-service failures can make results unstab
 | `tests/extraction/` | No | No | No | JSON parsing, schema validation, chunking, and graph document assembly. |
 | `tests/llm/` | No | No | No | LLM protocol and factory behavior using fake or monkeypatched clients. |
 | `tests/embeddings/` | No | No | No | Embedder protocol and factory behavior using fake or monkeypatched clients. |
+| `tests/test_packaging.py` | No | No | No | Package metadata, the base import boundary, and missing-extra guidance. |
 | `tests/graphdb/neo4j/test_neo4j_entity_resolution.py` | Fake only | Fake only | No | Neo4j entity-resolution strategies and APOC behavior. |
 | `tests/graphdb/neo4j/test_neo4j_index_manager.py` | No | No | No | Neo4j index manager and resolver-wrapper behavior. |
 | `tests/graphdb/neo4j/test_neo4j_store.py` | No | No | No | Neo4j store query construction using fake driver/session objects. |
@@ -78,6 +80,9 @@ and E2E tests can incur costs. External-service failures can make results unstab
 | `tests/integration/memgraph/test_memgraph_entity_resolution_integration.py` | Optional | Optional | Yes | The same entity-resolution scenarios against Memgraph. |
 | `tests/integration/neo4j/test_neo4j_community_detection_integration.py` | No | No | Yes | Weighted Leiden community detection through APOC/GDS. |
 | `tests/integration/memgraph/test_memgraph_community_detection_integration.py` | No | No | Yes | The same weighted Leiden scenario through MAGE. |
+| `tests/integration/neo4j/test_neo4j_community_publication_integration.py` | No | No | Yes | Concurrent Neo4j publication, exact layout consistency, rollback, and missing-constraint failure. |
+| `tests/integration/memgraph/test_memgraph_community_publication_integration.py` | No | No | Yes | The same publication scenarios against Memgraph. |
+| `tests/integration/test_community_report_freshness.py` | No | Fake only | Yes | Report vector refresh, model change, generation, and revision rejection using deterministic fake vectors. No provider calls. |
 | `tests/integration/neo4j/test_neo4j_store_smoke.py` | No | No | Yes | Scoped graph-document write/read checks against Neo4j. |
 | `tests/integration/test_smoke_full.py` | Yes | Yes | Yes | Synthetic corpus E2E smoke test against Neo4j and Memgraph. |
 | `tests/integration/test_stage_inspection.py` | Yes | Yes | Yes | Stage-by-stage inspection run: extraction, entity resolution, embeddings, communities, and retrieval, with per-stage observations printed. |
@@ -110,6 +115,8 @@ Meaning:
 | LLM extraction integration | Yes | No | No | Provider calls |
 | Store persistence smoke | No | No | Yes | Database only |
 | Community detection integration | No | No | Yes | Database only |
+| Community publication integration | No | No | Yes | Database only; requires APOC/GDS or MAGE |
+| Report vector freshness | No | Fake | Yes | Database only; fake vectors, no provider cost |
 | Entity resolution without AI flag | No | No | Yes | Database only |
 | Entity resolution with AI flag | Yes | Yes | Yes | Provider calls and database writes |
 | Deterministic workflow | Fake | Fake | Yes | Database only; no provider cost |
@@ -136,7 +143,7 @@ The selected provider variables must also be configured:
 | OpenAI embedder | `OPENAI_API_KEY`, `OPENAI_EMBED_MODEL` |
 | OpenRouter LLM | `OPENROUTER_API_KEY`, `OPENROUTER_LLM_MODEL` |
 | OpenRouter embedder | `OPENROUTER_API_KEY`, `OPENROUTER_EMBED_MODEL` |
-| Sentence-Transformers embedder | No provider credentials; the local model dependency must be installed |
+| Sentence-Transformers embedder | No provider credentials; install the `[local-embeddings]` extra |
 
 ### Optional OpenAI-compatible test settings
 
@@ -271,13 +278,20 @@ LLM_PROVIDER=openrouter RUN_PROVIDER_INTEGRATION_TESTS=1 pytest tests/integratio
 # Neo4j
 RUN_DATABASE_INTEGRATION_TESTS=1 pytest tests/integration/neo4j/test_neo4j_store_smoke.py -q
 RUN_DATABASE_INTEGRATION_TESTS=1 pytest tests/integration/neo4j/test_neo4j_community_detection_integration.py -q
+RUN_DATABASE_INTEGRATION_TESTS=1 pytest tests/integration/neo4j/test_neo4j_community_publication_integration.py -q
 RUN_DATABASE_INTEGRATION_TESTS=1 pytest tests/integration/neo4j/test_neo4j_entity_resolution_integration.py -q
 
 # Memgraph
 RUN_DATABASE_INTEGRATION_TESTS=1 pytest tests/integration/memgraph/test_memgraph_store_smoke.py -q
 RUN_DATABASE_INTEGRATION_TESTS=1 pytest tests/integration/memgraph/test_memgraph_community_detection_integration.py -q
+RUN_DATABASE_INTEGRATION_TESTS=1 pytest tests/integration/memgraph/test_memgraph_community_publication_integration.py -q
 RUN_DATABASE_INTEGRATION_TESTS=1 pytest tests/integration/memgraph/test_memgraph_entity_resolution_integration.py -q
+
+# Both backends: report vector freshness with fake embedders
+RUN_DATABASE_INTEGRATION_TESTS=1 pytest tests/integration/test_community_report_freshness.py -q
 ```
+
+The publication tests require APOC/GDS or MAGE and create the managed indexes in their fixtures. The freshness tests read the existing `community-report-embeddings` index dimension and fail with an explicit prerequisite message when the index is missing. They do not create or delete indexes. They use fake model identities and fake vectors, so they never call a live provider.
 
 ### Deterministic workflow (real database, fake AI)
 
