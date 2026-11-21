@@ -1,6 +1,7 @@
 """Tests for Neo4j entity resolution strategies."""
 
 import json
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -28,6 +29,10 @@ class FakeGraphStore:
             return self._rows
         return []
 
+    @contextmanager
+    def _transaction(self):
+        yield self
+
     def create_vector_index(self, **kwargs):
         pass
 
@@ -36,6 +41,70 @@ class FakeGraphStore:
 
     def upsert_vectors(self, **kwargs):
         pass
+
+
+def test_neo4j_merge_requires_transaction_support():
+    store = MagicMock(spec=["execute_query"])
+    resolver = _Neo4jEntityResolver(store)
+
+    assert resolver._merge_groups([], "name") == 0
+    with pytest.raises(RuntimeError, match=r"requires a store with _transaction\(\)"):
+        resolver._merge_groups([[MagicMock(), MagicMock()]], "name")
+
+    store.execute_query.assert_not_called()
+
+
+def test_neo4j_summary_failure_rolls_back_only_its_group():
+    from recon_graphrag.graphdb.entity_resolution import _EntityRecord
+
+    class Store(FakeGraphStore):
+        def __init__(self):
+            super().__init__()
+            self.committed = []
+            self.rolled_back = []
+
+        @contextmanager
+        def _transaction(self):
+            executor = FakeGraphStore()
+
+            def execute(query, parameters):
+                if "SET n.descriptions = $descriptions" in query:
+                    raise RuntimeError("summary write failed")
+                return executor.execute_query(query, parameters)
+
+            try:
+                yield MagicMock(execute_query=execute)
+            except RuntimeError:
+                self.rolled_back.append(executor.calls)
+                raise
+            else:
+                self.committed.append(executor.calls)
+
+    store = Store()
+    resolver = _Neo4jEntityResolver(store)
+    resolver._merge_summaries["b"] = {
+        "description": "Prepared summary",
+        "description_input_fingerprint": "fingerprint",
+        "description_summary_fallback": False,
+    }
+    groups = [
+        [
+            _EntityRecord(f"{key}:1", key, "g", "Person", f"{key} Smith", f"{key}smith"),
+            _EntityRecord(f"{key}:2", f"{key}-dup", "g", "Person", key, key),
+        ]
+        for key in ("a", "b")
+    ]
+
+    with pytest.raises(RuntimeError, match="summary write failed"):
+        resolver._merge_groups(groups, "name")
+
+    assert len(store.committed) == len(store.rolled_back) == 1
+    for calls, canonical in [(store.committed[0], "a"), (store.rolled_back[0], "b")]:
+        assert calls[0][1]["canonical_entity_id"] == canonical
+        assert "SET r.source_chunk_ids" in calls[1][0]
+    assert "SET n.aliases" in store.committed[0][2][0]
+    assert len(store.rolled_back[0]) == 2
+    assert all("SET " not in query for query, _ in store.calls)
 
 
 # _Neo4jEntityResolver — exact strategy

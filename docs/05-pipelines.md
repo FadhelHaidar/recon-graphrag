@@ -470,20 +470,22 @@ SDK bookkeeping changes do not invalidate summaries.
 The generic normalized-resolution dispatcher also forwards configured conflict properties.
 The pipeline continues to use the direct strategy methods.
 Entity resolution clears previous summary status after a merge.
-On Memgraph, each merge group runs in one database transaction.
+On Neo4j and Memgraph, each merge group runs in one database transaction.
 If a statement in the group fails, the transaction rolls back the complete group.
 Before the first merge, the resolver checks every group for foreign or unscoped incident relationships.
-That preflight does not make the complete resolution run atomic: a later group failure does not roll back earlier committed groups.
-The resolver re-reads current membership and ownership in each attempt.
-A group with a missing member or a changed entity identity is skipped.
+A later group failure does not roll back earlier committed groups.
+`merged_nodes` counts only nodes from committed groups.
+A backend resolver requires `_transaction()` support when it merges nodes.
+A custom store without this hook fails before mutation; it does not use autocommit.
+The Neo4j transaction includes provenance repair, summary updates, and aliases.
+It does not repair partial merges from earlier SDK versions.
+
+On Memgraph, the resolver re-reads current membership and ownership in each attempt.
+The resolver skips a group with a missing member or a changed entity identity.
 A skipped group contributes no merged nodes.
-`merged_nodes` counts only nodes from a committed group.
 The resolver retries deadlock, serialization, or unique-constraint aborts up to 3 times, with the writer policy.
 It does not retry validation failures or merge invariant failures.
 A residual relationship stops the plain `DELETE` and fails the group.
-Memgraph entity resolution requires a store with `_transaction()` support.
-A custom store without this hook fails before mutation; it does not use auto-commit.
-Neo4j merge behavior is unchanged.
 Relationship contributions retain each unique nonempty description from the document.
 Their counts, source chunks, frequency weights, and first-observation strength keep their existing meanings.
 

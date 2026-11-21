@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import AbstractContextManager
+from typing import cast
+
 from recon_graphrag.entity_text import entity_domain_type
 from recon_graphrag.graphdb._provenance import (
     build_uid,
@@ -15,6 +19,7 @@ from recon_graphrag.graphdb.entity_resolution import (
     _normalize_name,
 )
 from recon_graphrag.graphdb.cypher import escape_cypher_identifier
+from recon_graphrag.graphdb.store_base import QueryExecutor
 
 
 class _Neo4jEntityResolver(BaseEntityResolver):
@@ -79,157 +84,174 @@ class _Neo4jEntityResolver(BaseEntityResolver):
     def _merge_groups(
         self, groups: list[list[_EntityRecord]], resolve_property: str
     ) -> int:
+        if not groups:
+            return 0
+        transaction = getattr(self.graph_store, "_transaction", None)
+        if not callable(transaction):
+            raise RuntimeError(  # noqa: TRY004 - missing store capability
+                "Entity merging requires a store with _transaction() support; "
+                "no nodes were merged."
+            )
+
+        begin = cast(Callable[[], AbstractContextManager[QueryExecutor]], transaction)
         preflight_merge_ownership(self.graph_store, groups, "elementId")
         merged_nodes = 0
         for group in groups:
-            sorted_group = sorted(
-                group,
-                key=lambda e: len(e.resolve_value) if e.resolve_value else 0,
-                reverse=True,
-            )
-            node_ids = [e.node_id for e in sorted_group]
-            canonical_entity_id = sorted_group[0].entity_id if sorted_group else ""
-            canonical_key = _first_property_value(
-                sorted_group[0].properties.get("canonical_key")
-                if sorted_group
-                else None
-            )
-            canonical_readable_id = _first_property_value(
-                sorted_group[0].properties.get("human_readable_id")
-                if sorted_group
-                else None
-            )
-            canonical_name = sorted_group[0].resolve_value if sorted_group else ""
-            aliases = list(
-                {
-                    e.resolve_value
-                    for e in group
-                    if e.resolve_value and e.resolve_value != canonical_name
-                }
-            )
-
-            result = self.graph_store.execute_query(
-                f"""
-                MATCH (n)
-                WHERE elementId(n) IN $node_ids
-                OPTIONAL MATCH (n)-[r]-()
-                WITH n, r ORDER BY apoc.coll.indexOf($node_ids, elementId(n))
-                WITH collect(DISTINCT n) AS nodes, collect(DISTINCT r) AS rels
-                // APOC combine fails on empty arrays; null carries the same empty ownership.
-                FOREACH (n IN nodes |
-                    SET n.descriptions = CASE WHEN n.descriptions = [] THEN null ELSE n.descriptions END,
-                        n.description_sources = CASE WHEN n.description_sources = [] THEN null ELSE n.description_sources END)
-                FOREACH (r IN rels |
-                    SET r.descriptions = CASE WHEN r.descriptions = [] THEN null ELSE r.descriptions END,
-                        r.description_sources = CASE WHEN r.description_sources = [] THEN null ELSE r.description_sources END,
-                        r.strength_sources = CASE WHEN r.strength_sources = [] THEN null ELSE r.strength_sources END,
-                        r.source_chunk_ids = CASE WHEN r.source_chunk_ids = [] THEN null ELSE r.source_chunk_ids END)
-                WITH nodes
-                CALL apoc.refactor.mergeNodes(
-                    nodes,
-                    {{properties: {{uid: 'discard', id: 'discard', graph_name: 'discard', `.*`: 'combine'}},
-                      mergeRels: true}}
-                ) YIELD node
-                SET node.{escape_cypher_identifier(resolve_property)} = $canonical_name,
-                    node.id = $canonical_entity_id,
-                    node.uid = $canonical_uid,
-                    node.graph_name = $canonical_graph_name,
-                    node.canonical_key = coalesce($canonical_key, node.canonical_key),
-                    node.human_readable_id = coalesce($canonical_readable_id, node.human_readable_id),
-                    node.embedding = null,
-                    node.embedding_input_fingerprint = null
-                WITH node
-                // Claim objects are scalar IDs, not relationships rewired by APOC.
-                OPTIONAL MATCH (c:Claim {{graph_name: $canonical_graph_name}})
-                WHERE c.object_entity_id IN $losing_entity_ids
-                WITH node, collect(c) AS claims
-                FOREACH (c IN claims | SET c.object_entity_id = $canonical_entity_id)
-                RETURN elementId(node) AS merged_id
-                """,
-                {
-                    "node_ids": node_ids,
-                    "canonical_entity_id": canonical_entity_id,
-                    "losing_entity_ids": [e.entity_id for e in sorted_group[1:]],
-                    "canonical_uid": build_uid(sorted_group[0].graph_name, canonical_entity_id),
-                    "canonical_graph_name": sorted_group[0].graph_name,
-                    "canonical_key": canonical_key,
-                    "canonical_readable_id": canonical_readable_id,
-                    "canonical_name": canonical_name,
-                },
-            )
-            if result:
-                merged_nodes += len(node_ids)
-                merged_id = result[0].get("merged_id")
-                if merged_id:
-                    # APOC can unwrap singleton provenance on nodes and edges.
-                    self.graph_store.execute_query(
-                        """
-                        MATCH (n) WHERE elementId(n) = $node_id
-                        SET n.description_sources = apoc.convert.toList(n.description_sources)
-                        WITH n
-                        MATCH (n)-[r]-()
-                        SET r.source_chunk_ids = apoc.convert.toList(r.source_chunk_ids),
-                            r.description_sources = apoc.convert.toList(r.description_sources),
-                            r.strength_sources = apoc.convert.toList(r.strength_sources)
-                        WITH DISTINCT r,
-                             apoc.coll.toSet(apoc.convert.toList(r.source_chunk_ids)) AS chunks,
-                             apoc.coll.toSet(CASE
-                               WHEN r.descriptions IS NOT NULL
-                               THEN apoc.convert.toList(r.descriptions)
-                               ELSE apoc.convert.toList(r.description) END) AS descriptions
-                        SET r.source_chunk_ids = chunks,
-                            r.observation_count = size(chunks),
-                            r.weight = toFloat(size(chunks)),
-                            r.strength = apoc.coll.max(apoc.convert.toList(r.strength)),
-                            r.descriptions = descriptions,
-                            r.description = apoc.text.join(descriptions, '\n'),
-                            r.description_summary_status = null,
-                            r.description_input_fingerprint = null,
-                            r.description_summary_error = null,
-                            r.description_summary_updated = null,
-                            r.description_summary_fallback = true
-                        """,
-                        {"node_id": merged_id},
-                    )
-                summary = self._merge_summaries.get(canonical_entity_id)
-                if merged_id and summary:
-                    self.graph_store.execute_query(
-                        """
-                        MATCH (n) WHERE elementId(n) = $node_id
-                        SET n.descriptions = $descriptions,
-                            n.description = $description,
-                            n.embedding_input_fingerprint = null,
-                            n.observation_count = size($descriptions),
-                            n.description_input_fingerprint = null,
-                            n.description_summary_status = null,
-                            n.description_summary_error = null,
-                            n.description_summary_updated = null,
-                            n.description_summary_fallback = $fallback
-                        """,
-                        {
-                            "node_id": merged_id,
-                            "descriptions": list(dict.fromkeys(
-                                text for entity in sorted_group
-                                for text in raw_descriptions(entity.properties)
-                                if text
-                            )),
-                            "description": summary["description"],
-                            "fingerprint": summary["description_input_fingerprint"],
-                            "fallback": summary["description_summary_fallback"],
-                        },
-                    )
-                if aliases:
-                    if merged_id:
-                        try:
-                            self.graph_store.execute_query(
-                                """
-                                MATCH (n)
-                                WHERE elementId(n) = $node_id
-                                SET n.aliases = coalesce(n.aliases, []) + $aliases
-                                RETURN n
-                                """,
-                                {"node_id": merged_id, "aliases": aliases},
-                            )
-                        except Exception:
-                            pass
+            with begin() as executor:
+                merged = self._merge_group(group, resolve_property, executor)
+            if merged:
+                merged_nodes += len(group)
         return merged_nodes
+
+    def _merge_group(
+        self,
+        group: list[_EntityRecord],
+        resolve_property: str,
+        executor: QueryExecutor,
+    ) -> bool:
+        sorted_group = sorted(
+            group,
+            key=lambda e: len(e.resolve_value) if e.resolve_value else 0,
+            reverse=True,
+        )
+        node_ids = [e.node_id for e in sorted_group]
+        canonical_entity_id = sorted_group[0].entity_id if sorted_group else ""
+        canonical_key = _first_property_value(
+            sorted_group[0].properties.get("canonical_key")
+            if sorted_group
+            else None
+        )
+        canonical_readable_id = _first_property_value(
+            sorted_group[0].properties.get("human_readable_id")
+            if sorted_group
+            else None
+        )
+        canonical_name = sorted_group[0].resolve_value if sorted_group else ""
+        aliases = list(
+            {
+                e.resolve_value
+                for e in group
+                if e.resolve_value and e.resolve_value != canonical_name
+            }
+        )
+
+        result = executor.execute_query(
+            f"""
+            MATCH (n)
+            WHERE elementId(n) IN $node_ids
+            OPTIONAL MATCH (n)-[r]-()
+            WITH n, r ORDER BY apoc.coll.indexOf($node_ids, elementId(n))
+            WITH collect(DISTINCT n) AS nodes, collect(DISTINCT r) AS rels
+            // APOC combine fails on empty arrays; null carries the same empty ownership.
+            FOREACH (n IN nodes |
+                SET n.descriptions = CASE WHEN n.descriptions = [] THEN null ELSE n.descriptions END,
+                    n.description_sources = CASE WHEN n.description_sources = [] THEN null ELSE n.description_sources END)
+            FOREACH (r IN rels |
+                SET r.descriptions = CASE WHEN r.descriptions = [] THEN null ELSE r.descriptions END,
+                    r.description_sources = CASE WHEN r.description_sources = [] THEN null ELSE r.description_sources END,
+                    r.strength_sources = CASE WHEN r.strength_sources = [] THEN null ELSE r.strength_sources END,
+                    r.source_chunk_ids = CASE WHEN r.source_chunk_ids = [] THEN null ELSE r.source_chunk_ids END)
+            WITH nodes
+            CALL apoc.refactor.mergeNodes(
+                nodes,
+                {{properties: {{uid: 'discard', id: 'discard', graph_name: 'discard', `.*`: 'combine'}},
+                  mergeRels: true}}
+            ) YIELD node
+            SET node.{escape_cypher_identifier(resolve_property)} = $canonical_name,
+                node.id = $canonical_entity_id,
+                node.uid = $canonical_uid,
+                node.graph_name = $canonical_graph_name,
+                node.canonical_key = coalesce($canonical_key, node.canonical_key),
+                node.human_readable_id = coalesce($canonical_readable_id, node.human_readable_id),
+                node.embedding = null,
+                node.embedding_input_fingerprint = null
+            WITH node
+            // Claim objects are scalar IDs, not relationships rewired by APOC.
+            OPTIONAL MATCH (c:Claim {{graph_name: $canonical_graph_name}})
+            WHERE c.object_entity_id IN $losing_entity_ids
+            WITH node, collect(c) AS claims
+            FOREACH (c IN claims | SET c.object_entity_id = $canonical_entity_id)
+            RETURN elementId(node) AS merged_id
+            """,
+            {
+                "node_ids": node_ids,
+                "canonical_entity_id": canonical_entity_id,
+                "losing_entity_ids": [e.entity_id for e in sorted_group[1:]],
+                "canonical_uid": build_uid(sorted_group[0].graph_name, canonical_entity_id),
+                "canonical_graph_name": sorted_group[0].graph_name,
+                "canonical_key": canonical_key,
+                "canonical_readable_id": canonical_readable_id,
+                "canonical_name": canonical_name,
+            },
+        )
+        if result:
+            merged_id = result[0].get("merged_id")
+            if merged_id:
+                # APOC can unwrap singleton provenance on nodes and edges.
+                executor.execute_query(
+                    """
+                    MATCH (n) WHERE elementId(n) = $node_id
+                    SET n.description_sources = apoc.convert.toList(n.description_sources)
+                    WITH n
+                    MATCH (n)-[r]-()
+                    SET r.source_chunk_ids = apoc.convert.toList(r.source_chunk_ids),
+                        r.description_sources = apoc.convert.toList(r.description_sources),
+                        r.strength_sources = apoc.convert.toList(r.strength_sources)
+                    WITH DISTINCT r,
+                         apoc.coll.toSet(apoc.convert.toList(r.source_chunk_ids)) AS chunks,
+                         apoc.coll.toSet(CASE
+                           WHEN r.descriptions IS NOT NULL
+                           THEN apoc.convert.toList(r.descriptions)
+                           ELSE apoc.convert.toList(r.description) END) AS descriptions
+                    SET r.source_chunk_ids = chunks,
+                        r.observation_count = size(chunks),
+                        r.weight = toFloat(size(chunks)),
+                        r.strength = apoc.coll.max(apoc.convert.toList(r.strength)),
+                        r.descriptions = descriptions,
+                        r.description = apoc.text.join(descriptions, '\n'),
+                        r.description_summary_status = null,
+                        r.description_input_fingerprint = null,
+                        r.description_summary_error = null,
+                        r.description_summary_updated = null,
+                        r.description_summary_fallback = true
+                    """,
+                    {"node_id": merged_id},
+                )
+            summary = self._merge_summaries.get(canonical_entity_id)
+            if merged_id and summary:
+                executor.execute_query(
+                    """
+                    MATCH (n) WHERE elementId(n) = $node_id
+                    SET n.descriptions = $descriptions,
+                        n.description = $description,
+                        n.embedding_input_fingerprint = null,
+                        n.observation_count = size($descriptions),
+                        n.description_input_fingerprint = null,
+                        n.description_summary_status = null,
+                        n.description_summary_error = null,
+                        n.description_summary_updated = null,
+                        n.description_summary_fallback = $fallback
+                    """,
+                    {
+                        "node_id": merged_id,
+                        "descriptions": list(dict.fromkeys(
+                            text for entity in sorted_group
+                            for text in raw_descriptions(entity.properties)
+                            if text
+                        )),
+                        "description": summary["description"],
+                        "fingerprint": summary["description_input_fingerprint"],
+                        "fallback": summary["description_summary_fallback"],
+                    },
+                )
+            if merged_id and aliases:
+                executor.execute_query(
+                    """
+                    MATCH (n)
+                    WHERE elementId(n) = $node_id
+                    SET n.aliases = coalesce(n.aliases, []) + $aliases
+                    RETURN n
+                    """,
+                    {"node_id": merged_id, "aliases": aliases},
+                )
+        return bool(result)
