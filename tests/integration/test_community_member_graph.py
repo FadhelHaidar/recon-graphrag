@@ -18,9 +18,9 @@ def _seed(store, graph: str) -> None:
         CREATE (b:__Entity__:Person {graph_name:$g, id:'b', name:'Bob'})
         CREATE (c:__Entity__:Company {graph_name:$g, id:'c', name:'Acme'})
         CREATE (lone:__Entity__:Person {graph_name:$g, id:'lone', name:'Solo'})
-        CREATE (a)-[:WORKS_AT {weight:4.0, description:'leads'}]->(c)
-        CREATE (b)-[:ADVISES {weight:2.0}]->(c)
-        CREATE (c)-[:INVESTED_IN {weight:1.0}]->(a)
+        CREATE (a)-[:WORKS_AT {graph_name:$g, weight:4.0, description:'leads'}]->(c)
+        CREATE (b)-[:ADVISES {graph_name:$g, weight:2.0}]->(c)
+        CREATE (c)-[:INVESTED_IN {graph_name:$g, weight:1.0}]->(a)
         CREATE (parent:Community {graph_name:$g, id:'c0', level:0})
         CREATE (child:Community {graph_name:$g, id:'c1', level:1})
         CREATE (lonecomm:Community {graph_name:$g, id:'c9', level:0})
@@ -38,7 +38,7 @@ def _seed(store, graph: str) -> None:
         CREATE (x:__Entity__:Person {graph_name:$other, id:'a', name:'Other Alice'})
         CREATE (y:__Entity__:Person {graph_name:$other, id:'b', name:'Other Bob'})
         CREATE (comm:Community {graph_name:$other, id:'c0', level:0})
-        CREATE (x)-[:WORKS_AT]->(y)
+        CREATE (x)-[:WORKS_AT {graph_name:$other}]->(y)
         CREATE (x)-[:IN_COMMUNITY]->(comm)
         """,
         {"other": graph + "-other"},

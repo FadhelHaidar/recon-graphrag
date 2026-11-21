@@ -32,8 +32,8 @@ def context_graph(request, degree):
             MATCH (seed:Person {graph_name:$g}) WHERE seed.id <> 'isolated'
             UNWIND range(1, $degree) AS i
             CREATE (other:__Entity__:Person {graph_name:$g, id:seed.id + toString(i), name:'neighbor'})
-            CREATE (seed)-[:KNOWS {weight:i}]->(other)
-            CREATE (other)-[:KNOWS {weight:i}]->(seed)
+            CREATE (seed)-[:KNOWS {graph_name:$g, weight:i}]->(other)
+            CREATE (other)-[:KNOWS {graph_name:$g, weight:i}]->(seed)
             CREATE (chunk:Chunk {graph_name:$g, id:seed.id + ':chunk:' + toString(i), text:$text})
             CREATE (chunk)-[:FROM_CHUNK]->(seed)
             CREATE (chunk)-[:FROM_CHUNK]->(seed)

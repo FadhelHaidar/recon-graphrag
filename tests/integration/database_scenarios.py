@@ -135,8 +135,8 @@ async def assert_resolution_keeps_list_source_chunk_ids(
         CREATE (c:__Entity__:Quote {
             id: $c, graph_name: $g, name: 'Q009', description: ''
         })
-        CREATE (a)-[:OFFERED {source_chunk_ids: ['chunk-1']}]->(c)
-        CREATE (b)-[:OFFERED {source_chunk_ids: ['chunk-1']}]->(c)
+        CREATE (a)-[:OFFERED {graph_name: $g, source_chunk_ids: ['chunk-1']}]->(c)
+        CREATE (b)-[:OFFERED {graph_name: $g, source_chunk_ids: ['chunk-1']}]->(c)
         """,
         {
             "a": f"{graph_name}:acme-a",
