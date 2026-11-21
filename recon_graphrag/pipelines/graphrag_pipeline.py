@@ -34,8 +34,8 @@ from recon_graphrag.extraction.prompts import SchemaPromptBuilder
 from recon_graphrag.extraction.schema import GraphSchema, NodeType
 from recon_graphrag.extraction.structured import (
     RowMapping,
+    _open_excel_worksheet,
     iter_csv,
-    iter_excel,
     iter_sql,
     row_text,
     rows_to_chunks_and_extractions,
@@ -60,6 +60,14 @@ from recon_graphrag.utils.tokens import TiktokenTokenCounter, TokenCounter
 logger = logging.getLogger(__name__)
 # Default tiktoken encoding for token-based chunking (not a secret).
 _DEFAULT_CHUNK_ENCODING = "cl100k_base"
+
+
+class _FileMetadata(dict):
+    """Carry a file wrapper's default document ID outside the metadata mapping."""
+
+    def __init__(self, metadata: dict, document_id: str) -> None:
+        super().__init__(metadata)
+        self.default_document_id = document_id
 
 
 def _extraction_diagnostic(error: Exception) -> str:
@@ -499,6 +507,12 @@ class GraphBuilderPipeline:
         self._require_concurrency(extraction_concurrency)
         mapping.validate()
         rows = [dict(row) for row in rows]
+        file_document_id = (
+            metadata.default_document_id
+            if isinstance(metadata, _FileMetadata)
+            and not metadata.get("document_id")
+            else None
+        )
         metadata = metadata or {}
         mapping_schema = mapping.to_schema()
         llm_schema = extraction_schema or mapping_schema
@@ -515,7 +529,9 @@ class GraphBuilderPipeline:
 
         with run_scope():
             text = "\n\n".join(row_text(row) for row in rows)
-            document_id = self._make_document_id(text=text, metadata=metadata)
+            document_id = file_document_id or self._make_document_id(
+                text=text, metadata=metadata
+            )
             text_hash = self._hash_text(text)
             logger.info(
                 "graph build start from rows: document_id=%s rows=%s",
@@ -586,7 +602,7 @@ class GraphBuilderPipeline:
         **row_kwargs: Any,
     ) -> dict:
         """Build knowledge graph from a CSV file via a RowMapping."""
-        metadata = {"source": Path(path).name, **(metadata or {})}
+        metadata = self._file_metadata(path, metadata)
         return await self.build_from_rows(
             iter_csv(path, encoding=encoding), mapping, metadata, **row_kwargs
         )
@@ -601,9 +617,11 @@ class GraphBuilderPipeline:
         **row_kwargs: Any,
     ) -> dict:
         """Build knowledge graph from an Excel worksheet (requires openpyxl)."""
-        metadata = {"source": Path(path).name, **(metadata or {})}
+        with _open_excel_worksheet(path, sheet) as (worksheet_title, rows):
+            materialized_rows = list(rows)
+        metadata = self._file_metadata(path, metadata, worksheet_title)
         return await self.build_from_rows(
-            iter_excel(path, sheet=sheet), mapping, metadata, **row_kwargs
+            materialized_rows, mapping, metadata, **row_kwargs
         )
 
     async def build_from_sql(
@@ -1145,6 +1163,28 @@ class GraphBuilderPipeline:
 
     def _hash_text(self, text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def _file_document_id(
+        self, path: str | Path, worksheet: str | None = None
+    ) -> str:
+        """Hash the canonical file path and actual worksheet title."""
+        identity = str(Path(path).resolve())
+        if worksheet is not None:
+            # A NUL cannot occur in a path or worksheet title.
+            identity = f"{identity}\0{worksheet}"
+        return f"doc:{self._hash_text(identity)[:16]}"
+
+    def _file_metadata(
+        self, path: str | Path, metadata: dict | None, worksheet: str | None = None
+    ) -> dict:
+        """Keep source readable; wrap a default file identity without a key."""
+        provided = metadata or {}
+        result = {"source": Path(path).name, **provided}
+        if not provided.get("document_id") and "source" not in provided:
+            return _FileMetadata(
+                result, self._file_document_id(path, worksheet)
+            )
+        return result
 
     def _make_document_id(self, text: str, metadata: dict) -> str:
         explicit = metadata.get("document_id")

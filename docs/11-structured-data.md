@@ -51,7 +51,8 @@ Reads with stdlib `csv.DictReader` — the header row becomes the dict keys, and
 every cell arrives as a string (declare `types` for anything numeric). The
 default `utf-8-sig` encoding transparently strips the BOM that Excel adds to
 CSV exports. Extra `csv.DictReader` format params can be passed through
-`iter_csv` if you feed `build_from_rows` yourself.
+`iter_csv` if you feed `build_from_rows` yourself. The default document ID
+hashes the canonical file path.
 
 ### `build_from_excel(path, mapping, *, sheet=None, ...)`
 
@@ -59,7 +60,8 @@ Requires the optional dependency: `pip install recon-graphrag[excel]`
 (openpyxl). The first row of the worksheet is the header; `sheet` selects a
 worksheet by name (default: the active one). Cells keep their Excel types —
 numbers arrive as `int`/`float` and dates as `datetime`, which the type
-coercion passes through unchanged.
+coercion passes through unchanged. The default document ID hashes the canonical
+path and the actual selected worksheet title.
 
 ### `build_from_sql(connection, query, mapping, *, params=None, ...)`
 
@@ -100,11 +102,18 @@ await pipeline.build_from_rows(list_of_dicts, mapping, metadata={"source": "tick
 ```
 
 **Document identity:** the CSV/Excel wrappers set `metadata["source"]` to the
-file name, which produces a stable, collision-resistant source hash as the
-document ID. Re-runs replace that document's contribution, not just its Document
-node. For `build_from_sql`/`build_from_rows`, pass `metadata={"source": ...}` or
-an explicit `metadata["document_id"]` yourself — otherwise the ID falls back to
-a content hash and changes whenever the data does.
+file name. They derive the default `document_id` from the canonical file path.
+Excel also includes the actual selected worksheet title. Re-runs with the same
+path and worksheet replace that document's contribution, not just its Document
+node. Passing the active worksheet name explicitly gives the same ID as the
+default selection. A truthy explicit `metadata["document_id"]` overrides the
+default. A truthy explicit `metadata["source"]` keeps its source-derived ID.
+For `build_from_sql`/`build_from_rows`, pass `metadata={"source": ...}` or an
+explicit `metadata["document_id"]` yourself — otherwise the ID falls back to a
+content hash and changes whenever the data does. The SDK does not migrate old
+IDs. A moved, renamed, or copied file gets a new ID. A new import can create a
+duplicate document. To replace a legacy file-name-derived record, pass its old
+ID as `document_id`. For portable ingestion, pass a stable logical ID.
 
 ---
 
@@ -384,8 +393,8 @@ remains searchable with local/DRIFT search.
 
 | Parameter | Methods | Description |
 | --- | --- | --- |
-| `mapping` | all | The `RowMapping`. Validated up front; a bad mapping raises before any work. |
-| `metadata` | all | Document-level metadata. Set `source` for a stable document id. CSV/Excel wrappers default it to the file name. |
+| `mapping` | all | The `RowMapping`. Validation runs before extraction and writes. `build_from_excel` reads the selected worksheet before validation. |
+| `metadata` | all | Document-level metadata. A truthy `document_id` sets identity. A truthy `source` keeps its source-derived ID. CSV/Excel wrappers default `source` to the file name and derive a path-based ID. |
 | `extraction_schema` | all | Schema for the text-column LLM pass. Defaults to `mapping.to_schema()`. |
 | `extraction_concurrency` | all | Parallel LLM passes over rows (semaphore + progress bar). Defaults to `5`. |
 | `max_gleanings` | all | Follow-up extraction loops per row, same as the text pipeline. Defaults to `1`. |
@@ -552,8 +561,9 @@ business keys, not opaque chunk ids.
 
 ### 8. Re-running
 
-Run the same ingest again after the CSV changes: the exact file-name `source`
-keeps `document_id` stable. The shared writer replaces that document's
+Run the same ingest again after the CSV changes: the same canonical path and
+worksheet keep `document_id` stable. A moved or renamed file gets a new ID and
+can create a duplicate document. The shared writer replaces that document's
 contribution, including removed rows/chunks, evidence, claims, descriptions and
 relationship observations; other documents' contributions survive. Replays do
 not inflate observation counts. Properties still use the existing update rules;

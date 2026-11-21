@@ -242,6 +242,10 @@ How it works:
   fields as disambiguation context.
 - A table with no `text_columns`, `entity_resolution_strategy="normalized"`
   (default), and `summarize_descriptions=False` ingests with **zero LLM calls**.
+- CSV and Excel wrappers derive a default document ID from the canonical file
+  path. Excel also includes the actual selected worksheet title. `source`
+  remains the file name. See
+  [Document replacement and legacy graphs](#document-replacement-and-legacy-graphs).
 
 ### `GraphBuilderPipeline` key parameters
 
@@ -454,6 +458,8 @@ The writer recomputes relationship chunk counts, weights, and maximum strength f
 Shared evidence and descriptions remain. The writer deletes only unreferenced entities and relationships without surviving evidence.
 
 Use stable `metadata["document_id"]` to identify updates explicitly. Otherwise the ID hashes the exact source/title, or the text when neither is supplied. Changing text without stable source/ID metadata creates a separate document; it cannot be recognized as a replacement automatically. Replacing the same ID in another graph is independent.
+
+CSV and Excel wrappers derive a default document ID from the canonical file path. Excel also includes the actual selected worksheet title. The ID is a hash, and `source` remains the file name. A truthy explicit `metadata["document_id"]` overrides the default. A truthy explicit `metadata["source"]` keeps its source-derived ID. The SDK does not migrate old IDs. A moved, renamed, or copied file gets a new ID. A new import can create a duplicate document. Pass the old ID as `document_id` to replace a legacy record. Pass a stable logical `document_id` for portable ingestion.
 
 Description ownership (`description_sources`) and optional relationship strength ownership (`strength_sources`) are internal flat lists of JSON-encoded contribution records, compatible with both databases. Do not supply these fields. If legacy descriptions or strength have unknown ownership, the writer raises a migration diagnostic before writing. Identical text is not ownership evidence. Rebuild the affected documents/graph from their sources through the current writer; index creation alone cannot reconstruct ownership. Already mismerged identities also require rebuilding.
 

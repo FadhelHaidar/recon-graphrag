@@ -2,6 +2,7 @@
 
 import hashlib
 import sqlite3
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -23,6 +24,28 @@ from tests.pipelines.test_graph_builder import FakeGraphStore, RealWriterFakeGra
 
 def _hashed_doc_id(source):
     return "doc:" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+
+
+def _file_doc_id(path, sheet=None):
+    identity = str(Path(path).resolve())
+    if sheet is not None:
+        identity += f"\x00{sheet}"
+    return _hashed_doc_id(identity)
+
+
+def _write_orders(
+    path,
+    order_id="O-1",
+    supplier_name="Acme Corp",
+    product_name="Widget",
+    price="9.99",
+):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "order_id,supplier_name,product_name,price\n"
+        f"{order_id},{supplier_name},{product_name},{price}\n",
+        encoding="utf-8",
+    )
 
 
 ROWS = [
@@ -267,7 +290,7 @@ async def test_build_from_csv_and_sql(tmp_path, mapping, fake_writer):
         encoding="utf-8",
     )
     result = await pipeline.build_from_csv(path, mapping, finalize=False)
-    assert result["extraction"]["document_id"] == _hashed_doc_id("orders.csv")
+    assert result["extraction"]["document_id"] == _file_doc_id(path)
     assert result["extraction"]["chunks"] == 1
 
     connection = sqlite3.connect(":memory:")
@@ -284,6 +307,264 @@ async def test_build_from_csv_and_sql(tmp_path, mapping, fake_writer):
     doc = fake_writer.write_graph_document.call_args.args[0]
     product = next(e for e in doc.entities if e.canonical_key == "Product:Widget")
     assert product.properties["unit_price"] == 9.99  # already-typed value passes through
+
+
+@pytest.mark.asyncio
+async def test_build_from_csv_default_identity_uses_canonical_path(
+    tmp_path, mapping, fake_writer
+):
+    pipeline = _make_pipeline(MagicMock(), fake_writer)
+    first = tmp_path / "first" / "orders.csv"
+    second = tmp_path / "second" / "orders.csv"
+    _write_orders(first)
+    _write_orders(second, order_id="O-2", supplier_name="Globex", product_name="Gadget")
+
+    first_id = (
+        await pipeline.build_from_csv(first, mapping, finalize=False)
+    )["extraction"]["document_id"]
+    second_id = (
+        await pipeline.build_from_csv(second, mapping, finalize=False)
+    )["extraction"]["document_id"]
+    repeat_id = (
+        await pipeline.build_from_csv(first, mapping, finalize=False)
+    )["extraction"]["document_id"]
+
+    assert first_id == _file_doc_id(first)
+    assert second_id == _file_doc_id(second)
+    assert repeat_id == first_id
+    assert first_id != second_id
+
+    docs = [call.args[0] for call in fake_writer.write_graph_document.call_args_list]
+    assert [doc.document.metadata for doc in docs] == [
+        {"source": "orders.csv"}
+    ] * 3
+    assert all(str(tmp_path) not in repr(doc.document.metadata) for doc in docs)
+    assert "_file_document_id" not in docs[0].document.metadata
+    assert "_file_document_id" not in docs[0].chunks[0].metadata
+    assert docs[0].chunks[0].id == f"{first_id}:row:0"
+    assert docs[2].chunks[0].id == f"{first_id}:row:0"
+
+
+@pytest.mark.asyncio
+async def test_build_from_csv_moved_path_gets_new_identity(
+    tmp_path, mapping, fake_writer
+):
+    pipeline = _make_pipeline(MagicMock(), fake_writer)
+    original = tmp_path / "orders.csv"
+    _write_orders(original)
+    original_id = (
+        await pipeline.build_from_csv(original, mapping, finalize=False)
+    )["extraction"]["document_id"]
+
+    moved = tmp_path / "archive" / "orders.csv"
+    moved.parent.mkdir()
+    original.rename(moved)
+    moved_id = (
+        await pipeline.build_from_csv(moved, mapping, finalize=False)
+    )["extraction"]["document_id"]
+
+    assert moved_id == _file_doc_id(moved)
+    assert moved_id != original_id
+
+
+class _RecordingWriter:
+    def __init__(self):
+        self.documents = {}
+
+    def write_graph_document(self, graph_document):
+        self.documents[graph_document.document.id] = graph_document
+        return {
+            "documents": 1,
+            "chunks": len(graph_document.chunks),
+            "entities": len(graph_document.entities),
+            "relationships": len(graph_document.relationships),
+        }
+
+
+@pytest.mark.asyncio
+async def test_build_from_csv_update_isolates_same_basename_sources(tmp_path, mapping):
+    writer = _RecordingWriter()
+    pipeline = _make_pipeline(MagicMock(), writer)
+    first = tmp_path / "first" / "orders.csv"
+    second = tmp_path / "second" / "orders.csv"
+    _write_orders(first, product_name="Widget")
+    _write_orders(second, order_id="O-2", supplier_name="Globex", product_name="Gadget")
+
+    await pipeline.build_from_csv(first, mapping, finalize=False)
+    await pipeline.build_from_csv(second, mapping, finalize=False)
+    _write_orders(first, product_name="Widget Mark II")
+    await pipeline.build_from_csv(first, mapping, finalize=False)
+
+    first_id = _file_doc_id(first)
+    second_id = _file_doc_id(second)
+    assert set(writer.documents) == {first_id, second_id}
+    first_products = {
+        entity.canonical_key for entity in writer.documents[first_id].entities
+        if entity.type == "Product"
+    }
+    second_products = {
+        entity.canonical_key for entity in writer.documents[second_id].entities
+        if entity.type == "Product"
+    }
+    assert first_products == {"Product:Widget Mark II"}
+    assert second_products == {"Product:Gadget"}
+    assert writer.documents[second_id].chunks[0].id == f"{second_id}:row:0"
+
+
+@pytest.mark.asyncio
+async def test_build_from_csv_explicit_identity_and_source_overrides(
+    tmp_path, mapping, fake_writer
+):
+    pipeline = _make_pipeline(MagicMock(), fake_writer)
+    path = tmp_path / "orders.csv"
+    _write_orders(path)
+    legacy_id = _hashed_doc_id("orders.csv")
+
+    result = await pipeline.build_from_csv(
+        path, mapping, metadata={"document_id": legacy_id}, finalize=False
+    )
+    assert result["extraction"]["document_id"] == legacy_id
+    doc = fake_writer.write_graph_document.call_args.args[0]
+    assert doc.document.metadata == {
+        "document_id": legacy_id,
+        "source": "orders.csv",
+    }
+    assert doc.chunks[0].id == f"{legacy_id}:row:0"
+
+    result = await pipeline.build_from_csv(
+        path, mapping, metadata={"source": "logical-orders"}, finalize=False
+    )
+    assert result["extraction"]["document_id"] == _hashed_doc_id("logical-orders")
+    doc = fake_writer.write_graph_document.call_args.args[0]
+    assert doc.document.metadata == {"source": "logical-orders"}
+    assert doc.chunks[0].id.startswith(_hashed_doc_id("logical-orders") + ":row:")
+
+
+@pytest.mark.asyncio
+async def test_user_private_file_document_id_metadata_is_ordinary(
+    tmp_path, mapping, fake_writer
+):
+    pipeline = _make_pipeline(MagicMock(), fake_writer)
+    path = tmp_path / "orders.csv"
+    _write_orders(path)
+
+    metadata = {"_file_document_id": "doc:user-value"}
+    original = dict(metadata)
+    result = await pipeline.build_from_csv(
+        path, mapping, metadata=metadata, finalize=False
+    )
+    assert metadata == original
+    assert result["extraction"]["document_id"] == _file_doc_id(path)
+    doc = fake_writer.write_graph_document.call_args.args[0]
+    assert doc.document.metadata == {
+        "source": "orders.csv",
+        "_file_document_id": "doc:user-value",
+    }
+
+    explicit = {
+        "document_id": "doc:explicit",
+        "_file_document_id": "doc:user-value",
+    }
+    explicit_original = dict(explicit)
+    result = await pipeline.build_from_csv(
+        path, mapping, metadata=explicit, finalize=False
+    )
+    assert explicit == explicit_original
+    assert result["extraction"]["document_id"] == "doc:explicit"
+    doc = fake_writer.write_graph_document.call_args.args[0]
+    assert doc.document.metadata == {
+        "source": "orders.csv",
+        "document_id": "doc:explicit",
+        "_file_document_id": "doc:user-value",
+    }
+
+
+@pytest.mark.asyncio
+async def test_rows_and_sql_do_not_mutate_or_honor_private_metadata(
+    mapping, fake_writer
+):
+    pipeline = _make_pipeline(MagicMock(), fake_writer)
+    metadata = {
+        "source": "rows",
+        "document_id": "doc:explicit",
+        "_file_document_id": "doc:user-value",
+    }
+    original = dict(metadata)
+    result = await pipeline.build_from_rows(
+        [ROWS[1]], mapping, metadata, finalize=False
+    )
+    assert metadata == original
+    assert result["extraction"]["document_id"] == "doc:explicit"
+    doc = fake_writer.write_graph_document.call_args.args[0]
+    assert doc.document.metadata == original
+
+    connection = sqlite3.connect(":memory:")
+    connection.execute(
+        "CREATE TABLE orders (order_id TEXT, supplier_name TEXT, product_name TEXT, price REAL)"
+    )
+    connection.execute("INSERT INTO orders VALUES ('O-1', 'Acme Corp', 'Widget', 9.99)")
+    sql_metadata = {"source": "sql-orders", "_file_document_id": "doc:sql-value"}
+    sql_original = dict(sql_metadata)
+    result = await pipeline.build_from_sql(
+        connection,
+        "SELECT * FROM orders",
+        mapping,
+        metadata=sql_metadata,
+        finalize=False,
+    )
+    connection.close()
+    assert sql_metadata == sql_original
+    assert result["extraction"]["document_id"] == _hashed_doc_id("sql-orders")
+    doc = fake_writer.write_graph_document.call_args.args[0]
+    assert doc.document.metadata == sql_original
+
+
+@pytest.mark.asyncio
+async def test_build_from_excel_identity_uses_actual_selected_worksheet(
+    tmp_path, mapping, fake_writer
+):
+    openpyxl = pytest.importorskip("openpyxl")
+    path = tmp_path / "orders.xlsx"
+    workbook = openpyxl.Workbook()
+    first = workbook.active
+    first.title = "First"
+    first.append(["order_id", "supplier_name", "product_name", "price"])
+    first.append(["O-1", "Acme Corp", "Widget", "9.99"])
+    second = workbook.create_sheet("Second")
+    second.append(["order_id", "supplier_name", "product_name", "price"])
+    second.append(["O-2", "Globex", "Gadget", "1.50"])
+    workbook.save(path)
+
+    pipeline = _make_pipeline(MagicMock(), fake_writer)
+    default_id = (
+        await pipeline.build_from_excel(path, mapping, finalize=False)
+    )["extraction"]["document_id"]
+    first_id = (
+        await pipeline.build_from_excel(
+            path, mapping, sheet="First", finalize=False
+        )
+    )["extraction"]["document_id"]
+    second_id = (
+        await pipeline.build_from_excel(
+            path, mapping, sheet="Second", finalize=False
+        )
+    )["extraction"]["document_id"]
+
+    assert default_id == _file_doc_id(path, "First")
+    assert first_id == default_id
+    assert second_id == _file_doc_id(path, "Second")
+    assert second_id != default_id
+    docs = [call.args[0] for call in fake_writer.write_graph_document.call_args_list]
+    assert [doc.document.metadata for doc in docs] == [
+        {"source": "orders.xlsx"}
+    ] * 3
+
+    workbook.active = 1
+    workbook.save(path)
+    active_id = (
+        await pipeline.build_from_excel(path, mapping, finalize=False)
+    )["extraction"]["document_id"]
+    assert active_id == second_id
 
 
 @pytest.mark.asyncio
