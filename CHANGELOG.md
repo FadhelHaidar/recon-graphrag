@@ -18,6 +18,13 @@
   label or `graph_name` filters are applied and trim to `top_k` after the
   filter, matching Memgraph behavior; result shape is unchanged.
 
+## [0.14.7](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.14.6...v0.14.7) (2026-11-21)
+
+
+### Bug Fixes
+
+* make Neo4j merges atomic and scope DRIFT all-level evidence ([#129](https://github.com/FadhelHaidar/recon-graphrag/issues/129)) ([7b57ca0](https://github.com/FadhelHaidar/recon-graphrag/commit/7b57ca034702fbea7a8149f225b953cae6c15b7d))
+
 ## [0.14.6](https://github.com/FadhelHaidar/recon-graphrag/compare/v0.14.5...v0.14.6) (2026-11-21)
 
 
