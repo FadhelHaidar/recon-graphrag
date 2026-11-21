@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import re
 from typing import Any, cast
 
 import pytest
@@ -138,6 +139,147 @@ class NoReportSearchStore(FakeGraphStore):
         raise RuntimeError("No such index")
 
 
+def report_row(report_id, level, target_id, text=None):
+    """Community report row with one entity reference for citation tests."""
+    return {
+        "id": report_id,
+        "level": level,
+        "report_text": text or f"Evidence for {target_id}.",
+        "report_json": json.dumps({
+            "findings": [{
+                "references": [
+                    {"target_id": target_id, "target_type": "entity"}
+                ]
+            }]
+        }),
+    }
+
+
+def community_members(*entity_ids):
+    return {
+        "members": [
+            {"id": entity_id, "name": entity_id} for entity_id in entity_ids
+        ],
+        "edges": [],
+        "member_count": len(entity_ids),
+        "edge_count": 0,
+    }
+
+
+def citation_row(chunk_id):
+    return {
+        "document_id": f"doc:{chunk_id}",
+        "chunk_id": chunk_id,
+        "document_name": f"Document {chunk_id}",
+        "excerpt": f"Excerpt {chunk_id}",
+    }
+
+
+class ReportSelectionStore(FakeGraphStore):
+    """Fake store exposing report rows, member graphs, and chunk citations."""
+
+    def __init__(self, reports):
+        super().__init__(reports=reports)
+        self.report_searches: list[dict] = []
+        self.expansion_calls: list[tuple[str, str, int, int]] = []
+        self.member_rows: dict[tuple[str, int], dict] = {}
+        self.entity_chunks: dict[str, str] = {}
+        self.chunk_requests: list[list[str]] = []
+
+    def vector_search_community_reports(
+        self, query_vector, graph_name, top_k=3, level=None
+    ):
+        self.report_searches.append({
+            "graph_name": graph_name,
+            "top_k": top_k,
+            "level": level,
+        })
+        return list(self._reports[:top_k])
+
+    def fetch_community_member_graph(
+        self, graph_name, community_id, level, member_limit=25
+    ):
+        self.expansion_calls.append((graph_name, community_id, level, member_limit))
+        row = self.member_rows.get((community_id, level), community_members())
+        return [row]
+
+    def fetch_entity_context(
+        self, matches, retrieval_query=None, query_params=None, mode="local", graph_name=None
+    ):
+        return []
+
+    def execute_query(self, query, parameters=None):
+        parameters = parameters or {}
+        self.calls.append(
+            ("execute_query", {"query": query.strip()[:60], "params": parameters})
+        )
+        if "RETURN max(c.level) AS level" in query:
+            return [{"level": 2}]
+        if "UNWIND $entity_ids AS eid" in query:
+            return [
+                {"chunk_id": self.entity_chunks[entity_id]}
+                for entity_id in parameters.get("entity_ids", [])
+                if entity_id in self.entity_chunks
+            ]
+        return []
+
+    def resolve_chunk_citations(self, graph_name, chunk_ids):
+        self.chunk_requests.append(list(chunk_ids))
+        return [citation_row(chunk_id) for chunk_id in chunk_ids]
+
+
+class HydeReportStore(ReportSelectionStore):
+    """Returns one report batch per community-report search."""
+
+    def __init__(self, batches):
+        super().__init__(batches[0])
+        self.batches = batches
+        self.report_searches: list[dict] = []
+
+    def vector_search_community_reports(
+        self, query_vector, graph_name, top_k=3, level=None
+    ):
+        self.report_searches.append({
+            "graph_name": graph_name,
+            "top_k": top_k,
+            "level": level,
+        })
+        index = min(len(self.report_searches) - 1, len(self.batches) - 1)
+        return list(self.batches[index][:top_k])
+
+
+class PromptDrivenLLM:
+    """Return a response derived from the prompt, safe for concurrent folds."""
+
+    def __init__(self, respond):
+        self.prompts: list[str] = []
+        self._respond = respond
+
+    async def ainvoke(self, prompt):
+        self.prompts.append(prompt)
+        return LLMResponse(content=self._respond(prompt))
+
+
+_REPORT_LINE = re.compile(r"^Report (.+?) \(level [^)]*\):$", re.MULTILINE)
+
+
+def prompt_report_keys(prompt: str) -> list[str]:
+    return _REPORT_LINE.findall(prompt)
+
+
+def primer_json(report_ids=None, *, score=80, follow_ups=None, references=None,
+                answer="Primer answer."):
+    payload = {
+        "answer": answer,
+        "score": score,
+        "follow_ups": list(follow_ups or []),
+        "references": list(references or []),
+    }
+    if report_ids is not None:
+        payload["report_ids"] = list(report_ids)
+    return json.dumps(payload)
+
+
 class TestDriftSearch:
     @pytest.mark.asyncio
     async def test_drift_returns_valid_search_result(self):
@@ -243,6 +385,49 @@ class TestDriftSynthesisFalse:
 
 class TestDriftCommunityLevelAliases:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("configured, requested, expected", [
+        ("coarsest", "all", None),
+        ("all", None, None),
+        (None, None, None),
+        ("all", 1, 1),
+        ("coarsest", None, 0),
+    ])
+    async def test_selector_reaches_primer(self, configured, requested, expected):
+        store = FakeGraphStore()
+        retriever = DriftSearchRetriever(
+            cast(Any, store), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()),
+            config=DriftSearchConfig(community_level=configured, use_hyde=False),
+        )
+
+        result = await retriever.search("query", community_level=requested)
+
+        assert "drift_fallback_reason" not in result.metadata
+        assert [params["level"] for method, params in store.calls
+                if method == "vector_search_community_reports"] == [expected]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("selector, expected", [
+        ("finest", "no_community_level"),
+        ("all", "no_report_results"),
+    ])
+    async def test_empty_community_fallback(self, selector, expected):
+        class EmptyStore(EmptyReportsGraphStore):
+            def execute_query(self, query, parameters=None):
+                # A graph with no communities has no stored maximum level.
+                return []
+
+        store = EmptyStore()
+        retriever = DriftSearchRetriever(
+            cast(Any, store), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()),
+        )
+        result = await retriever.search("query", community_level=selector)
+
+        assert result.metadata["drift_fallback_reason"] == expected
+        assert sum(name == "vector_search_community_reports" for name, _ in store.calls) == (
+            selector == "all"
+        )
+
+    @pytest.mark.asyncio
     async def test_coarsest_alias_resolves(self):
         store = FakeGraphStore()
         retriever = DriftSearchRetriever(cast(Any, store), cast(Any, FakeLLM()), cast(Any, FakeEmbedder()))
@@ -279,6 +464,336 @@ class TestDriftCommunityLevelAliases:
             c for c in store.calls if c[0] == "vector_search_community_reports"
         ]
         assert report_call[0][1]["level"] == 1
+
+
+class TestDriftUnrestrictedReports:
+    @staticmethod
+    def _colliding_store():
+        store = ReportSelectionStore([
+            report_row("report:shared", 0, "person:alice", "Alice leads Acme."),
+            report_row("report:shared", 1, "person:bob", "Bob writes code."),
+        ])
+        store.entity_chunks = {
+            "person:alice": "chunk:alice",
+            "person:bob": "chunk:bob",
+        }
+        store.member_rows = {
+            ("report:shared", 0): community_members("person:alice"),
+            ("report:shared", 1): community_members("person:bob"),
+        }
+        return store
+
+    def test_prompt_keys_reserve_real_ids_and_generated_keys(self):
+        reports = [
+            {"id": "report:collision", "level": 0},
+            {"id": "selected-report:0", "level": 0},
+            {"id": "report:collision", "level": 1},
+        ]
+
+        keys = DriftSearchRetriever._primer_report_keys(reports)
+
+        assert keys == {
+            ("report:collision", 0): "selected-report:0:",
+            ("selected-report:0", 0): "selected-report:0",
+            ("report:collision", 1): "selected-report:2",
+        }
+        assert len(set(keys.values())) == 3
+
+    def test_alias_replacement_uses_token_boundaries_and_longest_keys(self):
+        aliases: dict[str, tuple[str, int | None]] = {
+            "selected-report:0": ("report:shared", 0),
+            "selected-report:0:": ("report:shared", 1),
+        }
+        text = (
+            "selected-report:0: then selected-report:0; "
+            "keep not-selected-report:0 and report:selected-report:0"
+        )
+
+        replaced = DriftSearchRetriever._replace_primer_report_aliases(text, aliases)
+
+        assert replaced == (
+            "report:shared (level 1) then report:shared (level 0); "
+            "keep not-selected-report:0 and report:selected-report:0"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("selection", [
+        ["report:shared"],       # ambiguous bare id across levels
+        ["missing"],             # unknown id
+        ["selected-report:99"],  # unknown generated key
+    ])
+    async def test_invalid_or_ambiguous_selection_selects_nothing(self, selection):
+        store = self._colliding_store()
+        llm = PromptDrivenLLM(lambda prompt: primer_json(selection, score=90))
+        retriever = DriftSearchRetriever(
+            cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()),
+            config=DriftSearchConfig(community_level="all", use_hyde=False),
+        )
+
+        result = await retriever.search(
+            "query", include_graph_evidence=True, synthesize_response=False,
+        )
+
+        assert result.citations == []
+        assert store.chunk_requests == []
+        assert store.expansion_calls == []
+        assert result.graph["provenance"]["primer_reports"] == []
+        # The trace keeps the reports the primer read.
+        assert result.metadata["drift_trace"]["primer_report_ids"] == [
+            "report:shared", "report:shared",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_colliding_report_ids_select_by_level_for_evidence_and_citations(self):
+        store = self._colliding_store()
+
+        def respond(prompt):
+            if "## Follow-up Question" in prompt:
+                return json.dumps({
+                    "answer": "Follow-up answer.", "score": 70, "follow_ups": [],
+                })
+            return primer_json(
+                ["selected-report:1"],
+                answer="See selected-report:1 for details.",
+                follow_ups=["What else does selected-report:1 cover?"],
+                references=[{"target_id": "person:alice", "target_type": "entity"}],
+            )
+
+        llm = PromptDrivenLLM(respond)
+        retriever = DriftSearchRetriever(
+            cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()),
+            config=DriftSearchConfig(community_level="all", use_hyde=False),
+        )
+
+        result = await retriever.search(
+            "query", include_graph_evidence=True, synthesize_response=False,
+        )
+
+        assert store.report_searches == [
+            {"graph_name": "entity-graph", "top_k": 3, "level": None}
+        ]
+        primer_prompt = llm.prompts[0]
+        assert "Report selected-report:0 (level 0):" in primer_prompt
+        assert "Report selected-report:1 (level 1):" in primer_prompt
+        assert "Report report:shared" not in primer_prompt
+        assert "temporary keys" in primer_prompt
+        # Only the selected level contributes evidence and citations. The model
+        # reference to the unselected level cannot reattach its target.
+        assert [citation.chunk_id for citation in result.citations] == ["chunk:bob"]
+        assert store.chunk_requests == [["chunk:bob"]]
+        assert store.expansion_calls == [
+            ("entity-graph", "report:shared", 1, 25)
+        ]
+        assert {node["id"] for node in result.graph["nodes"]} == {"person:bob"}
+        assert result.graph["provenance"]["primer_reports"] == [
+            {"id": "report:shared", "level": 1}
+        ]
+        # Echoed temporary keys are normalized in retained primer text and
+        # follow-up questions before traversal and trace publication.
+        trace = result.metadata["drift_trace"]
+        assert trace["actions"][0]["answer"] == (
+            "See report:shared (level 1) for details."
+        )
+        assert trace["generated_questions"] == [
+            "What else does report:shared (level 1) cover?"
+        ]
+        assert trace["actions"][1]["query"] == (
+            "What else does report:shared (level 1) cover?"
+        )
+        action_prompts = [
+            prompt for prompt in llm.prompts if "## Follow-up Question" in prompt
+        ]
+        assert action_prompts
+        assert "What else does report:shared (level 1) cover?" in action_prompts[0]
+        assert "selected-report:" not in result.context
+        assert "selected-report:" not in str(result.metadata)
+        assert "selected-report:" not in str(result.graph)
+
+    @pytest.mark.asyncio
+    async def test_hyde_prompt_keys_and_evidence_bind_the_final_report_rows(self):
+        initial = report_row("report:stale", 0, "person:stale", "Stale report.")
+        final = report_row("report:fresh", 2, "person:fresh", "Fresh report.")
+        store = HydeReportStore([[initial], [final]])
+        store.entity_chunks = {
+            "person:stale": "chunk:stale",
+            "person:fresh": "chunk:fresh",
+        }
+        store.member_rows = {
+            ("report:stale", 0): community_members("person:stale"),
+            ("report:fresh", 2): community_members("person:fresh"),
+        }
+
+        def respond(prompt):
+            if "Hypothetical Report:" in prompt:
+                return "Hypothetical report text."
+            return primer_json(
+                ["report:fresh"],
+                references=[{"target_id": "person:stale", "target_type": "entity"}],
+            )
+
+        llm = PromptDrivenLLM(respond)
+        retriever = DriftSearchRetriever(
+            cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()),
+            config=DriftSearchConfig(
+                community_level=None, use_hyde=True, primer_top_k=4,
+            ),
+        )
+
+        result = await retriever.search(
+            "query", include_graph_evidence=True, synthesize_response=False,
+        )
+
+        assert store.report_searches == [
+            {"graph_name": "entity-graph", "top_k": 4, "level": None},
+            {"graph_name": "entity-graph", "top_k": 4, "level": None},
+        ]
+        primer_prompt = llm.prompts[1]
+        assert "Report report:fresh (level 2):" in primer_prompt
+        assert "Report report:stale" not in primer_prompt
+        assert "temporary keys" not in primer_prompt
+        assert result.metadata["drift_trace"]["primer_report_ids"] == ["report:fresh"]
+        assert [citation.chunk_id for citation in result.citations] == ["chunk:fresh"]
+        assert store.chunk_requests == [["chunk:fresh"]]
+        assert store.expansion_calls == [
+            ("entity-graph", "report:fresh", 2, 25)
+        ]
+        assert {node["id"] for node in result.graph["nodes"]} == {"person:fresh"}
+
+    @pytest.mark.asyncio
+    async def test_folded_colliding_reports_resolve_against_their_own_fold(self):
+        store = self._colliding_store()
+
+        def respond(prompt):
+            keys = prompt_report_keys(prompt)
+            return primer_json(keys[:1], score=90)
+
+        llm = PromptDrivenLLM(respond)
+        retriever = DriftSearchRetriever(
+            cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()),
+            config=DriftSearchConfig(
+                community_level="all", use_hyde=False, primer_folds=2,
+            ),
+        )
+
+        result = await retriever.search(
+            "query", include_graph_evidence=True, synthesize_response=False,
+        )
+
+        prime_prompts = [p for p in llm.prompts if "## Community Reports" in p]
+        assert len(prime_prompts) == 2
+        assert all("temporary keys" in prompt for prompt in prime_prompts)
+        assert any(
+            "selected-report:0" in prompt and "selected-report:1" not in prompt
+            for prompt in prime_prompts
+        )
+        assert any(
+            "selected-report:1" in prompt and "selected-report:0" not in prompt
+            for prompt in prime_prompts
+        )
+        assert [citation.chunk_id for citation in result.citations] == [
+            "chunk:alice", "chunk:bob",
+        ]
+        assert store.expansion_calls == [
+            ("entity-graph", "report:shared", 0, 25),
+            ("entity-graph", "report:shared", 1, 25),
+        ]
+        assert result.graph["provenance"]["primer_reports"] == [
+            {"id": "report:shared", "level": 0},
+            {"id": "report:shared", "level": 1},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_folded_out_of_fold_key_with_empty_selection_selects_nothing(self):
+        store = ReportSelectionStore([
+            report_row("report:zero", 0, "person:alice", "Alice leads Acme."),
+            report_row("report:one", 1, "person:bob", "Bob writes code."),
+        ])
+        store.entity_chunks = {
+            "person:alice": "chunk:alice",
+            "person:bob": "chunk:bob",
+        }
+        store.member_rows = {
+            ("report:zero", 0): community_members("person:alice"),
+            ("report:one", 1): community_members("person:bob"),
+        }
+
+        def respond(prompt):
+            if "report:zero" in prompt:
+                # report:one is unambiguous but belongs to the other fold.
+                return primer_json(["report:one"], score=90)
+            return primer_json([], score=80)
+
+        llm = PromptDrivenLLM(respond)
+        retriever = DriftSearchRetriever(
+            cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()),
+            config=DriftSearchConfig(
+                community_level="all", use_hyde=False, primer_folds=2,
+            ),
+        )
+
+        result = await retriever.search(
+            "query", include_graph_evidence=True, synthesize_response=False,
+        )
+
+        assert result.citations == []
+        assert store.chunk_requests == []
+        assert store.expansion_calls == []
+        assert result.graph["provenance"]["primer_reports"] == []
+
+    @pytest.mark.asyncio
+    async def test_folded_no_selection_uses_shown_rows_and_excludes_failed_fold(self):
+        store = ReportSelectionStore([
+            report_row("report:a", 0, "person:alice", "Alice leads Acme."),
+            report_row("report:b", 1, "person:bob", "Bob writes code."),
+            report_row("report:bad", 2, "person:carol", "Carol leads Initech."),
+        ])
+        store.entity_chunks = {
+            "person:alice": "chunk:alice",
+            "person:bob": "chunk:bob",
+            "person:carol": "chunk:carol",
+        }
+        store.member_rows = {
+            ("report:a", 0): community_members("person:alice"),
+            ("report:b", 1): community_members("person:bob"),
+            ("report:bad", 2): community_members("person:carol"),
+        }
+
+        def respond(prompt):
+            if "invalid JSON" in prompt:
+                return "still not json"
+            if "report:bad" in prompt:
+                return "not json"
+            if "report:a" in prompt:
+                return primer_json(None, score=90)  # missing report_ids
+            return primer_json([], score=80)        # explicit empty selection
+
+        llm = PromptDrivenLLM(respond)
+        retriever = DriftSearchRetriever(
+            cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()),
+            config=DriftSearchConfig(
+                community_level="all", use_hyde=False, primer_folds=3,
+            ),
+        )
+
+        result = await retriever.search(
+            "query", include_graph_evidence=True, synthesize_response=False,
+        )
+
+        assert [citation.chunk_id for citation in result.citations] == [
+            "chunk:alice", "chunk:bob",
+        ]
+        assert store.chunk_requests == [["chunk:alice", "chunk:bob"]]
+        assert store.expansion_calls == [
+            ("entity-graph", "report:a", 0, 25),
+            ("entity-graph", "report:b", 1, 25),
+        ]
+        assert "person:carol" not in {
+            node["id"] for node in result.graph["nodes"]
+        }
+        assert result.graph["provenance"]["primer_reports"] == [
+            {"id": "report:a", "level": 0},
+            {"id": "report:b", "level": 1},
+        ]
 
 
 class TestDriftFallback:
@@ -506,6 +1021,7 @@ class TestDriftConversationHistory:
         await retriever.search("query", top_k=2, conversation_history="User: Hi\nAssistant: Hello")
 
         assert "User: Hi" in llm.prompts[0]
+        assert "temporary keys" not in llm.prompts[0]
 
 
 class TestDriftPromptCustomization:
