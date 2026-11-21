@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import statistics
 import time
+from collections import Counter
 from typing import Any, cast
 from uuid import uuid4
 
@@ -264,8 +265,13 @@ def perf_graph(perf_backend):
         cleanup_graph(store, graph + "-foreign")
 
 
+def _row_counts(rows: list[dict]) -> Counter[str]:
+    """Compare complete rows without assuming query order or discarding duplicates."""
+    return Counter(json.dumps(row, sort_keys=True) for row in rows)
+
+
 def test_relationship_state_read_equivalence_on_seeded_state(perf_graph):
-    """Baseline OR and specialized predicates return identical rows in order."""
+    """Baseline OR and specialized predicates return the same row multiset."""
     store, _backend, graph = perf_graph
     _seed_graph(store, graph)
     params = _read_params(graph)
@@ -277,8 +283,8 @@ def test_relationship_state_read_equivalence_on_seeded_state(perf_graph):
     baseline_chunk = list(store.execute_query(BASELINE_OR, chunk_only_params))
     chunk_only = list(store.execute_query(CHUNK_ONLY, chunk_only_params))
 
-    assert rel_only == baseline_rel
-    assert chunk_only == baseline_chunk
+    assert _row_counts(rel_only) == _row_counts(baseline_rel)
+    assert _row_counts(chunk_only) == _row_counts(baseline_chunk)
     assert len(rel_only) == len(params["rel_ids"])
     expected_chunk_rows = (
         (CHUNK_COUNT // 2) * (OWNED_RELS // CHUNK_COUNT)
@@ -588,8 +594,8 @@ def test_relationship_state_read_profiles(perf_graph, capsys):
     ]
 
     samples, rows_by_label = _alternating_timings(store, variants, READ_REPEATS)
-    assert rows_by_label["rel-only r.id IN"] == rows_by_label["baseline-rel-only"]
-    assert rows_by_label["chunk-only any()"] == rows_by_label["baseline-chunk-only"]
+    assert _row_counts(rows_by_label["rel-only r.id IN"]) == _row_counts(rows_by_label["baseline-rel-only"])
+    assert _row_counts(rows_by_label["chunk-only any()"]) == _row_counts(rows_by_label["baseline-chunk-only"])
     assert len(rows_by_label["baseline-both"]) == (
         (CHUNK_COUNT // 2) * (OWNED_RELS // CHUNK_COUNT)
         + PARALLEL_PAIRS
