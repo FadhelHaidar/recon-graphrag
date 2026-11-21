@@ -8,6 +8,7 @@ This guide explains how to run the Recon-GraphRAG test suite. It covers mandator
 The short version:
 
 - Run mandatory tests while developing: `pytest -m "not integration"`
+- Mandatory tests use fake or monkeypatched clients. They do not require the `[local-embeddings]` extra.
 - Run provider smoke tests when changing provider setup.
 - Run database tests when changing graph store behavior.
 - Run workflow tests when changing pipeline orchestration with deterministic fakes.
@@ -60,6 +61,7 @@ and E2E tests can incur costs. External-service failures can make results unstab
 | `tests/extraction/` | No | No | No | JSON parsing, schema validation, chunking, and graph document assembly. |
 | `tests/llm/` | No | No | No | LLM protocol and factory behavior using fake or monkeypatched clients. |
 | `tests/embeddings/` | No | No | No | Embedder protocol and factory behavior using fake or monkeypatched clients. |
+| `tests/test_packaging.py` | No | No | No | Package metadata, the base import boundary, and missing-extra guidance. |
 | `tests/graphdb/neo4j/test_neo4j_entity_resolution.py` | Fake only | Fake only | No | Neo4j entity-resolution strategies and APOC behavior. |
 | `tests/graphdb/neo4j/test_neo4j_index_manager.py` | No | No | No | Neo4j index manager and resolver-wrapper behavior. |
 | `tests/graphdb/neo4j/test_neo4j_store.py` | No | No | No | Neo4j store query construction using fake driver/session objects. |
@@ -141,7 +143,7 @@ The selected provider variables must also be configured:
 | OpenAI embedder | `OPENAI_API_KEY`, `OPENAI_EMBED_MODEL` |
 | OpenRouter LLM | `OPENROUTER_API_KEY`, `OPENROUTER_LLM_MODEL` |
 | OpenRouter embedder | `OPENROUTER_API_KEY`, `OPENROUTER_EMBED_MODEL` |
-| Sentence-Transformers embedder | No provider credentials; the local model dependency must be installed |
+| Sentence-Transformers embedder | No provider credentials; install the `[local-embeddings]` extra |
 
 ### Optional OpenAI-compatible test settings
 

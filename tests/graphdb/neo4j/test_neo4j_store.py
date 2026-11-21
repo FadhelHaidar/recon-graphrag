@@ -11,11 +11,28 @@ from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
 from recon_graphrag.models.artifacts import CommunityReport
 
 
+class FakeTransaction:
+    def __init__(self, session):
+        self.session = session
+        self.committed = False
+        self.rolled_back = False
+
+    def run(self, query, parameters=None):
+        return self.session.run(query, parameters)
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
+
+
 class FakeSession:
     def __init__(self, calls, records, scripted_records=None):
         self.calls = calls
         self.records = records
         self.scripted_records = scripted_records if scripted_records is not None else []
+        self.transactions = []
 
     def __enter__(self):
         return self
@@ -32,15 +49,21 @@ class FakeSession:
             return response
         return self.records
 
+    def begin_transaction(self):
+        transaction = FakeTransaction(self)
+        self.transactions.append(transaction)
+        return transaction
+
 
 class FakeDriver:
     def __init__(self):
         self.calls = []
         self.records = []
         self.scripted_records = []
+        self.session_calls = []
 
     def session(self, **kwargs):
-        self.session_kwargs = kwargs
+        self.session_calls.append(kwargs)
         return FakeSession(self.calls, self.records, self.scripted_records)
 
 
@@ -52,6 +75,55 @@ def test_execute_query_translates_records():
     result = store.execute_query("MATCH (n) RETURN count(n) AS cnt")
 
     assert result == [{"cnt": 42}]
+
+
+@pytest.mark.parametrize(
+    ("driver_version", "notification_key"),
+    [
+        ("5.28.8", "notifications_disabled_categories"),
+        ("6.4.1", "notifications_disabled_classifications"),
+    ],
+)
+def test_execute_query_uses_driver_major_notification_option(
+    monkeypatch, driver_version, notification_key
+):
+    monkeypatch.setattr(neo4j, "__version__", driver_version)
+    driver = FakeDriver()
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver), database="neo4j")
+
+    store.execute_query("RETURN 1 AS one")
+
+    assert driver.session_calls == [
+        {
+            "database": "neo4j",
+            notification_key: ["DEPRECATION", "UNRECOGNIZED", "HINT"],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("driver_version", "notification_key"),
+    [
+        ("5.28.8", "notifications_disabled_categories"),
+        ("6.4.1", "notifications_disabled_classifications"),
+    ],
+)
+def test_transaction_uses_driver_major_notification_option(
+    monkeypatch, driver_version, notification_key
+):
+    monkeypatch.setattr(neo4j, "__version__", driver_version)
+    driver = FakeDriver()
+    store = Neo4jGraphStore(cast(neo4j.Driver, driver), database="neo4j")
+
+    with store._transaction() as transaction:
+        transaction.execute_query("RETURN 1 AS one")
+
+    assert driver.session_calls == [
+        {
+            "database": "neo4j",
+            notification_key: ["DEPRECATION", "UNRECOGNIZED", "HINT"],
+        }
+    ]
 
 
 @pytest.mark.asyncio

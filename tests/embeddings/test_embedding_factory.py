@@ -1,10 +1,10 @@
 import sys
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
-from recon_graphrag.embeddings.factory import create_embedder
-from recon_graphrag.embeddings.factory import _openai_embedding
+from recon_graphrag.embeddings.factory import _openai_embedding, create_embedder
 
 
 class _FakeOpenAIClient:
@@ -36,8 +36,8 @@ def test_azure_embedder_binds_model_as_deployment(monkeypatch):
         azure_endpoint="https://example.openai.azure.com/",
     )
 
-    assert embedder.model == "my-embedding-deployment"
-    assert _FakeOpenAIClient.last_kwargs["azure_deployment"] == (
+    assert cast(Any, embedder).model == "my-embedding-deployment"
+    assert cast(Any, _FakeOpenAIClient.last_kwargs)["azure_deployment"] == (
         "my-embedding-deployment"
     )
 
@@ -60,7 +60,7 @@ def test_azure_embedder_preserves_explicit_deployment(monkeypatch):
         azure_endpoint="https://example.openai.azure.com/",
     )
 
-    assert _FakeOpenAIClient.last_kwargs["azure_deployment"] == (
+    assert cast(Any, _FakeOpenAIClient.last_kwargs)["azure_deployment"] == (
         "my-embedding-deployment"
     )
 
@@ -88,3 +88,25 @@ def test_openai_embedding_response_with_provider_error_has_clear_error():
 def test_create_embedder_unknown_provider_raises():
     with pytest.raises(ValueError, match="Unknown embedder provider"):
         create_embedder("unknown_provider")
+
+
+def test_create_embedder_rejects_sentence_transformers_alias():
+    with pytest.raises(ValueError, match="Unknown embedder provider"):
+        create_embedder("sentence_transformers")
+
+
+def test_sentence_transformer_missing_extra_has_actionable_guidance(monkeypatch):
+    monkeypatch.setitem(sys.modules, "sentence_transformers", None)
+
+    with pytest.raises(ImportError) as exc_info:
+        create_embedder("sentence-transformer")
+
+    assert str(exc_info.value) == (
+        "Could not import the local embedding dependencies. "
+        "Reinstall Recon-GraphRAG from the same Git URL or wheel with "
+        "the [local-embeddings] extra. For example, for a Git install, "
+        'run `pip install "recon-graphrag[local-embeddings] @ '
+        'git+https://github.com/FadhelHaidar/recon-graphrag.git"`. '
+        "See https://github.com/FadhelHaidar/recon-graphrag/blob/main/"
+        "docs/01-installation.md#troubleshooting."
+    )

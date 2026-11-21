@@ -142,8 +142,13 @@ class SentenceTransformerEmbeddings:
             import torch
         except ImportError as exc:
             raise ImportError(
-                "Could not import sentence_transformers. "
-                "Install it with `pip install sentence-transformers`."
+                "Could not import the local embedding dependencies. "
+                "Reinstall Recon-GraphRAG from the same Git URL or wheel with "
+                "the [local-embeddings] extra. For example, for a Git install, "
+                "run `pip install \"recon-graphrag[local-embeddings] @ "
+                "git+https://github.com/FadhelHaidar/recon-graphrag.git\"`. "
+                "See https://github.com/FadhelHaidar/recon-graphrag/blob/main/"
+                "docs/01-installation.md#troubleshooting."
             ) from exc
 
         self.np = np

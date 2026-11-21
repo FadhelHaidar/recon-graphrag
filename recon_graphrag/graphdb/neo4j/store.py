@@ -31,6 +31,24 @@ from recon_graphrag.pipelines.writer import CypherGraphWriter
 
 logger = logging.getLogger(__name__)
 
+_QUIET_NOTIFICATIONS = ["DEPRECATION", "UNRECOGNIZED", "HINT"]
+
+
+def _neo4j_driver_major() -> int:
+    """Return the installed Neo4j driver major version."""
+    version = getattr(neo4j, "__version__", "")
+    major = version.split(".", 1)[0] if isinstance(version, str) else ""
+    return int(major) if major.isdigit() else 5
+
+
+def _session_config(database: str | None) -> dict[str, object]:
+    """Return session options that use the notification option for the driver major."""
+    if _neo4j_driver_major() >= 6:
+        key = "notifications_disabled_classifications"
+    else:
+        key = "notifications_disabled_categories"
+    return {"database": database, key: list(_QUIET_NOTIFICATIONS)}
+
 
 class Neo4jGraphStore(BaseGraphStore):
     """Neo4j backend backed by the official Neo4j driver."""
@@ -54,10 +72,7 @@ class Neo4jGraphStore(BaseGraphStore):
     def execute_query(
         self, query: str, parameters: Optional[dict] = None  # noqa: UP045 - public signature compatibility
     ) -> list[dict]:
-        with self._driver.session(
-            database=self._database,
-            notifications_disabled_categories=["DEPRECATION", "UNRECOGNIZED", "HINT"],
-        ) as session:
+        with self._driver.session(**_session_config(self._database)) as session:
             # Driver typing narrows to LiteralString; built queries are
             # parameterized with escaped identifiers only (trusted code).
             result = session.run(cast(LiteralString, query), parameters or {})
@@ -66,10 +81,7 @@ class Neo4jGraphStore(BaseGraphStore):
     @contextmanager
     def _transaction(self) -> Iterator[TransactionExecutor]:
         """Yield an executor on one transaction: commit, or roll back on error."""
-        with self._driver.session(
-            database=self._database,
-            notifications_disabled_categories=["DEPRECATION", "UNRECOGNIZED", "HINT"],
-        ) as session:
+        with self._driver.session(**_session_config(self._database)) as session:
             transaction = session.begin_transaction()
             try:
                 yield TransactionExecutor(transaction)

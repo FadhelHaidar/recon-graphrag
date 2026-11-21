@@ -98,7 +98,7 @@ embedder = create_embedder("openai", model="text-embedding-3-small", api_key="sk
 | Azure OpenAI | `"azure_openai"` | 1536 | Included in core package |
 | Ollama | `"ollama"` | Varies | `[ollama]` extra |
 | OpenRouter | `"openrouter"` | Varies | Included in core package |
-| Sentence-Transformers | `"sentence-transformer"` | Auto-detected | Included in core package |
+| Sentence-Transformers | `"sentence-transformer"` | Auto-detected | `[local-embeddings]` extra |
 
 ### Embedder examples
 
@@ -153,7 +153,8 @@ embedder = create_embedder(
 embedder = create_embedder("sentence-transformer", model="all-MiniLM-L6-v2")
 ```
 
-Sentence-Transformers runs locally and does not require an API key.
+Sentence-Transformers runs locally and does not require an API key. Install the
+`[local-embeddings]` extra before you use this provider.
 
 ---
 

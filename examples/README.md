@@ -18,6 +18,10 @@ Keep `NEO4J_URL` and `MEMGRAPH_URL` consistent with your database setup.
 Then run the example commands from `examples/` with the environment active,
 or prefix each Python command with `uv run`.
 
+The `structured_ingest.py` example uses the local Sentence-Transformers
+embedder. Install the `[local-embeddings]` extra with
+`uv sync --extra dev --group dev --extra local-embeddings` before you run it.
+
 ## Quick start
 
 ```bash
@@ -49,7 +53,7 @@ All build and search scripts accept `--llm-provider` and `--embedder-provider`:
 | `azure_openai` | Yes | Yes |
 | `openrouter` | Yes | Yes |
 | `openai` | Yes | Yes |
-| `sentence-transformer` | No | Yes |
+| `sentence-transformer` | No | Yes (`[local-embeddings]` extra) |
 
 You can also set `LLM_PROVIDER` and `EMBEDDER_PROVIDER` environment variables.
 If no provider is specified, scripts default to `openrouter`.

@@ -57,6 +57,7 @@ graph LR
 ## Requirements
 
 - **Python** >= 3.11
+- **Neo4j Python driver** >= 5.28.8 and < 7. The package installs a compatible driver.
 - One supported graph database:
   - **Neo4j** with **APOC** for merge helpers and **GDS** for Leiden community detection
   - **Memgraph** with **MAGE** for Leiden community detection
@@ -92,7 +93,7 @@ uv add "recon-graphrag[all] @ git+https://github.com/FadhelHaidar/recon-graphrag
 uv sync
 ```
 
-`openai`, `sentence-transformers`, and the Neo4j driver are included in the core package, and the `[all]` extra adds Anthropic, Ollama, and Excel (`openpyxl`) support.
+`openai` and the Neo4j driver are included in the core package. The `[all]` extra adds Anthropic, Ollama, Excel (`openpyxl`), and local Sentence-Transformers embeddings.
 
 Pin to a specific release. Replace `vX.Y.Z` with an existing release tag:
 
@@ -190,7 +191,7 @@ For a step-by-step walkthrough, see [docs/02-quickstart.md](docs/02-quickstart.m
 | OpenAI | ✅ | ✅ | Default, recommended |
 | Anthropic | ✅ | — | `uv add "recon-graphrag[anthropic] @ git+https://github.com/FadhelHaidar/recon-graphrag.git"` |
 | Ollama | ✅ | ✅ | `uv add "recon-graphrag[ollama] @ git+https://github.com/FadhelHaidar/recon-graphrag.git"` |
-| Sentence Transformers | — | ✅ | Local embeddings, no API key needed |
+| Sentence Transformers | — | ✅ | Local embeddings; install with `[local-embeddings]`, no API key needed |
 | OpenRouter | ✅ | ✅ | Via OpenAI-compatible interface |
 
 ## Documentation

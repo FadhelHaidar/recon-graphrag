@@ -93,7 +93,7 @@ The `embedding_dim` parameter must match the dimension of your embedder.
 | Sentence-Transformers | Model-specific | Pass `embedding_dim=detect_embedding_dim(embedder)`; `create_indexes` does not inspect the embedder. |
 | Ollama / OpenRouter | Varies | Check the model card and pass explicitly. |
 
-For sentence-transformers, detect the dimension and pass it explicitly:
+For sentence-transformers, install the `[local-embeddings]` extra. Then detect the dimension and pass it explicitly:
 
 ```python
 from recon_graphrag import create_embedder

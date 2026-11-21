@@ -135,7 +135,7 @@ async def main():
     )
     store = Neo4jGraphStore(driver)
     llm = get_llm(args.llm_provider)
-    embedder = create_embedder("sentence_transformers")
+    embedder = create_embedder("sentence-transformer")
 
     try:
         pipeline = GraphBuilderPipeline(

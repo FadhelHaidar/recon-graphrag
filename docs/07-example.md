@@ -54,6 +54,7 @@ python search.py --backend neo4j --llm-provider openrouter --embedder-provider o
 
 Supported LLM providers: `openrouter`, `azure_openai`, `openai`.  
 Supported embedder providers: `openrouter`, `azure_openai`, `openai`, `sentence-transformer`.
+The `sentence-transformer` provider requires the `[local-embeddings]` extra.
 
 You can also set the `LLM_PROVIDER` and `EMBEDDER_PROVIDER` environment variables instead of passing flags. If neither is set, the scripts default to `openrouter`.
 
