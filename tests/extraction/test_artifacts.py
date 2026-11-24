@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from recon_graphrag.extraction.artifacts import (
     graph_document_from_dict,
     graph_document_to_dict,
@@ -16,6 +18,14 @@ from recon_graphrag.extraction.types import (
     GraphDocument,
     RelationshipRecord,
 )
+from recon_graphrag.graphdb.base import GraphStore
+from recon_graphrag.models.artifacts import (
+    ClaimRecord,
+    DescriptionObservation,
+    SourceReference,
+)
+from recon_graphrag.pipelines.writer import CypherGraphWriter
+from tests.pipelines.writer_scenarios import StatefulFakeGraphStore
 
 
 def _sample_graph_document() -> GraphDocument:
@@ -63,23 +73,54 @@ def _sample_graph_document() -> GraphDocument:
     )
 
 
-def test_graph_document_dict_round_trip():
+def test_graph_document_dict_round_trip_preserves_description_observations():
     graph_document = _sample_graph_document()
+    source = SourceReference("doc-1", "chunk-1", "Movie notes", page_start=1, char_end=25)
+    graph_document.entities[0].description_observations = [
+        DescriptionObservation("alice", "Director", source)
+    ]
 
     payload = graph_document_to_dict(graph_document)
     loaded = graph_document_from_dict(payload)
 
     assert loaded == graph_document
-    assert loaded.relationships[0].properties["source_chunk_ids"] == ["chunk-1"]
 
 
-def test_graph_document_json_round_trip(tmp_path):
+def test_legacy_artifact_without_claims_or_observations():
+    payload = graph_document_to_dict(_sample_graph_document())
+    del payload["claims"]
+    for entity in payload["entities"]:
+        del entity["description_observations"]
+
+    loaded = graph_document_from_dict(payload)
+
+    assert loaded.claims == []
+    assert all(entity.description_observations == [] for entity in loaded.entities)
+
+
+def test_graph_document_json_round_trip_and_replay_preserves_claim(tmp_path):
     graph_document = _sample_graph_document()
+    source = SourceReference("doc-1", "chunk-1", "Movie notes", page_start=1, char_end=25)
+    graph_document.claims = [ClaimRecord(
+        "claim:1", "alice", "credit", "Alice directed Inception.", source,
+        object_entity_id="inception",
+    )]
     path = tmp_path / "movie_graph.json"
 
     save_graph_document_json(graph_document, path)
     loaded = load_graph_document_json(path)
 
+    store = StatefulFakeGraphStore()
+    writer = CypherGraphWriter(cast(GraphStore, store))
+    writer.write_graph_document(graph_document)
+    receipt = writer.write_graph_document(loaded)
+    claim = store.get_claim("claim:1")
+
+    assert receipt["claims"] == 1
+    assert claim is not None
+    assert claim["entity_id"] == "alice"
+    assert claim["object_entity_id"] == "inception"
+    assert claim["chunk_id"] == "chunk-1"
     assert loaded == graph_document
 
 

@@ -15,6 +15,11 @@ from recon_graphrag.extraction.types import (
     GraphDocument,
     RelationshipRecord,
 )
+from recon_graphrag.models.artifacts import (
+    ClaimRecord,
+    DescriptionObservation,
+    SourceReference,
+)
 
 
 def graph_document_to_dict(graph_document: GraphDocument) -> dict[str, Any]:
@@ -28,7 +33,20 @@ def graph_document_from_dict(payload: dict[str, Any]) -> GraphDocument:
         document=DocumentRecord(**payload["document"]),
         assembly_review_groups=payload.get("assembly_review_groups", []),
         chunks=[ChunkRecord(**row) for row in payload.get("chunks", [])],
-        entities=[EntityRecord(**row) for row in payload.get("entities", [])],
+        entities=[
+            EntityRecord(**{
+                **row,
+                "description_observations": [
+                    DescriptionObservation(**{**obs, "source": SourceReference(**obs["source"])})
+                    for obs in row.get("description_observations", [])
+                ],
+            })
+            for row in payload.get("entities", [])
+        ],
+        claims=[
+            ClaimRecord(**{**row, "source": SourceReference(**row["source"])})
+            for row in payload.get("claims", [])
+        ],
         relationships=[
             RelationshipRecord(**row) for row in payload.get("relationships", [])
         ],

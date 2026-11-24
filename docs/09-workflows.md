@@ -389,6 +389,12 @@ The file produced by `save_graph_document_json()` contains the complete
 }
 ```
 
+Each entity's `description_observations` and the top-level `claims` list remain
+in the artifact. `load_graph_document_json()` restores each claim as a
+`ClaimRecord` and each observation as a `DescriptionObservation` with a typed
+`SourceReference`. When you replay a loaded artifact, the writer keeps the
+claims in the artifact instead of deleting them as stale claims.
+
 ### Save while using GraphBuilderPipeline
 
 If you want the normal pipeline to write to the database and also save each
