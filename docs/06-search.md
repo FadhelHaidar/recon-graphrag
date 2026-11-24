@@ -317,9 +317,12 @@ dropped, and a batch whose points are all dropped contributes no evidence.
   `query` and keeps the points.
 * Skipped points add a fixed notice to the context, so a truncated context is
   visible to the caller.
-* `report_ids` returned by a map batch are validated against that batch and
-  out-of-batch IDs are discarded; citations still resolve from the community
-  reports that contributed evidence.
+* `report_ids` returned by a map batch are validated against that batch, and
+  out-of-batch IDs are discarded. Citations and graph evidence resolve only
+  from the community reports behind points that fit the context budget.
+  Dropped points contribute no citations or graph evidence. A retained point
+  without a valid report ID contributes no report evidence. Global Search does
+  not fall back to every report in the batch.
 
 Metadata adds `map_strategy`, `context_budget_tokens`, `context_tokens`,
 `context_parts_available`, `context_parts_kept`, `context_parts_dropped`,

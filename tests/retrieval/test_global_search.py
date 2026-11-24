@@ -120,6 +120,10 @@ class FakeGraphStore:
 class _ReportFilteringStore(FakeGraphStore):
     """Honor ``report_ids`` reads and map entity IDs to distinct chunks."""
 
+    def __init__(self, reports: list[dict], members_by_report: dict[str, str] | None = None):
+        super().__init__(reports)
+        self.members_by_report = members_by_report or {}
+
     def execute_query(self, query, params=None):
         params = params or {}
         if "report_ids" in params:
@@ -128,6 +132,11 @@ class _ReportFilteringStore(FakeGraphStore):
         if "FROM_CHUNK" in query and "entity_ids" in params:
             return [{"chunk_id": f"chunk:{eid}"} for eid in params["entity_ids"]]
         return super().execute_query(query, params)
+
+    def fetch_community_member_graph(self, graph_name, community_id, level, member_limit=25):
+        entity_id = self.members_by_report.get(community_id)
+        members = [{"id": entity_id, "name": entity_id}] if entity_id else []
+        return [{"members": members, "edges": [], "member_count": len(members), "edge_count": 0}]
 
 
 class FakeLLM:
@@ -1632,30 +1641,39 @@ class TestScoredPointStrategy:
         assert _envelope_tokens(search, "q", result.context) <= 150
         assert any("Omitted" in w for w in meta["context_warnings"])
 
+    @pytest.mark.parametrize("keep_small", [True, False], ids=["retained-point", "notice-only"])
     @pytest.mark.asyncio
-    async def test_oversized_point_skipped_without_slicing(self):
-        oversized = "y " * 400
-        llm = PointLLM(
-            _point_payload(
-                _point("oversized " + oversized, 95),
-                _point("small point", 10),
-            )
+    async def test_oversized_point_contributes_no_context_or_evidence(self, keep_small):
+        members = {"report:0:0": "person:alice", "report:1:0": "person:bob"}
+        store = _ReportFilteringStore(
+            [_make_report_with_json_ref(rid, entity) for rid, entity in members.items()],
+            members_by_report=members,
         )
+        llm = PointLLM(_point_payload(
+            _point("oversized point " + "z " * 400, 90, ("report:1:0",)),
+            _point("Alice leads Acme.", 80, ("report:0:0",)),
+        ))
         search = GlobalSearchRetriever(
-            cast(Any, FakeGraphStore(_make_reports(1))),
-            cast(Any, llm),
-            map_strategy="scored_points",
-            reduce_budget_tokens=120,
+            cast(Any, store), cast(Any, llm), map_strategy="scored_points"
         )
+        context = POINT_OMITTED_NOTICE
+        if keep_small:
+            context += "\n\n[Score 80] Alice leads Acme.\nReports: report:0:0"
+        search.reduce_budget_tokens = _envelope_tokens(search, "q", context)
 
         result = await search.search(
-            "q", community_level=0, synthesize_response=False
+            "q", community_level=0, synthesize_response=False, include_graph_evidence=True
         )
 
-        assert "small point" in result.context
-        assert oversized[:100] not in result.context
-        assert result.metadata["context_parts_kept"] == 1
-        assert result.metadata["context_parts_dropped"] == 1
+        assert result.metadata["map_batches"] == 1
+        assert result.context == context
+        assert result.metadata["context_parts_kept"] == int(keep_small)
+        assert result.metadata["context_parts_dropped"] == 2 - int(keep_small)
+        assert [c.chunk_id for c in result.citations] == (["chunk:person:alice"] if keep_small else [])
+        assert [node["id"] for node in result.graph["nodes"]] == (["person:alice"] if keep_small else [])
+        provenance = result.graph["provenance"]
+        assert provenance["contributing_reports"] == (["report:0:0"] if keep_small else [])
+        assert provenance["report_selection"] == "retained_point_reports"
 
     @pytest.mark.asyncio
     async def test_impossible_budget_raises(self):
@@ -1789,28 +1807,31 @@ class TestScoredPointStrategy:
         assert "valid point" not in result.context
         assert result.metadata["context_failed"] is True
 
+    @pytest.mark.parametrize(
+        ("report_ids", "expected_chunks", "warns"),
+        [
+            (("report:0:0", "report:9:0"), ["chunk:person:alice"], True),
+            (("report:9:0",), [], True),
+            ((), [], False),
+        ],
+        ids=["valid-and-invalid", "invalid-only", "missing"],
+    )
     @pytest.mark.asyncio
-    async def test_out_of_batch_report_ids_dropped_and_counted(self):
+    async def test_retained_point_attributes_only_valid_report_ids(
+        self, report_ids, expected_chunks, warns
+    ):
         reports = [_make_report_with_json_ref("report:0:0", "person:alice")]
-        llm = PointLLM(
-            _point_payload(
-                _point("point from batch", 90, ("report:0:0", "report:9:0"))
-            )
-        )
+        llm = PointLLM(_point_payload(_point("point from batch", 90, report_ids)))
         search = GlobalSearchRetriever(
-            cast(Any, FakeGraphStore(reports)),
-            cast(Any, llm),
-            map_strategy="scored_points",
+            cast(Any, _ReportFilteringStore(reports)), cast(Any, llm), map_strategy="scored_points"
         )
 
-        result = await search.search(
-            "q", community_level=0, synthesize_response=False
-        )
+        result = await search.search("q", community_level=0, synthesize_response=False)
 
-        meta = result.metadata
-        assert meta["context_parts_kept"] == 1
-        assert any("Dropped 1 report references" in w for w in meta["context_warnings"])
-        assert [c.chunk_id for c in result.citations] == ["chunk:1"]
+        assert "point from batch" in result.context
+        warnings = result.metadata["context_warnings"]
+        assert any("Dropped 1 report references" in w for w in warnings) is warns
+        assert [c.chunk_id for c in result.citations] == expected_chunks
 
     @pytest.mark.asyncio
     async def test_two_batches_never_share_points_from_shuffled_reports(self):

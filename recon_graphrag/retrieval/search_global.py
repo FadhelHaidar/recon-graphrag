@@ -560,8 +560,9 @@ class GlobalSearchRetriever:
             # envelope is built before the no-evidence returns below.
             point_meta: dict = {}
             point_context = ""
+            point_evidence: list[PartialAnswer] = []
             if point_mode:
-                point_context, point_meta = self._point_context(
+                point_context, point_meta, point_evidence = self._point_context(
                     query, partials, diag
                 )
 
@@ -602,10 +603,11 @@ class GlobalSearchRetriever:
 
             if not synthesize_response:
                 context = point_context if point_mode else self._partials_context(scored)
+                evidence = point_evidence if point_mode else scored
                 # Resolve citations from explicit map refs and report-derived refs.
                 phase_start = time.monotonic()
                 citations = await asyncio.to_thread(
-                    self._resolve_source_citations, diag, scored, report_keys
+                    self._resolve_source_citations, diag, evidence, report_keys
                 )
                 logger.debug(
                     "global phase=citations ms=%d refs=%d citations=%d",
@@ -623,7 +625,7 @@ class GlobalSearchRetriever:
                     metadata["token_usage"] = token_usage
                 graph = (
                     await self._graph_evidence(
-                        scored, report_keys, synthesis_included=False
+                        evidence, report_keys, synthesis_included=False
                     )
                     if include_graph_evidence
                     else {}
@@ -897,7 +899,10 @@ class GlobalSearchRetriever:
             contributing_reports=[key["community_id"] for key in contributing_keys],
             contributing_report_keys=contributing_keys,
             community_level=next(iter(levels)) if len(levels) == 1 else None,
-            report_selection="map_reported_else_batch",
+            report_selection=(
+                "retained_point_reports" if self.map_strategy == "scored_points"
+                else "map_reported_else_batch"
+            ),
             synthesis_included=synthesis_included,
         )
         return builder.build()
@@ -1208,12 +1213,12 @@ class GlobalSearchRetriever:
         query: str,
         partials: list[PartialAnswer],
         diag: GlobalSearchDiagnostics,
-    ) -> tuple[str, dict]:
-        """Select scored points into one JSON context envelope within budget."""
+    ) -> tuple[str, dict, list[PartialAnswer]]:
+        """Pack scored points and return only their contributing reports."""
         counter = self.token_counter
         budget = self.reduce_budget_tokens
 
-        blocks: list[str] = []
+        blocks: list[tuple[str, str, list[str]]] = []
         ordered = sorted(
             (
                 (partial.batch_id, index, point)
@@ -1224,11 +1229,12 @@ class GlobalSearchRetriever:
             ),
             key=lambda item: (-item[2]["score"], item[0], item[1]),
         )
-        for _, _, point in ordered:
+        for batch_id, _, point in ordered:
             text = f"[Score {point['score']}] {point['description']}"
-            if point["report_ids"]:
-                text += "\nReports: " + ", ".join(point["report_ids"])
-            blocks.append(text)
+            report_ids = point["report_ids"]
+            if report_ids:
+                text += "\nReports: " + ", ".join(report_ids)
+            blocks.append((text, batch_id, report_ids))
 
         envelope = {
             "query": query,
@@ -1238,8 +1244,11 @@ class GlobalSearchRetriever:
             "citations": [],
         }
 
-        def over_budget(kept: list[str], notice: str | None) -> bool:
-            envelope["context"] = "\n\n".join(([notice] if notice else []) + kept)
+        def render(kept: list[int], notice: str | None) -> str:
+            return "\n\n".join(([notice] if notice else []) + [blocks[i][0] for i in kept])
+
+        def over_budget(kept: list[int], notice: str | None) -> bool:
+            envelope["context"] = render(kept, notice)
             return counter.count(json.dumps(envelope, ensure_ascii=False)) > budget
 
         if over_budget([], None):
@@ -1249,14 +1258,12 @@ class GlobalSearchRetriever:
                 "reduce_budget_tokens is too small for the global context envelope"
             )
 
-        kept: list[str] = []
-
-        def pack(notice: str | None) -> list[str]:
+        def pack(notice: str | None) -> list[int]:
             # Skip an oversized point and keep packing: no text slicing.
-            packed: list[str] = []
-            for block in blocks:
-                if not over_budget([*packed, block], notice):
-                    packed.append(block)
+            packed: list[int] = []
+            for index in range(len(blocks)):
+                if not over_budget([*packed, index], notice):
+                    packed.append(index)
             return packed
 
         kept = pack(None)
@@ -1269,7 +1276,16 @@ class GlobalSearchRetriever:
                 )
 
         dropped = len(blocks) - len(kept)
-        context = "\n\n".join(([notice] if notice else []) + kept)
+        context = render(kept, notice)
+        retained_reports: dict[str, list[str]] = {}
+        for i in kept:
+            _, batch_id, report_ids = blocks[i]
+            retained_reports.setdefault(batch_id, []).extend(report_ids)
+        evidence = [
+            # Limit even the resolver's fallback to the retained report IDs.
+            PartialAnswer(batch_id, "", 0, report_ids, batch_report_ids=report_ids)
+            for batch_id, report_ids in retained_reports.items()
+        ]
 
         all_failed = diag.map_batches > 0 and diag.map_failed == diag.map_batches
         warnings: list[str] = []
@@ -1303,7 +1319,7 @@ class GlobalSearchRetriever:
             "context_warnings": warnings,
             "context_failed": all_failed,
         }
-        return context, metadata
+        return context, metadata, evidence
 
     def _point_partial(self, batch: MapBatch, response: Any) -> PartialAnswer:
         """Validate a batch's points and scope their report IDs to the batch."""
