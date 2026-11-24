@@ -20,11 +20,13 @@ from tests.pipelines.writer_scenarios import (
 class FakeTransaction:
     def __init__(self, session: FakeSession):
         self._session = session
+        self.queries: list[str] = []
         self.committed = False
         self.rolled_back = False
 
     def run(self, query: str, parameters: dict | None = None):
-        return self._session.run(query, parameters)
+        self.queries.append(query)
+        return self._session.respond(query, parameters)
 
     def commit(self) -> None:
         self.committed = True
@@ -42,9 +44,12 @@ class FakeSession:
         self.transactions: list[FakeTransaction] = []
 
     def run(self, query: str, parameters: dict | None = None):
+        self.queries.append(query)
+        return self.respond(query, parameters)
+
+    def respond(self, query: str, parameters: dict | None = None):
         if self.fail_on and self.fail_on in query:
             raise RuntimeError("connection dropped")
-        self.queries.append(query)
         params = parameters or {}
         if "UNWIND $rows AS row" in query and "__recon_write_lock" in query:
             rows = params["rows"]
@@ -97,7 +102,8 @@ def test_document_write_is_one_transaction(store_and_session, failing_write):
     transaction = session.transactions[0]
     assert transaction.committed is (failing_write is None)
     assert transaction.rolled_back is (failing_write is not None)
-    assert session.queries, "writer statements must run inside the transaction"
+    assert not session.queries, "no writer statement may use autocommit"
+    assert any("MERGE (d:Document" in query for query in transaction.queries)
 
 
 @pytest.mark.parametrize("fail_on", [None])
@@ -133,9 +139,10 @@ def test_validation_error_rolls_back_before_writing(store_and_session, fail_on):
         store.write_graph_document(document)
 
     assert session.transactions[0].rolled_back is True
+    assert not session.queries
     assert [
         query
-        for query in session.queries
+        for query in session.transactions[0].queries
         if "MERGE" in query and "__recon_write_lock" not in query
     ] == []
 
@@ -153,11 +160,11 @@ class FlakySession(FakeSession):
         super().__init__()
         self.failures = failures
 
-    def run(self, query: str, parameters: dict | None = None):
+    def respond(self, query: str, parameters: dict | None = None):
         if self.failures and "MERGE (e:__Entity__" in query:
             self.failures -= 1
             raise DeadlockError("DeadlockDetected: would form a cycle")
-        return super().run(query, parameters)
+        return super().respond(query, parameters)
 
 
 def _flaky_store(name: str, failures: int) -> tuple[Any, FlakySession]:
@@ -176,7 +183,8 @@ def test_deadlock_is_retried_inside_the_writer(name):
     assert len(session.transactions) == 2
     assert session.transactions[0].rolled_back is True
     assert session.transactions[1].committed is True
-    assert session.queries, "the retry must actually write the document"
+    assert not session.queries
+    assert any("MERGE (d:Document" in query for query in session.transactions[1].queries)
 
 
 def test_lock_batch_precedes_the_authoritative_state_read(store_and_session):
@@ -184,7 +192,8 @@ def test_lock_batch_precedes_the_authoritative_state_read(store_and_session):
 
     store.write_graph_document(make_graph_document())
 
-    queries = session.queries
+    assert not session.queries
+    queries = session.transactions[0].queries
     lock_index = next(
         index for index, query in enumerate(queries) if "__recon_write_lock" in query
     )
@@ -403,11 +412,11 @@ class ConstraintSession(FakeSession):
         self.error = error
         self.failures = failures
 
-    def run(self, query: str, parameters: dict | None = None):
+    def respond(self, query: str, parameters: dict | None = None):
         if self.failures and "MERGE (e:__Entity__" in query:
             self.failures -= 1
             raise self.error()
-        return super().run(query, parameters)
+        return super().respond(query, parameters)
 
 
 @pytest.mark.parametrize(

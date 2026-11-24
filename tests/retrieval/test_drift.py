@@ -19,6 +19,21 @@ from recon_graphrag.retrieval.drift_types import DriftSearchConfig
 from recon_graphrag.retrieval.search_drift import DriftSearchRetriever
 
 
+def text_vector(text: str) -> list[float]:
+    """Distinct vector per text so fake lookups reveal the embedded text."""
+    return [float(len(text)), float(len(text.split())), 1.0]
+
+
+class CharacterCounter:
+    """One token per character so packed-budget arithmetic is exact."""
+
+    def count(self, text):
+        return len(text)
+
+    def truncate(self, text, max_tokens):
+        return text[:max_tokens]
+
+
 class FakeGraphStore:
     """Fake store with vector_search_community_reports support."""
 
@@ -97,6 +112,14 @@ class FakeEmbedder:
     async def async_embed_query(self, text):
         self.queries.append(text)
         return [0.1, 0.2, 0.3]
+
+
+class TextVectorEmbedder(FakeEmbedder):
+    """Fake embedder that maps each text to its own vector."""
+
+    async def async_embed_query(self, text):
+        self.queries.append(text)
+        return text_vector(text)
 
 
 class FakeLLM:
@@ -235,6 +258,7 @@ class HydeReportStore(ReportSelectionStore):
         super().__init__(batches[0])
         self.batches = batches
         self.report_searches: list[dict] = []
+        self.report_vectors: list[list[float]] = []
 
     def vector_search_community_reports(
         self, query_vector, graph_name, top_k=3, level=None
@@ -244,6 +268,7 @@ class HydeReportStore(ReportSelectionStore):
             "top_k": top_k,
             "level": level,
         })
+        self.report_vectors.append(list(query_vector))
         index = min(len(self.report_searches) - 1, len(self.batches) - 1)
         return list(self.batches[index][:top_k])
 
@@ -632,8 +657,9 @@ class TestDriftUnrestrictedReports:
             )
 
         llm = PromptDrivenLLM(respond)
+        embedder = TextVectorEmbedder()
         retriever = DriftSearchRetriever(
-            cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()),
+            cast(Any, store), cast(Any, llm), cast(Any, embedder),
             config=DriftSearchConfig(
                 community_level=None, use_hyde=True, primer_top_k=4,
             ),
@@ -646,6 +672,13 @@ class TestDriftUnrestrictedReports:
         assert store.report_searches == [
             {"graph_name": "entity-graph", "top_k": 4, "level": None},
             {"graph_name": "entity-graph", "top_k": 4, "level": None},
+        ]
+        assert embedder.queries == ["query", "Hypothetical report text."]
+        # The second report lookup receives the hypothetical text vector, not
+        # the query vector that opened the primer.
+        assert store.report_vectors == [
+            text_vector("query"),
+            text_vector("Hypothetical report text."),
         ]
         primer_prompt = llm.prompts[1]
         assert "Report report:fresh (level 2):" in primer_prompt
@@ -1027,25 +1060,51 @@ class TestDriftConversationHistory:
 class TestDriftPromptCustomization:
     @pytest.mark.asyncio
     async def test_custom_reduce_prompt(self):
-        store = FakeGraphStore()
-        llm = FakeLLM(
-            responses=[
-                json.dumps({
-                    "answer": "Initial.",
-                    "score": 80,
-                    "follow_ups": [],
-                }),
-            ]
-        )
+        def respond(prompt):
+            if "CUSTOM REDUCE:" in prompt:
+                return "Custom reduce answer."
+            if "## Follow-up Question" in prompt:
+                question = _prompt_action_question(prompt)
+                assert question is not None
+                answer, score = {
+                    "q-high": ("High answer.", 90),
+                    "q-low": ("Low answer.", 10),
+                }[question]
+                return json.dumps({
+                    "answer": answer, "score": score, "follow_ups": [],
+                })
+            return primer_json(score=80, follow_ups=["q-high", "q-low"])
+
+        high = "[Score 90] Q: q-high\nA: High answer."
+        primer = "[Score 80] Q: query\nA: Primer answer."
+        llm = PromptDrivenLLM(respond)
         custom_prompt = "CUSTOM REDUCE: {query}\n{action_context}\n{conversation_history}"
-        retriever = DriftSearchRetriever(cast(Any, store), cast(Any, llm), cast(Any, FakeEmbedder()), reduce_prompt=custom_prompt,
-        config=DriftSearchConfig(use_hyde=False),)
+        retriever = DriftSearchRetriever(
+            cast(Any, FakeGraphStore()), cast(Any, llm), cast(Any, FakeEmbedder()),
+            reduce_prompt=custom_prompt,
+            config=DriftSearchConfig(
+                use_hyde=False,
+                action_use_mixed_context=False,
+                reduce_budget_tokens=len(high) + len(primer),
+            ),
+            token_counter=CharacterCounter(),
+        )
 
-        result = await retriever.search("query", top_k=2)
+        result = await retriever.search(
+            "query", top_k=2,
+            conversation_history="User: Hi\nAssistant: Hello",
+        )
 
-        assert result.answer
-        # The custom prompt must actually reach the LLM, not just the answer.
-        assert any("CUSTOM REDUCE:" in prompt for prompt in llm.prompts)
+        history = "\n## Conversation History\nUser: Hi\nAssistant: Hello\n"
+        expected_context = "\n\n".join([high, primer])
+        assert result.context == expected_context
+        assert result.answer == "Custom reduce answer."
+        # The reducer receives the exact rendered prompt: query, packed answers
+        # in score order, formatted history, and only the answers that fit the
+        # budget.
+        assert llm.prompts[-1] == (
+            f"CUSTOM REDUCE: query\n{expected_context}\n{history}"
+        )
 
 
 class TestDriftLimitsAndRepair:

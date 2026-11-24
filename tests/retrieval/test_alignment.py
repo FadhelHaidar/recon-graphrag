@@ -322,23 +322,6 @@ class TestAllowGeneralKnowledge:
 # P3: DRIFT HyDE, primer folds, action mixed context
 class TestDriftHyDE:
     @pytest.mark.asyncio
-    async def test_hyde_enabled_does_two_vector_searches(self):
-        """With use_hyde=True, primer phase does initial + re-rank vector searches."""
-        store = FakeGraphStore()
-        llm = FakeLLM()
-        retriever = DriftSearchRetriever(
-            store, llm, FakeEmbedder(),
-            config=DriftSearchConfig(use_hyde=True),
-        )
-
-        await retriever.search("query", top_k=2)
-
-        report_calls = [
-            c for c in store.calls if c[0] == "vector_search_community_reports"
-        ]
-        assert len(report_calls) == 2
-
-    @pytest.mark.asyncio
     async def test_hyde_disabled_does_one_vector_search(self):
         """With use_hyde=False, primer phase does one vector search."""
         store = FakeGraphStore()
@@ -354,24 +337,6 @@ class TestDriftHyDE:
             c for c in store.calls if c[0] == "vector_search_community_reports"
         ]
         assert len(report_calls) == 1
-
-    @pytest.mark.asyncio
-    async def test_hyde_calls_llm_for_hypothetical_answer(self):
-        """HyDE generates a hypothetical answer via LLM."""
-        store = FakeGraphStore()
-        llm = FakeLLM()
-        embedder = FakeEmbedder()
-        retriever = DriftSearchRetriever(
-            store, llm, embedder,
-            config=DriftSearchConfig(use_hyde=True),
-        )
-
-        await retriever.search("query", top_k=2)
-
-        # First prompt should be the HyDE prompt
-        assert "hypothetical" in llm.prompts[0].lower()
-        # Embedder should be called twice: query + hypothetical
-        assert len(embedder.queries) == 2
 
     @pytest.mark.asyncio
     async def test_hyde_default_is_enabled(self):

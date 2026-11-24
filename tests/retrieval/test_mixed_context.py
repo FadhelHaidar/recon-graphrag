@@ -7,9 +7,9 @@ from typing import Any, cast
 import pytest
 
 from recon_graphrag.llm import LLMResponse
-from recon_graphrag.retrieval.search_local import LocalSearchRetriever
 from recon_graphrag.retrieval.mixed_context import MixedContextBuilder
-from recon_graphrag.utils.tokens import PackItem, PackResult
+from recon_graphrag.retrieval.search_local import DEFAULT_ANSWER_PROMPT, LocalSearchRetriever
+from recon_graphrag.utils.tokens import ApproximateTokenCounter, PackItem, PackResult
 
 
 class FakeGraphStore:
@@ -208,26 +208,6 @@ class TestMixedContextBuilder:
 
         assert len(result.citations) == 1
         assert result.citations[0].chunk_id == "chunk:1"
-
-    def test_build_context_respects_token_budget(self):
-        store = FakeGraphStore()
-        builder = MixedContextBuilder(cast(Any, store), graph_name="entity-graph")
-
-        result = builder.build_context(
-            entity_matches=[{"id": "a", "score": 0.8}],
-            entity_context_rows=[
-                {
-                    "title": "Alice (Person)",
-                    "relationships": ["Person: Alice -[WORKS_AT]-> Organization: Acme"],
-                    "source_text": ["Alice directed Inception."],
-                    "source_chunk_ids": ["chunk:1"],
-                    "score": 0.8,
-                }
-            ],
-            token_budget=50,
-        )
-
-        assert result.used_tokens <= 50 + 10  # small rounding tolerance
 
     def test_build_context_with_no_communities(self):
         class NoCommStore(FakeGraphStore):
@@ -651,13 +631,16 @@ class TestLocalSearchMixedDegradation:
         result = await retriever.search(
             "Who is Alice?",
             top_k=1,
-            token_budget=12000,
+            token_budget=120,
             synthesize_citation_metadata=True,
             synthesis_metadata_keys=["record_id"],
         )
 
         assert "=== Citation metadata ===" in result.context
         assert '"record_id": "row-42"' in result.context
-        # The context handed back must be exactly what the LLM saw.
-        assert '"record_id": "row-42"' in llm.prompts[0]
-        assert result.context in llm.prompts[0]
+        assert "row-source" not in result.context
+        assert llm.prompts == [
+            DEFAULT_ANSWER_PROMPT.format(query="Who is Alice?", context=result.context)
+        ]
+        assert result.metadata["used_tokens"] == ApproximateTokenCounter().count(result.context)
+        assert result.metadata["used_tokens"] <= 120

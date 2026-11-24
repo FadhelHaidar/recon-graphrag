@@ -1,6 +1,7 @@
 """Tests for GraphBuilderPipeline."""
 
 import asyncio
+import json
 import logging
 import re
 from typing import Any, cast
@@ -22,7 +23,8 @@ from recon_graphrag.extraction.structured import ColumnEntity, RowMapping
 from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.memgraph.store import MemgraphGraphStore
 from recon_graphrag.graphdb.neo4j.store import Neo4jGraphStore
-from recon_graphrag.llm.base import BaseLLM
+from recon_graphrag.llm.base import BaseLLM, LLMResponse
+from recon_graphrag.models.artifacts import SourceReference
 from recon_graphrag.observability import UsageTrackingLLM, track_usage
 from recon_graphrag.pipelines.graphrag_pipeline import GraphBuilderPipeline
 from recon_graphrag.pipelines.writer import CypherGraphWriter
@@ -374,32 +376,61 @@ def fake_writer():
 
 
 @pytest.mark.asyncio
-async def test_build_from_text_orchestration(
-    movie_schema, fake_llm, fake_embedder, fake_writer
+async def test_build_from_text_writes_claims_with_chunk_provenance(
+    movie_schema, fake_llm, fake_embedder
 ):
-    store = FakeGraphStore()
+    store = _PipelineStatefulStore()
+    writer = MagicMock(wraps=CypherGraphWriter(cast(GraphStore, store)))
+    extraction = json.loads(fake_llm.ainvoke.return_value.content)
+    second_extraction = json.loads(fake_llm.ainvoke.return_value.content)
+    second_extraction["nodes"][0]["properties"]["name"] = "Bob"
+    texts = ["Alice directed Inception.", "Bob directed Inception.  "]
+    llm = MagicMock(supports_structured_output=True)
+    llm.ainvoke = AsyncMock(side_effect=[
+        LLMResponse(content=json.dumps(payload))
+        for extracted, name in [(extraction, "Alice"), (second_extraction, "Bob")]
+        for payload in (extracted, {"claims": [{
+            "subject_entity_id": "p1", "object_entity_id": "m1",
+            "claim_type": "credit", "description": f"{name} directed Inception.",
+            "status": "active", "start_date": None, "end_date": None,
+            "source_text": None, "text_unit_id": None,
+        }]})
+    ])
     pipeline = GraphBuilderPipeline(
-        graph_store=store,
-        llm=fake_llm,
-        embedder=fake_embedder,
-        graph_writer=fake_writer,
-        perform_entity_resolution=False,
-        embed_entities=False,
+        graph_store=cast(GraphStore, store), llm=llm, embedder=fake_embedder,
+        graph_writer=writer, perform_entity_resolution=False, embed_entities=False,
+        summarize_descriptions=False, track_token_usage=False,
     )
 
     result = await pipeline.build_from_text(
-        "Alice directed Inception in 2010.",
-        metadata={"source": "test"},
-        schema=movie_schema,
+        "".join(texts), metadata={"document_id": "doc:credits", "source": "test"},
+        schema=movie_schema, max_gleanings=0, extract_claims=True,
+        extraction_concurrency=1, chunk_size=len(texts[0]), chunk_overlap=0,
+        chunk_unit="characters",
     )
 
-    assert "extraction" in result
-    assert "validation" in result
-    assert result["extraction"]["chunks"] > 0
-    fake_writer.write_graph_document.assert_called_once()
-    written_doc = fake_writer.write_graph_document.call_args[0][0]
-    assert len(written_doc.entities) > 0
-    assert len(written_doc.relationships) > 0
+    writer.write_graph_document.assert_called_once()
+    document = writer.write_graph_document.call_args.args[0]
+    assert [chunk.text.strip() for chunk in document.chunks] == [text.strip() for text in texts]
+    entity_ids = {entity.properties["name"]: entity.id for entity in document.entities}
+    assert entity_ids["Alice"] != entity_ids["Bob"]
+    assert [(claim.entity_id, claim.object_entity_id, claim.source) for claim in document.claims] == [
+        (entity_ids[name], entity_ids["Inception"], SourceReference(
+            document_id="doc:credits", chunk_id=chunk.id, document_name="test",
+            char_start=chunk.metadata["char_start"], char_end=chunk.metadata["char_end"],
+        ))
+        for name, chunk in zip(("Alice", "Bob"), document.chunks, strict=True)
+    ]
+    for claim in document.claims:
+        stored = store.get_claim(claim.id)
+        assert stored is not None
+        assert (stored["entity_id"], stored["object_entity_id"], stored["chunk_id"]) == (
+            claim.entity_id, claim.object_entity_id, claim.source.chunk_id,
+        )
+    assert result["extraction"]["write_stats"] == {
+        "documents": 1, "chunks": 2, "entities": 3, "relationships": 2,
+        "evidence_links": 4, "claims": 2,
+    }
 
 
 class _PipelineStatefulStore(StatefulFakeGraphStore):

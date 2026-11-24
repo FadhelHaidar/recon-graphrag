@@ -530,7 +530,8 @@ class _GatePausingStore:
         ):
             self._paused = True
             self._entered.set()
-            self._released.wait(30)
+            if not self._released.wait(30):
+                raise TimeoutError("gate release timed out inside the pause")
 
     def execute_query(self, query, parameters=None):
         rows = self._store.execute_query(query, parameters)
@@ -622,6 +623,18 @@ def _gate_staged_read_state(self, graph_document):
     return state
 
 
+class _GateStagedWriter(CypherGraphWriter):
+    """Candidate writer whose staged read binds at class level.
+
+    write_graph_document copies the writer and swaps in the transaction
+    executor. An instance-bound override would keep the outer store, so the
+    staged read would bypass the reader transaction.
+    """
+
+    def _read_document_state(self, graph_document):
+        return _gate_staged_read_state(self, graph_document)
+
+
 def _gate_dump(store, graph):
     nodes, rels, idmap = [], [], {}
     for row in store.execute_query(
@@ -667,9 +680,8 @@ def _gate_variant(store, other, graph, path, scenario, variant):
 
     entered, released = threading.Event(), threading.Event()
     pausing = _GatePausingStore(store, entered, released, scenario == "remove")
-    writer = CypherGraphWriter(cast(GraphStore, pausing))
-    if variant == "candidate":
-        writer._read_document_state = _gate_staged_read_state.__get__(writer)
+    writer_cls = _GateStagedWriter if variant == "candidate" else CypherGraphWriter
+    writer = writer_cls(cast(GraphStore, pausing))
 
     outcome, error = {}, []
 
@@ -682,10 +694,6 @@ def _gate_variant(store, other, graph, path, scenario, variant):
         except Exception as exc:  # noqa: BLE001
             local_error.append(f"{type(exc).__name__}: {exc}")
 
-    reader = threading.Thread(target=read_write)
-    reader.start()
-    entered.wait(30)
-
     def mutate(local_error=error):
         try:
             CypherGraphWriter(other).write_graph_document(
@@ -694,11 +702,21 @@ def _gate_variant(store, other, graph, path, scenario, variant):
         except Exception as exc:  # noqa: BLE001
             local_error.append(f"concurrent {type(exc).__name__}: {exc}")
 
-    mutator = threading.Thread(target=mutate)
-    mutator.start()
-    mutator.join(20)
-    released.set()
-    reader.join(30)
+    reader = threading.Thread(target=read_write)
+    reader.start()
+    entered_ok = entered.wait(30)
+    try:
+        assert entered_ok, f"paused reader did not reach the gate: {error}"
+        mutator = threading.Thread(target=mutate)
+        mutator.start()
+        mutator.join(20)
+        # The schedule needs the commit to land before the reader's state read.
+        # A late mutator would silently test a different ordering.
+        assert not mutator.is_alive(), "concurrent writer did not finish in time"
+    finally:
+        released.set()
+        reader.join(30)
+    assert not reader.is_alive(), "paused reader did not finish in time"
     return {
         "receipt": outcome.get("receipt"),
         "error": error[0] if error else None,
@@ -729,10 +747,15 @@ def _gate_run(store, graph, path, scenario):
 def test_writer_state_read_concurrency_gate(backend_label, scenario, path):
     """Pin state-read behavior under a same-document concurrent commit.
 
-    Divergent insert cells document why the staged skip of the evidence and
-    claim reads is unsafe outside snapshot isolation: the baseline reader sees
-    and removes concurrently committed rows, the staged candidate would keep
-    them. Production keeps the baseline reads.
+    The cells use different schedules. The transaction-path gate pauses the
+    reader at its previous-chunk discovery, before the lock batch. The
+    concurrent commit therefore lands before the state read, and both
+    strategies reconcile the same expected graph. That cell proves pre-lock
+    visibility and reconciliation, not that a held lock blocks the other
+    writer. The autocommit reader pauses inside its state read, after its chunk
+    query returned, so the staged skip can diverge there. The baseline removes
+    the committed rows, and the candidate keeps them. Production keeps the
+    baseline reads.
     """
     prefix = backend_label.upper()
     require_integration_env(
@@ -773,6 +796,16 @@ def test_writer_state_read_concurrency_gate(backend_label, scenario, path):
                 # aborts the conflicting reader; the writer retry then re-reads
                 # and both variants remove the same rows. Pin variant equality.
                 assert baseline["graph"] == candidate["graph"]
+            elif path == "transaction":
+                # Pre-lock visibility, not lock exclusion: the commit lands
+                # before the lock batch and the state read, so both strategies
+                # reconcile the same expected graph.
+                assert baseline["graph"] == candidate["graph"]
+                assert node_ids(candidate) == {"gate-doc", "e_gate"}
+                # Coarse signal: one marker anywhere in the run, and discovery
+                # itself emits the claim marker.
+                assert baseline["skipped"] is False
+                assert candidate["skipped"] is False
             else:
                 assert "gate:c0" in node_ids(baseline) and "gate:c0" in node_ids(candidate)
                 assert baseline["graph"] != candidate["graph"]

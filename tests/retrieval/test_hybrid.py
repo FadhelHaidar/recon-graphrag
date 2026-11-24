@@ -15,14 +15,20 @@ class FakeGraphStore:
         self.calls = []
 
     def vector_search(self, index_name, query_vector, k, label=None, filters=None):
-        self.calls.append(("vector_search", {"index_name": index_name, "k": k, "label": label, "filters": filters}))
+        self.calls.append(("vector_search", {
+            "index_name": index_name, "query_vector": query_vector,
+            "k": k, "label": label, "filters": filters,
+        }))
         return [
             {"id": "a", "score": 0.7},
             {"id": "b", "score": 0.5},
         ]
 
     def keyword_search(self, index_name, query_text, k, label=None, filters=None):
-        self.calls.append(("keyword_search", {"index_name": index_name, "k": k, "label": label, "filters": filters}))
+        self.calls.append(("keyword_search", {
+            "index_name": index_name, "query_text": query_text,
+            "k": k, "label": label, "filters": filters,
+        }))
         return [
             {"id": "a", "score": 1.0},
             {"id": "c", "score": 0.4},
@@ -183,12 +189,17 @@ async def test_hybrid_entity_retriever_embeds_queries_and_fetches_context():
     assert embedder.queries == ["Who directed Inception?"]
     assert result.items[0].content["title"] == "Alice (Person)"
     assert result.items[0].content["custom"] == "value"
-    vector_call = [c for c in store.calls if c[0] == "vector_search"][0]
-    keyword_call = [c for c in store.calls if c[0] == "keyword_search"][0]
-    assert vector_call[1]["k"] == 6
-    assert keyword_call[1]["k"] == 6
-    assert vector_call[1]["filters"] == {"graph_name": "entity-graph"}
-    assert keyword_call[1]["filters"] == {"graph_name": "entity-graph"}
+    scope = {"k": 6, "label": "__Entity__", "filters": {"graph_name": "entity-graph"}}
+    searches = [call for call in store.calls if call[0] in {"vector_search", "keyword_search"}]
+    assert len(searches) == 2
+    assert dict(searches) == {
+        "vector_search": {
+            **scope, "index_name": "entity-embeddings", "query_vector": [0.1, 0.2, 0.3],
+        },
+        "keyword_search": {
+            **scope, "index_name": "entity-names", "query_text": "Who directed Inception?",
+        },
+    }
     context_call = [c for c in store.calls if c[0] == "fetch_entity_context"][0]
     assert context_call[1]["matches"] == [
         {"id": "a", "score": 1.0},
@@ -220,6 +231,9 @@ async def test_hybrid_entity_retriever_accepts_precomputed_query_vector():
     )
 
     assert embedder.queries == []
+    assert [call["query_vector"] for name, call in store.calls if name == "vector_search"] == [
+        [9.0, 8.0, 7.0]
+    ]
     assert result.metadata == {"query_vector": [9.0, 8.0, 7.0]}
 
 
