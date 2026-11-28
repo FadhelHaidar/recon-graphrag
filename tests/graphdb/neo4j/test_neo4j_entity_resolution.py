@@ -1034,3 +1034,102 @@ async def test_neo4j_resolver_normalized_builds_groups_once(monkeypatch):
 
     assert calls == [2]
     assert result["merged_groups"] == 1
+
+
+@pytest.mark.asyncio
+async def test_neo4j_merge_excludes_structural_edges_clears_fingerprints_and_removes_self_loops():
+    rows = [
+        {
+            "node_id": "4:a",
+            "entity_id": "e1",
+            "graph_name": "g1",
+            "resolve_value": "OpenAI",
+            "labels": ["__Entity__", "Organization"],
+            "properties": {
+                "name": "OpenAI",
+                "title": "OpenAI",
+                "description": "AI lab",
+                "descriptions": ["AI lab"],
+            },
+        },
+        {
+            "node_id": "4:b",
+            "entity_id": "e2",
+            "graph_name": "g1",
+            "resolve_value": "openai",
+            "labels": ["__Entity__", "Organization"],
+            "properties": {
+                "name": "openai",
+                "title": "openai",
+                "description": "AI research company",
+                "descriptions": ["AI research company"],
+            },
+        },
+    ]
+    store = FakeGraphStore(apoc_available=True, rows=rows)
+    resolver = _Neo4jEntityResolver(store)
+
+    result = await resolver.resolve(strategy="normalized", graph_name="g1")
+
+    assert result["merged_groups"] == 1
+    merge_query, merge_params = next(
+        call for call in store.calls if "apoc.refactor.mergeNodes" in call[0]
+    )
+    assert merge_params["structural_rel_types"] == ["FROM_CHUNK", "SUBJECT_OF", "IN_COMMUNITY"]
+    assert "WHERE NOT type(r) IN $structural_rel_types" in merge_query
+    assert "WHERE NOT type(self_r) IN $structural_rel_types" in merge_query
+    assert "title: 'discard'" in merge_query
+    assert "created: 'discard'" in merge_query
+    assert "updated: 'discard'" in merge_query
+    assert "embedding_content_fingerprint: 'discard'" in merge_query
+    assert "embedding_model_fingerprint: 'discard'" in merge_query
+    assert "node.embedding_content_fingerprint = null" in merge_query
+    assert "node.embedding_model_fingerprint = null" in merge_query
+
+    post_query, post_params = next(
+        call for call in store.calls if "SET r.source_chunk_ids" in call[0]
+    )
+    assert "WHERE NOT type(r) IN $structural_rel_types" in post_query
+    assert post_params["structural_rel_types"] == ["FROM_CHUNK", "SUBJECT_OF", "IN_COMMUNITY"]
+
+    summary_query, summary_params = next(
+        call for call in store.calls if "SET n.descriptions = $descriptions" in call[0]
+    )
+    assert "fingerprint" not in summary_params
+    assert "n.description_summary_status = null" in summary_query
+
+
+def test_neo4j_merge_retries_on_retryable_write_error(monkeypatch):
+    from recon_graphrag.graphdb.entity_resolution import _EntityRecord
+
+    monkeypatch.setattr(
+        "recon_graphrag.graphdb.neo4j.entity_resolution.time.sleep",
+        lambda _seconds: None,
+    )
+
+    class TransientLockError(RuntimeError):
+        code = "Neo.TransientError.Transaction.DeadlockDetected"
+
+    class FlakyNeo4jStore(FakeGraphStore):
+        def __init__(self):
+            super().__init__(apoc_available=True, rows=[])
+            self.merge_attempts = 0
+
+        def execute_query(self, query, parameters=None):
+            if "apoc.refactor.mergeNodes" in query:
+                self.merge_attempts += 1
+                if self.merge_attempts == 1:
+                    raise TransientLockError("transient deadlock")
+            return super().execute_query(query, parameters)
+
+    store = FlakyNeo4jStore()
+    resolver = _Neo4jEntityResolver(store)
+    group = [
+        _EntityRecord("4:a", "e1", "g1", "Organization", "OpenAI", "openai", {}),
+        _EntityRecord("4:b", "e2", "g1", "Organization", "openai", "openai", {}),
+    ]
+
+    merged = resolver._merge_groups([group], "name")
+
+    assert merged == 2
+    assert store.merge_attempts == 2

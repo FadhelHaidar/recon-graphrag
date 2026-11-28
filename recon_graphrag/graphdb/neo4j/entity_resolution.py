@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from typing import cast
@@ -19,7 +21,15 @@ from recon_graphrag.graphdb.entity_resolution import (
     _normalize_name,
 )
 from recon_graphrag.graphdb.cypher import escape_cypher_identifier
-from recon_graphrag.graphdb.store_base import QueryExecutor
+from recon_graphrag.graphdb.store_base import (
+    WRITE_RETRY_ATTEMPTS as _MERGE_RETRY_ATTEMPTS,
+    WRITE_RETRY_DELAY_SECONDS as _MERGE_RETRY_DELAY_SECONDS,
+    QueryExecutor,
+    is_retryable_write_error as _is_retryable_write_error,
+)
+
+logger = logging.getLogger(__name__)
+_STRUCTURAL_REL_TYPES = ("FROM_CHUNK", "SUBJECT_OF", "IN_COMMUNITY")
 
 
 class _Neo4jEntityResolver(BaseEntityResolver):
@@ -97,11 +107,39 @@ class _Neo4jEntityResolver(BaseEntityResolver):
         preflight_merge_ownership(self.graph_store, groups, "elementId")
         merged_nodes = 0
         for group in groups:
-            with begin() as executor:
-                merged = self._merge_group(group, resolve_property, executor)
+            merged = self._merge_group_with_retry(group, resolve_property, begin)
             if merged:
                 merged_nodes += len(group)
         return merged_nodes
+
+    def _merge_group_with_retry(
+        self,
+        group: list[_EntityRecord],
+        resolve_property: str,
+        begin: Callable[[], AbstractContextManager[QueryExecutor]],
+    ) -> bool:
+        for attempt in range(1, _MERGE_RETRY_ATTEMPTS + 1):
+            try:
+                with begin() as executor:
+                    return self._merge_group(group, resolve_property, executor)
+            except Exception as error:
+                if (
+                    not _is_retryable_write_error(error)
+                    or attempt == _MERGE_RETRY_ATTEMPTS
+                ):
+                    raise
+                logger.warning(
+                    "Neo4j merge group rolled back: graph_name=%s "
+                    "canonical_entity_id=%s attempt=%s/%s error=%s: %s",
+                    group[0].graph_name if group else "",
+                    group[0].entity_id if group else "",
+                    attempt,
+                    _MERGE_RETRY_ATTEMPTS,
+                    type(error).__name__,
+                    error,
+                )
+                time.sleep(_MERGE_RETRY_DELAY_SECONDS * attempt)
+        raise AssertionError("unreachable: retry loop exhausted without raising")
 
     def _merge_group(
         self,
@@ -140,6 +178,7 @@ class _Neo4jEntityResolver(BaseEntityResolver):
             MATCH (n)
             WHERE elementId(n) IN $node_ids
             OPTIONAL MATCH (n)-[r]-()
+            WHERE NOT type(r) IN $structural_rel_types
             WITH n, r ORDER BY apoc.coll.indexOf($node_ids, elementId(n))
             WITH collect(DISTINCT n) AS nodes, collect(DISTINCT r) AS rels
             // APOC combine fails on empty arrays; null carries the same empty ownership.
@@ -154,7 +193,11 @@ class _Neo4jEntityResolver(BaseEntityResolver):
             WITH nodes
             CALL apoc.refactor.mergeNodes(
                 nodes,
-                {{properties: {{uid: 'discard', id: 'discard', graph_name: 'discard', `.*`: 'combine'}},
+                {{properties: {{uid: 'discard', id: 'discard', graph_name: 'discard',
+                  title: 'discard', created: 'discard', updated: 'discard',
+                  embedding_content_fingerprint: 'discard',
+                  embedding_model_fingerprint: 'discard',
+                  `.*`: 'combine'}},
                   mergeRels: true}}
             ) YIELD node
             SET node.{escape_cypher_identifier(resolve_property)} = $canonical_name,
@@ -164,17 +207,25 @@ class _Neo4jEntityResolver(BaseEntityResolver):
                 node.canonical_key = coalesce($canonical_key, node.canonical_key),
                 node.human_readable_id = coalesce($canonical_readable_id, node.human_readable_id),
                 node.embedding = null,
-                node.embedding_input_fingerprint = null
+                node.embedding_input_fingerprint = null,
+                node.embedding_content_fingerprint = null,
+                node.embedding_model_fingerprint = null
             WITH node
             // Claim objects are scalar IDs, not relationships rewired by APOC.
             OPTIONAL MATCH (c:Claim {{graph_name: $canonical_graph_name}})
             WHERE c.object_entity_id IN $losing_entity_ids
             WITH node, collect(c) AS claims
             FOREACH (c IN claims | SET c.object_entity_id = $canonical_entity_id)
+            WITH node
+            OPTIONAL MATCH (node)-[self_r]->(node)
+            WHERE NOT type(self_r) IN $structural_rel_types
+            WITH node, collect(DISTINCT self_r) AS self_rels
+            FOREACH (sr IN self_rels | DELETE sr)
             RETURN elementId(node) AS merged_id
             """,
             {
                 "node_ids": node_ids,
+                "structural_rel_types": list(_STRUCTURAL_REL_TYPES),
                 "canonical_entity_id": canonical_entity_id,
                 "losing_entity_ids": [e.entity_id for e in sorted_group[1:]],
                 "canonical_uid": build_uid(sorted_group[0].graph_name, canonical_entity_id),
@@ -187,13 +238,14 @@ class _Neo4jEntityResolver(BaseEntityResolver):
         if result:
             merged_id = result[0].get("merged_id")
             if merged_id:
-                # APOC can unwrap singleton provenance on nodes and edges.
+                # APOC can unwrap singleton provenance on nodes and domain edges.
                 executor.execute_query(
                     """
                     MATCH (n) WHERE elementId(n) = $node_id
                     SET n.description_sources = apoc.convert.toList(n.description_sources)
                     WITH n
                     MATCH (n)-[r]-()
+                    WHERE NOT type(r) IN $structural_rel_types
                     SET r.source_chunk_ids = apoc.convert.toList(r.source_chunk_ids),
                         r.description_sources = apoc.convert.toList(r.description_sources),
                         r.strength_sources = apoc.convert.toList(r.strength_sources)
@@ -215,7 +267,10 @@ class _Neo4jEntityResolver(BaseEntityResolver):
                         r.description_summary_updated = null,
                         r.description_summary_fallback = true
                     """,
-                    {"node_id": merged_id},
+                    {
+                        "node_id": merged_id,
+                        "structural_rel_types": list(_STRUCTURAL_REL_TYPES),
+                    },
                 )
             summary = self._merge_summaries.get(canonical_entity_id)
             if merged_id and summary:
@@ -240,7 +295,6 @@ class _Neo4jEntityResolver(BaseEntityResolver):
                             if text
                         )),
                         "description": summary["description"],
-                        "fingerprint": summary["description_input_fingerprint"],
                         "fallback": summary["description_summary_fallback"],
                     },
                 )

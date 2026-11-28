@@ -79,6 +79,33 @@ class _EntityRecord:
     properties: dict = field(default_factory=dict)
 
 
+_TOKEN_SPLIT_PATTERN = re.compile(r"[\s\-_/.,]+")
+_RESCUE_MIN_FUZZY_SCORE = 60.0
+_RESCUE_MAX_PER_ENTITY = 3
+
+
+def _acronym_tokens(value: str) -> list[str]:
+    if not value:
+        return []
+    cleaned = _PUNCTUATION_PATTERN.sub(" ", unicodedata.normalize("NFC", value).casefold())
+    return [tok for tok in _TOKEN_SPLIT_PATTERN.split(cleaned) if tok]
+
+
+def _multiword_acronym(value: str) -> str | None:
+    words = _acronym_tokens(value)
+    if len(words) < 2:
+        return None
+    return "".join(w[0] for w in words)
+
+
+def _is_multiword_acronym_pair(raw1: str, raw2: str, is_acronym_match) -> bool:
+    acr1 = _multiword_acronym(raw1)
+    acr2 = _multiword_acronym(raw2)
+    if acr1 is None and acr2 is None:
+        return False
+    return bool(is_acronym_match(raw1, raw2))
+
+
 class _FuzzyCandidateIndex:
     """Gate-compatible fuzzy candidate blocks for one resolution pass.
 
@@ -86,7 +113,8 @@ class _FuzzyCandidateIndex:
     token and the acronym gate can only admit another record that shares the
     leading character (or whose value is empty, which skips the gate). Blocking
     by graph/domain/leading character then length lets an anchor inspect its
-    gate-compatible block instead of the whole singleton pool.
+    gate-compatible block instead of the whole singleton pool. Multi-word
+    acronyms are indexed separately on pre-space-stripped tokens.
 
     Gates, pool order, used/self exclusion, and the candidate cap match a full
     scan exactly. If normalization ever stops producing single tokens the index
@@ -102,6 +130,8 @@ class _FuzzyCandidateIndex:
         # (graph_name, domain_label, leading_char) -> length -> [(pool_order, record)]
         self._blocks: dict[tuple[str, str, str], dict[int, list[tuple[int, _EntityRecord]]]] = {}
         self._leading: dict[tuple[str, str], list[str]] = {}
+        self._by_acronym: dict[tuple[str, str, str], list[tuple[int, _EntityRecord]]] = {}
+        self._by_flat: dict[tuple[str, str, str], list[tuple[int, _EntityRecord]]] = {}
         if not self._single_token:
             return
         for position, record in enumerate(pool):
@@ -114,6 +144,12 @@ class _FuzzyCandidateIndex:
             leading_chars = self._leading.setdefault(scope, [])
             if leading not in leading_chars:
                 leading_chars.append(leading)
+            acronym = _multiword_acronym(record.resolve_value)
+            if acronym and len(acronym) >= 2:
+                self._by_acronym.setdefault((*scope, acronym), []).append((position, record))
+            flat_tokens = "".join(_acronym_tokens(record.resolve_value))
+            if flat_tokens and len(flat_tokens) >= 2:
+                self._by_flat.setdefault((*scope, flat_tokens), []).append((position, record))
 
     def candidates(
         self,
@@ -143,6 +179,25 @@ class _FuzzyCandidateIndex:
                 self.inspections += len(records)
                 found.extend(records)
 
+        if self._by_acronym:
+            seen_positions = {pos for pos, _ in found}
+            acronym = _multiword_acronym(entity.resolve_value)
+            if acronym and len(acronym) >= 2:
+                for pos, rec in self._by_flat.get((*scope, acronym), ()):
+                    if pos not in seen_positions and _is_multiword_acronym_pair(
+                        entity.resolve_value, rec.resolve_value, is_acronym_match
+                    ):
+                        seen_positions.add(pos)
+                        found.append((pos, rec))
+            flat_tokens = "".join(_acronym_tokens(entity.resolve_value))
+            if flat_tokens and len(flat_tokens) >= 2:
+                for pos, rec in self._by_acronym.get((*scope, flat_tokens), ()):
+                    if pos not in seen_positions and _is_multiword_acronym_pair(
+                        entity.resolve_value, rec.resolve_value, is_acronym_match
+                    ):
+                        seen_positions.add(pos)
+                        found.append((pos, rec))
+
         selected = heapq.nsmallest(
             max_candidates,
             (
@@ -170,6 +225,11 @@ def _scan_candidates(
         if other.graph_name != entity.graph_name:
             continue
         if other.domain_label != entity.domain_label:
+            continue
+        if _is_multiword_acronym_pair(
+            entity.resolve_value, other.resolve_value, is_acronym_match
+        ):
+            candidates.append(other)
             continue
         len1 = len(entity.normalized_value)
         len2 = len(other.normalized_value)
@@ -400,8 +460,10 @@ class BaseEntityResolver(ABC):
     ) -> dict:
         merged_nodes = 0
         if not dry_run and groups:
+            # Both backends reset description_summary_status to null after
+            # merging so DescriptionSummarizer summarizes merged nodes once.
             self._merge_summaries = await self._prepare_merge_summaries(
-                groups, llm, concurrency=self._llm_concurrency
+                groups, None, concurrency=self._llm_concurrency
             )
             merged_nodes = await asyncio.to_thread(
                 self._merge_groups, groups, resolve_property
@@ -593,11 +655,19 @@ class BaseEntityResolver(ABC):
 
     @staticmethod
     def _is_acronym_match(s1: str, s2: str) -> bool:
-        words1 = s1.split()
-        words2 = s2.split()
-        acronym1 = "".join(w[0] for w in words1 if w)
-        acronym2 = "".join(w[0] for w in words2 if w)
-        return acronym1 == acronym2 or acronym1 == s2 or acronym2 == s1
+        words1 = _acronym_tokens(s1)
+        words2 = _acronym_tokens(s2)
+        if not words1 or not words2:
+            return False
+        acronym1 = "".join(w[0] for w in words1)
+        acronym2 = "".join(w[0] for w in words2)
+        flat1 = "".join(words1)
+        flat2 = "".join(words2)
+        return (
+            (len(words1) > 1 and acronym1 == flat2)
+            or (len(words2) > 1 and acronym2 == flat1)
+            or (len(words1) == 1 and len(words2) == 1 and acronym1 == acronym2)
+        )
 
     @staticmethod
     def _fuzzy_score(e1: _EntityRecord, e2: _EntityRecord) -> float:
@@ -652,11 +722,14 @@ class BaseEntityResolver(ABC):
                 concurrency=self._llm_concurrency,
             )
 
-        # When an LLM is available, rescue candidates that fuzzy scoring
-        # dropped.  The blocking heuristic already constrains the pool, so
-        # these are plausible matches worth LLM judgement.
+        # When an LLM is available, rescue plausible candidates that fuzzy
+        # scoring dropped, bounded per entity to avoid LLM fan-out explosions.
         if llm and dropped_pairs:
-            rescued = self._rescue_dropped_pairs(dropped_pairs, merged_ids)
+            rescued = self._rescue_dropped_pairs(
+                dropped_pairs,
+                merged_ids,
+                conflict_properties=conflict_properties,
+            )
             active_review_groups.extend(rescued)
 
         if llm and active_review_groups:
@@ -800,58 +873,45 @@ class BaseEntityResolver(ABC):
             elif isinstance(value, dict):
                 domain_aliases[key] = value
 
-        for e1 in entities:
-            if e1.node_id in merged_ids:
-                continue
-            for canonical, alias_list in simple_aliases.items():
-                norm_canonical = _normalize_name(canonical)
-                if e1.normalized_value != norm_canonical:
+        def _collect_rule(
+            canonical: str,
+            alias_list: list[str],
+            *,
+            domain_filter: str | None = None,
+        ) -> None:
+            norm_canonical = _normalize_name(canonical)
+            names = {norm_canonical} if norm_canonical else set()
+            for alias in alias_list:
+                norm_alias = _normalize_name(alias)
+                if norm_alias:
+                    names.add(norm_alias)
+            if not names:
+                return
+
+            buckets: dict[tuple[str, str], list[_EntityRecord]] = {}
+            for entity in entities:
+                if entity.node_id in merged_ids:
                     continue
-                for e2 in entities:
-                    if (
-                        e2.node_id in merged_ids
-                        or e2.node_id == e1.node_id
-                        or e2.graph_name != e1.graph_name
-                        or e2.domain_label != e1.domain_label
-                    ):
-                        continue
-                    if any(
-                        _normalize_name(alias) == e2.normalized_value
-                        for alias in alias_list
-                    ):
-                        groups.append([e1, e2])
-                        merged_ids.add(e1.node_id)
-                        merged_ids.add(e2.node_id)
-                        break
-                if e1.node_id in merged_ids:
-                    break
+                if domain_filter is not None and entity.domain_label != domain_filter:
+                    continue
+                if entity.normalized_value in names:
+                    scope = (entity.graph_name, entity.domain_label)
+                    buckets.setdefault(scope, []).append(entity)
+
+            for bucket in buckets.values():
+                if len(bucket) < 2:
+                    continue
+                bucket.sort(key=lambda e: 0 if e.normalized_value == norm_canonical else 1)
+                groups.append(bucket)
+                for entity in bucket:
+                    merged_ids.add(entity.node_id)
+
+        for canonical, alias_list in simple_aliases.items():
+            _collect_rule(canonical, alias_list)
 
         for domain, domain_alias_dict in domain_aliases.items():
-            for e1 in entities:
-                if e1.node_id in merged_ids or e1.domain_label != domain:
-                    continue
-                for canonical, alias_list in domain_alias_dict.items():
-                    norm_canonical = _normalize_name(canonical)
-                    if e1.normalized_value != norm_canonical:
-                        continue
-                    for e2 in entities:
-                        if (
-                            e2.node_id in merged_ids
-                            or e2.node_id == e1.node_id
-                            or e2.graph_name != e1.graph_name
-                            or e2.domain_label != domain
-                        ):
-                            continue
-                        if any(
-                            _normalize_name(alias) == e2.normalized_value
-                            for alias in alias_list
-                        ):
-                            groups.append([e1, e2])
-                            merged_ids.add(e1.node_id)
-                            merged_ids.add(e2.node_id)
-                            break
-                    if e1.node_id in merged_ids:
-                        break
+            for canonical, alias_list in domain_alias_dict.items():
+                _collect_rule(canonical, alias_list, domain_filter=domain)
 
         return groups, review_groups
 
@@ -892,17 +952,41 @@ class BaseEntityResolver(ABC):
         self,
         dropped_pairs: list[tuple[_EntityRecord, _EntityRecord, float]],
         merged_ids: set,
+        *,
+        conflict_properties: dict[str, list[str]] | list[str] | None = None,
+        min_fuzzy_score: float = _RESCUE_MIN_FUZZY_SCORE,
+        max_per_entity: int = _RESCUE_MAX_PER_ENTITY,
     ) -> list[dict]:
-        """Promote fuzzy-dropped pairs to LLM review.
+        """Promote plausible fuzzy-dropped pairs to LLM review.
 
-        These pairs passed the blocking heuristic (same domain, similar
-        length, compatible first token) but scored below the fuzzy review
-        threshold.  They are plausible matches worth LLM judgement.
+        Keeps multi-word acronym matches and pairs meeting ``min_fuzzy_score``,
+        capped to ``max_per_entity`` highest-scoring candidates per entity.
         """
-        rescued: list[dict] = []
+        eligible: list[tuple[_EntityRecord, _EntityRecord, float, bool]] = []
         for e1, e2, fuzzy_score in dropped_pairs:
             if e1.node_id in merged_ids or e2.node_id in merged_ids:
                 continue
+            is_acronym = _is_multiword_acronym_pair(
+                e1.resolve_value, e2.resolve_value, self._is_acronym_match
+            )
+            if not is_acronym and fuzzy_score < min_fuzzy_score:
+                continue
+            if conflict_properties and conflict_for_group([e1, e2], conflict_properties):
+                continue
+            eligible.append((e1, e2, fuzzy_score, is_acronym))
+
+        eligible.sort(key=lambda item: (item[3], item[2]), reverse=True)
+
+        rescued: list[dict] = []
+        counts: dict[Any, int] = {}
+        for e1, e2, fuzzy_score, _ in eligible:
+            if (
+                counts.get(e1.node_id, 0) >= max_per_entity
+                or counts.get(e2.node_id, 0) >= max_per_entity
+            ):
+                continue
+            counts[e1.node_id] = counts.get(e1.node_id, 0) + 1
+            counts[e2.node_id] = counts.get(e2.node_id, 0) + 1
             rescued.append(
                 {
                     "domain_label": e1.domain_label,

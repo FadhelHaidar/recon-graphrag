@@ -32,6 +32,8 @@ from recon_graphrag.graphdb.store_base import (
 )
 
 logger = logging.getLogger(__name__)
+_STRUCTURAL_REL_TYPES = frozenset({"FROM_CHUNK", "SUBJECT_OF", "IN_COMMUNITY"})
+_SCALAR_BOOKKEEPING_KEYS = ("title", "created", "updated")
 
 
 class _MemgraphEntityResolver(BaseEntityResolver):
@@ -250,6 +252,16 @@ class _MemgraphEntityResolver(BaseEntityResolver):
         combined_props = self._combine_property_rows(
             [entity.properties for entity in sorted_group]
         )
+        for scalar_key in _SCALAR_BOOKKEEPING_KEYS:
+            if scalar_key in combined_props:
+                canonical_scalar = _first_property_value(
+                    canonical.properties.get(scalar_key)
+                )
+                combined_props[scalar_key] = (
+                    canonical_scalar
+                    if canonical_scalar is not None
+                    else _first_property_value(combined_props[scalar_key])
+                )
         combined_props["id"] = canonical_entity_id
         combined_props["graph_name"] = canonical.graph_name
         combined_props["uid"] = build_uid(canonical.graph_name, canonical_entity_id)
@@ -259,6 +271,8 @@ class _MemgraphEntityResolver(BaseEntityResolver):
         # description. SET n += {embedding: null} removes the property.
         combined_props["embedding"] = None
         combined_props["embedding_input_fingerprint"] = None
+        combined_props["embedding_content_fingerprint"] = None
+        combined_props["embedding_model_fingerprint"] = None
         if canonical_key:
             combined_props["canonical_key"] = canonical_key
         if canonical_readable_id:
@@ -406,6 +420,14 @@ class _MemgraphEntityResolver(BaseEntityResolver):
         for node_id, rel_types in types_by_node.items():
             for rel_type in set(rel_types):
                 escaped_rel = escape_cypher_identifier(rel_type)
+                if rel_type in _STRUCTURAL_REL_TYPES:
+                    self._rewire_structural_relationships(
+                        node_id=node_id,
+                        canonical_id=canonical_id,
+                        merged_ids=merged_ids,
+                        escaped_rel=escaped_rel,
+                    )
+                    continue
                 self.graph_store.execute_query(
                     f"""
                     MATCH (source)-[r:{escaped_rel}]->(target)
@@ -417,6 +439,9 @@ class _MemgraphEntityResolver(BaseEntityResolver):
                     WHERE NOT id(target) IN $merged_ids
                     MERGE (canonical)-[new_r:{escaped_rel}]->(target)
                     WITH r, new_r, rel_props,
+                         new_r.id AS existing_id,
+                         new_r.created AS existing_created,
+                         new_r.canonical_key AS existing_canonical_key,
                          coalesce(new_r.source_chunk_ids, []) AS existing_chunks,
                          coalesce(new_r.descriptions,
                            CASE WHEN new_r.description IS NULL THEN []
@@ -425,7 +450,8 @@ class _MemgraphEntityResolver(BaseEntityResolver):
                          coalesce(new_r.strength_sources, []) AS existing_strength_sources,
                          new_r.strength AS existing_strength
                     SET new_r += rel_props
-                    WITH r, new_r, rel_props, existing_strength,
+                    WITH r, new_r, rel_props, existing_id, existing_created, existing_canonical_key,
+                         existing_strength,
                          existing_description_sources, existing_strength_sources,
                          reduce(acc = [], item IN existing_chunks +
                            coalesce(rel_props.source_chunk_ids, []) |
@@ -443,6 +469,9 @@ class _MemgraphEntityResolver(BaseEntityResolver):
                         new_r.strength_sources = reduce(
                           acc = [], item IN existing_strength_sources + coalesce(rel_props.strength_sources, []) |
                           CASE WHEN item IN acc THEN acc ELSE acc + [item] END),
+                        new_r.id = coalesce(existing_id, rel_props.id),
+                        new_r.created = coalesce(existing_created, rel_props.created),
+                        new_r.canonical_key = coalesce(existing_canonical_key, rel_props.canonical_key),
                         new_r.source_chunk_ids = merged_chunks,
                         new_r.observation_count = size(merged_chunks),
                         new_r.weight = toFloat(size(merged_chunks)),
@@ -487,6 +516,9 @@ class _MemgraphEntityResolver(BaseEntityResolver):
                     WHERE NOT id(source) IN $merged_ids
                     MERGE (source)-[new_r:{escaped_rel}]->(canonical)
                     WITH r, new_r, rel_props,
+                         new_r.id AS existing_id,
+                         new_r.created AS existing_created,
+                         new_r.canonical_key AS existing_canonical_key,
                          coalesce(new_r.source_chunk_ids, []) AS existing_chunks,
                          coalesce(new_r.descriptions,
                            CASE WHEN new_r.description IS NULL THEN []
@@ -495,7 +527,8 @@ class _MemgraphEntityResolver(BaseEntityResolver):
                          coalesce(new_r.strength_sources, []) AS existing_strength_sources,
                          new_r.strength AS existing_strength
                     SET new_r += rel_props
-                    WITH r, new_r, rel_props, existing_strength,
+                    WITH r, new_r, rel_props, existing_id, existing_created, existing_canonical_key,
+                         existing_strength,
                          existing_description_sources, existing_strength_sources,
                          reduce(acc = [], item IN existing_chunks +
                            coalesce(rel_props.source_chunk_ids, []) |
@@ -513,6 +546,9 @@ class _MemgraphEntityResolver(BaseEntityResolver):
                         new_r.strength_sources = reduce(
                           acc = [], item IN existing_strength_sources + coalesce(rel_props.strength_sources, []) |
                           CASE WHEN item IN acc THEN acc ELSE acc + [item] END),
+                        new_r.id = coalesce(existing_id, rel_props.id),
+                        new_r.created = coalesce(existing_created, rel_props.created),
+                        new_r.canonical_key = coalesce(existing_canonical_key, rel_props.canonical_key),
                         new_r.source_chunk_ids = merged_chunks,
                         new_r.observation_count = size(merged_chunks),
                         new_r.weight = toFloat(size(merged_chunks)),
@@ -546,3 +582,69 @@ class _MemgraphEntityResolver(BaseEntityResolver):
                     """,
                     {"node_id": node_id, "merged_ids": merged_ids},
                 )
+
+    def _rewire_structural_relationships(
+        self,
+        *,
+        node_id: int,
+        canonical_id: int,
+        merged_ids: list[int],
+        escaped_rel: str,
+    ) -> None:
+        """Move structural edges without adding domain-relationship properties."""
+        self.graph_store.execute_query(
+            f"""
+            MATCH (source)-[r:{escaped_rel}]->(target)
+            WHERE id(source) = $node_id
+            WITH r, target, properties(r) AS rel_props
+            MATCH (canonical)
+            WHERE id(canonical) = $canonical_id
+            WITH r, canonical, target, rel_props
+            WHERE NOT id(target) IN $merged_ids
+            MERGE (canonical)-[new_r:{escaped_rel}]->(target)
+            SET new_r += rel_props
+            DELETE r
+            """,
+            {
+                "node_id": node_id,
+                "canonical_id": canonical_id,
+                "merged_ids": merged_ids,
+            },
+        )
+        self.graph_store.execute_query(
+            f"""
+            MATCH (source)-[r:{escaped_rel}]->(target)
+            WHERE id(source) = $node_id
+              AND id(target) IN $merged_ids
+            DELETE r
+            """,
+            {"node_id": node_id, "merged_ids": merged_ids},
+        )
+        self.graph_store.execute_query(
+            f"""
+            MATCH (source)-[r:{escaped_rel}]->(target)
+            WHERE id(target) = $node_id
+            WITH r, source, properties(r) AS rel_props
+            MATCH (canonical)
+            WHERE id(canonical) = $canonical_id
+            WITH r, source, canonical, rel_props
+            WHERE NOT id(source) IN $merged_ids
+            MERGE (source)-[new_r:{escaped_rel}]->(canonical)
+            SET new_r += rel_props
+            DELETE r
+            """,
+            {
+                "node_id": node_id,
+                "canonical_id": canonical_id,
+                "merged_ids": merged_ids,
+            },
+        )
+        self.graph_store.execute_query(
+            f"""
+            MATCH (source)-[r:{escaped_rel}]->(target)
+            WHERE id(target) = $node_id
+              AND id(source) IN $merged_ids
+            DELETE r
+            """,
+            {"node_id": node_id, "merged_ids": merged_ids},
+        )

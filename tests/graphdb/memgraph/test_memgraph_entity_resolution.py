@@ -505,3 +505,100 @@ async def test_memgraph_resolver_normalized_builds_groups_once(monkeypatch):
 
     assert calls == [2]
     assert result["merged_groups"] == 1
+
+
+def test_memgraph_rewire_protects_structural_edges_and_preserves_domain_edge_identity():
+    class RelTypeFakeStore(FakeGraphStore):
+        def execute_query(self, query, parameters=None):
+            if "RETURN DISTINCT type(r) AS rel_type" in query:
+                self.queries.append((query, parameters))
+                return [
+                    {"rel_type": "FROM_CHUNK", "node_id": 2},
+                    {"rel_type": "IN_COMMUNITY", "node_id": 2},
+                    {"rel_type": "WORKS_AT", "node_id": 2},
+                ]
+            return super().execute_query(query, parameters)
+
+    store = RelTypeFakeStore(rows=[])
+    resolver = _MemgraphEntityResolver(store)
+    resolver._rewire_relationships(canonical_id=1, other_ids=[2])
+
+    structural_queries = [
+        query for query, _ in store.queries
+        if ":`FROM_CHUNK`" in query or ":`IN_COMMUNITY`" in query
+    ]
+    assert structural_queries
+    for query in structural_queries:
+        assert "source_chunk_ids" not in query
+        assert "observation_count" not in query
+        assert "description_summary_fallback" not in query
+
+    domain_rewires = [
+        query for query, _ in store.queries
+        if ":`WORKS_AT`" in query and "SET new_r += rel_props" in query
+    ]
+    assert len(domain_rewires) == 2
+    for query in domain_rewires:
+        assert query.index("new_r.id AS existing_id") < query.index("SET new_r += rel_props")
+        assert query.index("new_r.created AS existing_created") < query.index("SET new_r += rel_props")
+        assert query.index("new_r.canonical_key AS existing_canonical_key") < query.index("SET new_r += rel_props")
+        assert "new_r.id = coalesce(existing_id, rel_props.id)" in query
+        assert "new_r.created = coalesce(existing_created, rel_props.created)" in query
+        assert "new_r.canonical_key = coalesce(existing_canonical_key, rel_props.canonical_key)" in query
+
+
+def test_memgraph_merge_preserves_scalar_bookkeeping_and_clears_embedding_fingerprints():
+    from recon_graphrag.graphdb.entity_resolution import _EntityRecord
+
+    store = FakeGraphStore(rows=[])
+    resolver = _MemgraphEntityResolver(store)
+    group = [
+        _EntityRecord(
+            1,
+            "e1",
+            "g1",
+            "Organization",
+            "OpenAI Research",
+            "openairesearch",
+            {
+                "id": "e1",
+                "graph_name": "g1",
+                "title": "OpenAI Research",
+                "created": "2025-01-01T00:00:00Z",
+                "updated": "2025-01-02T00:00:00Z",
+                "embedding_content_fingerprint": "old-content-fp",
+                "embedding_model_fingerprint": "old-model-fp",
+            },
+        ),
+        _EntityRecord(
+            2,
+            "e2",
+            "g1",
+            "Organization",
+            "OpenAI",
+            "openai",
+            {
+                "id": "e2",
+                "graph_name": "g1",
+                "title": "OpenAI",
+                "created": "2025-02-01T00:00:00Z",
+                "updated": "2025-02-02T00:00:00Z",
+                "embedding_content_fingerprint": "other-content-fp",
+                "embedding_model_fingerprint": "other-model-fp",
+            },
+        ),
+    ]
+
+    resolver._merge_group_records(group, "name")
+
+    set_call = next(
+        params for query, params in store.queries if "SET n += $props" in query
+    )
+    props = set_call["props"]
+    assert props["title"] == "OpenAI Research"
+    assert props["created"] == "2025-01-01T00:00:00Z"
+    assert props["updated"] == "2025-01-02T00:00:00Z"
+    assert props["embedding"] is None
+    assert props["embedding_input_fingerprint"] is None
+    assert props["embedding_content_fingerprint"] is None
+    assert props["embedding_model_fingerprint"] is None
