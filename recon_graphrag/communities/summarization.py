@@ -18,6 +18,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, cast
@@ -724,10 +725,20 @@ class CommunitySummarizer:
             if part
         )
         reference_ids = build_packed_reference_ids(context, packed_direct)
+        if packed_children.included:
+            valid_parent_ids = set(build_reference_ids(context))
+            seen_refs = set(reference_ids)
+            for item in packed_children.included:
+                for ref_id in _extract_report_text_ref_ids(item.text):
+                    if ref_id in valid_parent_ids and ref_id not in seen_refs:
+                        reference_ids.append(ref_id)
+                        seen_refs.add(ref_id)
         return (
             context_text,
             packed_children.used_tokens + packed_direct.used_tokens,
-            bool(packed_children.truncated_item_ids) or packed_direct.truncated,
+            bool(packed_children.excluded)
+            or bool(packed_children.truncated_item_ids)
+            or packed_direct.truncated,
             reference_ids,
         )
 
@@ -791,16 +802,22 @@ class CommunitySummarizer:
         )
         context = parse_community_context(community_id, level, rows)
 
-        # Enrich with claims
-        entity_ids = [e.id for e in context.entities]
-        seen_ids = set(entity_ids)
+        # Enrich with claims. Prefer unique stored entity UIDs when present so
+        # shared human_readable_id values cannot pull claims from other entities.
+        ordered_entities = list(context.entities)
+        seen_ids = {e.id for e in ordered_entities}
         for edge in context.edges:
             if edge.source.id not in seen_ids:
                 seen_ids.add(edge.source.id)
-                entity_ids.append(edge.source.id)
+                ordered_entities.append(edge.source)
             if edge.target.id not in seen_ids:
                 seen_ids.add(edge.target.id)
-                entity_ids.append(edge.target.id)
+                ordered_entities.append(edge.target)
+
+        uid_to_context_id = {
+            e.uid: e.id for e in ordered_entities if e.uid
+        }
+        entity_ids = [e.uid or e.id for e in ordered_entities]
 
         if entity_ids:
             with contextlib.suppress(Exception):
@@ -809,9 +826,51 @@ class CommunitySummarizer:
                     entity_ids=entity_ids,
                 )
                 if claim_rows:
-                    context = enrich_context_with_claims(context, claim_rows)
+                    if uid_to_context_id:
+                        normalized_rows = []
+                        for row in claim_rows:
+                            claim_uid = row.get("entity_uid")
+                            if claim_uid is not None:
+                                mapped_id = uid_to_context_id.get(str(claim_uid))
+                                if mapped_id is None:
+                                    continue
+                            else:
+                                mapped_id = row.get("entity_id")
+                            obj_id = row.get("object_entity_id")
+                            if obj_id is not None and str(obj_id) in uid_to_context_id:
+                                obj_id = uid_to_context_id[str(obj_id)]
+                            normalized_rows.append(
+                                {
+                                    **row,
+                                    "entity_id": mapped_id,
+                                    "object_entity_id": obj_id,
+                                }
+                            )
+                        claim_rows = normalized_rows
+                    if claim_rows:
+                        context = enrich_context_with_claims(context, claim_rows)
 
         return context
+
+
+_REPORT_REFS_BLOCK_RE = re.compile(r"\[refs:\s*([^\]]+)\]")
+
+
+def _extract_report_text_ref_ids(text: str) -> list[str]:
+    """Extract reference target IDs from rendered ``[refs: type:id, ...]`` markers."""
+    ref_ids: list[str] = []
+    seen: set[str] = set()
+    for match in _REPORT_REFS_BLOCK_RE.finditer(text):
+        for entry in match.group(1).split(","):
+            item = entry.strip()
+            for prefix in ("entity:", "relationship:", "claim:"):
+                if item.startswith(prefix):
+                    target_id = item[len(prefix):].strip()
+                    if target_id and target_id not in seen:
+                        ref_ids.append(target_id)
+                        seen.add(target_id)
+                    break
+    return ref_ids
 
 
 def _check_report_completion(response: LLMResponse) -> None:

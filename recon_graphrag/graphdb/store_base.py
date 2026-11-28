@@ -488,7 +488,8 @@ class BaseGraphStore:
               (e:__Entity__ {graph_name: $graph_name})
         WHERE e.id = eid OR e.canonical_key = eid OR e.human_readable_id = eid
         OPTIONAL MATCH (c)-[:SOURCED_FROM]->(ch:Chunk {graph_name: $graph_name})
-        RETURN c.id AS claim_id,
+        RETURN DISTINCT c.id AS claim_id,
+               e.id AS entity_uid,
                coalesce(e.human_readable_id, e.canonical_key, e.id) AS entity_id,
                c.claim_type AS claim_type,
                c.description AS description,

@@ -474,3 +474,63 @@ class TestBuildPackedReferenceIds:
 
         assert packed_ids <= full_ids
         assert len(packed_ids) < len(full_ids)
+
+    def test_packed_context_renders_claims_and_syncs_allowlist_on_truncation(self):
+        ctx = CommunityContext(
+            community_id="c1",
+            level=0,
+            edges=[
+                EdgeContext(
+                    source=EntityContext(id="e1", name="Alice", description="CEO", labels=["Person"], degree=5),
+                    target=EntityContext(id="e2", name="Acme", description="Tech", labels=["Org"], degree=3),
+                    relationship_type="WORKS_AT",
+                    combined_degree=8,
+                ),
+            ],
+            claims=[
+                ClaimContext(id="claim:1", entity_id="e1", claim_type="role", description="Alice is CEO"),
+                ClaimContext(id="claim:2", entity_id="e1", claim_type="note", description="X" * 400),
+            ],
+        )
+        counter = ApproximateTokenCounter(ratio=4.0)
+        # Fits edge + claim:1, but not oversized claim:2.
+        packed = pack_community_context(ctx, max_tokens=60, counter=counter)
+        ref_ids = build_packed_reference_ids(ctx, packed)
+
+        assert "Claims:" in packed.text
+        assert "[claim:1]" in packed.text
+        assert "[claim:2]" not in packed.text
+        assert packed.truncated is True
+        assert "claim:1" in ref_ids
+        assert "claim:2" not in ref_ids
+
+
+def test_parse_community_context_disambiguates_colliding_display_ids():
+    rows = [
+        {
+            "e_uid": "uuid-alice",
+            "e_id": "p1",
+            "e_name": "Alice",
+            "e_description": "CEO",
+            "e_labels": ["Person"],
+            "e_degree": 1,
+            "rel_type": "MANAGES",
+            "rel_description": "Alice manages Bob",
+            "observation_count": 1,
+            "combined_degree": 2,
+            "other_uid": "uuid-bob",
+            "other_id": "p1",
+            "other_name": "Bob",
+            "other_description": "Engineer",
+            "other_labels": ["Person"],
+            "other_degree": 1,
+        }
+    ]
+
+    ctx = parse_community_context("c1", 0, rows)
+
+    assert len(ctx.edges) == 1
+    assert ctx.edges[0].source.id == "uuid-alice"
+    assert ctx.edges[0].source.name == "Alice"
+    assert ctx.edges[0].target.id == "uuid-bob"
+    assert ctx.edges[0].target.name == "Bob"

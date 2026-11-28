@@ -240,10 +240,12 @@ async def test_report_outputs_keep_golden_bytes_and_metadata():
 
     report = await summarizer.generate_report("community:1", level=0)
 
+    assert "Claims:" in llm.prompts[0]
+    assert "[claim:1] (fact; status=active) Alice leads Acme." in llm.prompts[0]
     assert hashlib.sha256(llm.prompts[0].encode("utf-8")).hexdigest() == (
-        "2afd07e6b68972502083fc6f05d7ae921c30817bfb271cb370d72ec424ddc5c7"
+        "59eab30ab6cf7d37e235a9c5d8725e24496a469ccad74d003309508397e64167"
     )
-    assert report.context_tokens_used == 79
+    assert report.context_tokens_used == 94
     assert report.context_truncated is False
     assert report.version.input_fingerprint == (
         "4a5c0f3071ee5589e5e41e2618531dcbe38ebea191639899c5327150110b11eb"

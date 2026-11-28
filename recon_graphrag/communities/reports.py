@@ -278,6 +278,11 @@ class ReportParser:
             raise ReportValidationError(errors=errors, raw_content=content)
 
         findings = self._parse_findings(data.get("findings", []), valid_ids)
+        if valid_ids and not findings:
+            raise ReportValidationError(
+                errors=["No findings referenced a valid ID from the allowlist."],
+                raw_content=content,
+            )
 
         return CommunityReport(
             id=f"report:{community_id}:{level}",

@@ -329,3 +329,16 @@ def test_report_parser_preserves_legacy_finding_rank_and_filters_references():
     }), "community:1", 0, valid_ids={"valid"})
     assert report.findings[0].rank == 2.5
     assert [ref.target_id for ref in report.findings[0].references] == ["valid"]
+
+
+def test_report_parser_rejects_report_when_all_findings_have_invalid_references():
+    payload = json.dumps({
+        "title": "Ungrounded",
+        "summary": "Summary",
+        "findings": [{
+            "description": "Hallucinated finding.",
+            "references": [{"target_id": "hallucinated:id", "target_type": "entity"}],
+        }],
+    })
+    with pytest.raises(ReportValidationError, match="allowlist"):
+        ReportParser().parse(payload, "community:1", 0, valid_ids={"person:alice"})

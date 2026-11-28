@@ -25,3 +25,13 @@ def test_community_domain_edges_require_graph_ownership():
     for query in [COMMUNITY_MEMBER_GRAPH_QUERY, ranked_context_query(id_func="id")]:
         assert "r.graph_name = $graph_name" in query
         assert "r1.graph_name = $graph_name" in query
+
+
+def test_ranked_context_query_preserves_edge_direction_and_returns_uids():
+    for id_func in ("id", "elementId"):
+        query = ranked_context_query(id_func=id_func)
+        assert "OPTIONAL MATCH (e)-[r]->(other:__Entity__)" in query
+        assert "OPTIONAL MATCH (e)-[r]-(other:__Entity__)" not in query
+        assert f"{id_func}(e) < {id_func}(other)" not in query
+        assert "e.id AS e_uid" in query
+        assert "other.id AS other_uid" in query

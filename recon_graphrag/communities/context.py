@@ -25,6 +25,7 @@ class EntityContext:
     description: str
     labels: list[str] = field(default_factory=list)
     degree: int = 0
+    uid: str | None = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,20 @@ class PackedCommunityContext:
     included_entities: int
     excluded_entities: int
     truncated: bool
+    included_claim_ids: list[str] | None = None
+
+
+def _render_claim_line(claim: ClaimContext) -> str:
+    """Format one claim line consistently for full and packed contexts."""
+    parts = [f"status={claim.status}"]
+    if claim.start_date or claim.end_date:
+        parts.append(f"dates={claim.start_date or '?'}..{claim.end_date or '?'}")
+    if claim.object_entity_id:
+        parts.append(f"object={claim.object_entity_id}")
+    line = f"  [{claim.id}] ({claim.claim_type}; {', '.join(parts)}) {claim.description}"
+    if claim.source_text:
+        line += f" Source: {claim.source_text[:200]}"
+    return line
 
 
 def render_community_context(context: CommunityContext) -> str:
@@ -123,15 +138,7 @@ def render_community_context(context: CommunityContext) -> str:
         lines.append("")
         lines.append("Claims:")
         for claim in context.claims:
-            parts = [f"status={claim.status}"]
-            if claim.start_date or claim.end_date:
-                parts.append(f"dates={claim.start_date or '?'}..{claim.end_date or '?'}")
-            if claim.object_entity_id:
-                parts.append(f"object={claim.object_entity_id}")
-            line = f"  [{claim.id}] ({claim.claim_type}; {', '.join(parts)}) {claim.description}"
-            if claim.source_text:
-                line += f" Source: {claim.source_text[:200]}"
-            lines.append(line)
+            lines.append(_render_claim_line(claim))
 
     return "\n".join(lines)
 
@@ -145,7 +152,8 @@ def pack_community_context(
 
     Iterates ranked edges in order, including each if it fits. Entity
     descriptions are only included on first occurrence (deduplication).
-    Isolated entities are appended if space remains.
+    Isolated entities and claims for included entities are appended if space
+    remains.
 
     Args:
         context: Ranked community context from parse_community_context.
@@ -169,6 +177,7 @@ def pack_community_context(
             included_entities=0,
             excluded_entities=len(context.entities),
             truncated=False,
+            included_claim_ids=[],
         )
 
     lines: list[str] = []
@@ -177,6 +186,7 @@ def pack_community_context(
     truncated = False
     included_edges = 0
     included_entities = 0
+    included_claim_ids: list[str] = []
 
     for edge in context.edges:
         unit_lines: list[str] = []
@@ -233,6 +243,33 @@ def pack_community_context(
             truncated = True
             break
 
+    # Claims for entities that survived packing
+    if seen_entities and context.claims:
+        eligible_claims = [
+            claim for claim in context.claims if claim.entity_id in seen_entities
+        ]
+        claims_header_added = False
+        for claim in eligible_claims:
+            claim_line = _render_claim_line(claim)
+            if not claims_header_added:
+                prefix = "\nClaims:\n" if lines else "Claims:\n"
+                unit_text = prefix + claim_line
+            else:
+                unit_text = claim_line
+            unit_tokens = counter.count(unit_text)
+            if used_tokens + unit_tokens <= max_tokens:
+                if not claims_header_added:
+                    if lines:
+                        lines.append("")
+                    lines.append("Claims:")
+                    claims_header_added = True
+                lines.append(claim_line)
+                used_tokens += unit_tokens
+                included_claim_ids.append(claim.id)
+            else:
+                truncated = True
+                break
+
     total_entities = len({e.id for e in _all_entities(context)})
     excluded_entities = total_entities - len(seen_entities)
 
@@ -247,6 +284,7 @@ def pack_community_context(
         included_entities=included_entities,
         excluded_entities=excluded_entities,
         truncated=truncated,
+        included_claim_ids=included_claim_ids,
     )
 
 
@@ -277,19 +315,43 @@ def parse_community_context(
     """Parse raw query rows into a typed CommunityContext.
 
     Expects rows from the degree-ranked context query with keys:
-    - e_id, e_name, e_description, e_labels, e_degree
+    - e_id, e_name, e_description, e_labels, e_degree (and optional e_uid)
     - rel_type, rel_description, observation_count, combined_degree
     - other_id, other_name, other_description, other_labels, other_degree
+      (and optional other_uid)
 
     Rows where rel_type is NULL represent isolated entities (no edges).
+    When two distinct entities share a display ``e_id`` (different ``e_uid``
+    values), each uses its unique ``uid`` so neither entity is dropped.
     """
+    uids_by_display: dict[str, set[str]] = {}
+    for row in rows:
+        for id_key, uid_key in (("e_id", "e_uid"), ("other_id", "other_uid")):
+            display_id = row.get(id_key)
+            uid = row.get(uid_key)
+            if display_id and uid:
+                uids_by_display.setdefault(str(display_id), set()).add(str(uid))
+    colliding_ids = {
+        display_id for display_id, uids in uids_by_display.items() if len(uids) > 1
+    }
+
+    def _resolved_id(display_id: Any, uid: Any) -> str | None:
+        if not display_id:
+            return None
+        display = str(display_id)
+        if display in colliding_ids and uid:
+            return str(uid)
+        return display
+
     entities: dict[str, EntityContext] = {}
     edges: list[EdgeContext] = []
     edge_entity_ids: set[str] = set()
 
     for row in rows:
-        e_id = row.get("e_id")
-        other_id = row.get("other_id")
+        e_uid = str(row["e_uid"]) if row.get("e_uid") else None
+        other_uid = str(row["other_uid"]) if row.get("other_uid") else None
+        e_id = _resolved_id(row.get("e_id"), e_uid)
+        other_id = _resolved_id(row.get("other_id"), other_uid)
         rel_type = row.get("rel_type")
 
         # Source entity
@@ -300,6 +362,7 @@ def parse_community_context(
                 description=row.get("e_description", ""),
                 labels=_parse_labels(row.get("e_labels", [])),
                 degree=row.get("e_degree", 0),
+                uid=e_uid,
             )
 
         if rel_type and e_id and other_id:
@@ -311,6 +374,7 @@ def parse_community_context(
                     description=row.get("other_description", ""),
                     labels=_parse_labels(row.get("other_labels", [])),
                     degree=row.get("other_degree", 0),
+                    uid=other_uid,
                 )
 
             edge = EdgeContext(
@@ -459,8 +523,10 @@ def build_packed_reference_ids(
         seen_entities.add(entity.id)
         included_entity_count += 1
 
-    # Claims are rendered for entities that survived packing.
-    if seen_entities:
+    # Claims that were actually packed into the rendered context.
+    if packed.included_claim_ids is not None:
+        ids.extend(packed.included_claim_ids)
+    elif seen_entities:
         for claim in context.claims:
             if claim.entity_id in seen_entities:
                 ids.append(claim.id)

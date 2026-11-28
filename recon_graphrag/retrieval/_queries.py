@@ -234,7 +234,8 @@ LIMIT $top_k
 """
 
 # Community summarization — degree-ranked context (Phase 4A).
-# ``__IDFUNC__`` is replaced with the backend internal-id function.
+# Directed edge traversal preserves stored relationship direction and self-loops
+# while matching each intra-community edge once.
 _RANKED_CONTEXT_CORE = """
 MATCH (c:Community {
     graph_name: $graph_name,
@@ -243,13 +244,12 @@ MATCH (c:Community {
 })<-[membership:IN_COMMUNITY]-(e:__Entity__)
 WHERE e.graph_name = $graph_name
   AND (membership.graph_name IS NULL OR membership.graph_name = $graph_name)
-OPTIONAL MATCH (e)-[r]-(other:__Entity__)
+OPTIONAL MATCH (e)-[r]->(other:__Entity__)
 WHERE e.graph_name = $graph_name AND other.graph_name = $graph_name
   AND r.graph_name = $graph_name
   AND size([(other)-[other_membership:IN_COMMUNITY]->(c)
     WHERE other_membership.graph_name IS NULL OR other_membership.graph_name = $graph_name
     | other_membership]) > 0
-  AND __IDFUNC__(e) < __IDFUNC__(other)
 WITH e, r, other,
      SIZE([(e)-[r1]-(degree_neighbor)
        WHERE r1.graph_name = $graph_name AND degree_neighbor.graph_name = $graph_name
@@ -259,7 +259,8 @@ WITH e, r, other,
        WHERE r2.graph_name = $graph_name AND other_degree_neighbor.graph_name = $graph_name
          AND NOT type(r2) IN ['IN_COMMUNITY', 'FROM_CHUNK', 'SOURCED_FROM']
      | r2]) AS other_degree
-RETURN coalesce(e.human_readable_id, e.canonical_key, e.id) AS e_id,
+RETURN e.id AS e_uid,
+       coalesce(e.human_readable_id, e.canonical_key, e.id) AS e_id,
        coalesce(e.name, e.id) AS e_name,
        coalesce(e.description, '') AS e_description,
        labels(e) AS e_labels,
@@ -268,6 +269,7 @@ RETURN coalesce(e.human_readable_id, e.canonical_key, e.id) AS e_id,
        coalesce(r.description, '') AS rel_description,
        coalesce(r.observation_count, 1) AS observation_count,
        e_degree + other_degree AS combined_degree,
+       other.id AS other_uid,
        coalesce(other.human_readable_id, other.canonical_key, other.id) AS other_id,
        coalesce(other.name, other.id) AS other_name,
        coalesce(other.description, '') AS other_description,

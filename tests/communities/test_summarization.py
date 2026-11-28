@@ -223,6 +223,126 @@ async def test_parent_report_substitutes_child_reports_when_direct_context_trunc
 
 
 @pytest.mark.asyncio
+async def test_parent_context_marks_excluded_child_truncated_and_keeps_child_refs():
+    class ParentChildRefStore(FakeReportGraphStore):
+        def get_community_ranked_context(self, graph_name, community_id, level=0):
+            rows = super().get_community_ranked_context(graph_name, community_id, level)
+            rows[0]["e_description"] = "A" * 1000
+            rows[0]["other_description"] = "B" * 1000
+            return rows
+
+        def get_child_community_reports(
+            self, graph_name, community_id, level, child_level
+        ):
+            return [
+                {
+                    "id": "child:1",
+                    "level": child_level,
+                    "report_text": "Child summary.\n- Alice leads Acme. [refs: entity:person:alice]",
+                    "input_fingerprint": "fp-1",
+                    "context_tokens_used": 100,
+                },
+                {
+                    "id": "child:2",
+                    "level": child_level,
+                    "report_text": "Overflow child " + ("Z" * 1000),
+                    "input_fingerprint": "fp-2",
+                    "context_tokens_used": 90,
+                },
+            ]
+
+    llm = CapturingValidReportLLM()
+    summarizer = CommunitySummarizer(
+        cast(Any, ParentChildRefStore()), llm=cast(Any, llm), max_context_tokens=120
+    )
+
+    report = await summarizer.generate_report("community:1", level=0)
+
+    assert report.context_truncated is True
+    assert "person:alice" in llm.prompts[0]
+    assert len(report.findings) == 1
+    assert report.findings[0].references[0].target_id == "person:alice"
+
+
+@pytest.mark.asyncio
+async def test_ungrounded_findings_trigger_report_repair():
+    ungrounded = json.dumps({
+        "title": "Bad Refs",
+        "summary": "Summary",
+        "findings": [{
+            "description": "Hallucinated ref.",
+            "references": [{"target_id": "unknown:entity", "target_type": "entity"}],
+        }],
+    })
+    valid = (await FakeValidReportLLM().ainvoke("")).content
+    llm = ScriptedReportLLM([ungrounded, valid])
+    summarizer = CommunitySummarizer(cast(Any, FakeReportGraphStore()), cast(Any, llm))
+
+    report = await summarizer.generate_report("community:1")
+
+    assert llm.calls == 2
+    assert "allowlist" in llm.prompts[1]
+    assert report.findings[0].references[0].target_id == "person:alice"
+
+
+def test_fetch_community_context_uses_uids_for_claims_and_drops_foreign_claims():
+    class CollidingClaimStore(FakeReportGraphStore):
+        def __init__(self):
+            super().__init__()
+            self.claim_lookup_ids: list[str] = []
+
+        def get_community_ranked_context(self, graph_name, community_id, level=0):
+            return [{
+                "e_uid": "uuid-alice",
+                "e_id": "p1",
+                "e_name": "Alice",
+                "e_description": "CEO",
+                "e_labels": ["Person"],
+                "e_degree": 1,
+                "rel_type": None,
+                "rel_description": None,
+                "observation_count": 0,
+                "combined_degree": 0,
+                "other_uid": None,
+                "other_id": None,
+                "other_name": None,
+                "other_description": None,
+                "other_labels": [],
+                "other_degree": 0,
+            }]
+
+        def get_claims_for_entities(self, graph_name, entity_ids):
+            self.claim_lookup_ids = list(entity_ids)
+            return [
+                {
+                    "claim_id": "claim:alice",
+                    "entity_uid": "uuid-alice",
+                    "entity_id": "p1",
+                    "claim_type": "role",
+                    "description": "Alice is CEO",
+                    "status": "active",
+                },
+                {
+                    "claim_id": "claim:stranger",
+                    "entity_uid": "uuid-stranger",
+                    "entity_id": "p1",
+                    "claim_type": "role",
+                    "description": "Stranger claim with colliding p1",
+                    "status": "active",
+                },
+            ]
+
+    store = CollidingClaimStore()
+    summarizer = CommunitySummarizer(cast(Any, store), cast(Any, FakeValidReportLLM()))
+
+    context = summarizer._fetch_community_context_obj("community:1", 0)
+
+    assert store.claim_lookup_ids == ["uuid-alice"]
+    assert [claim.id for claim in context.claims] == ["claim:alice"]
+    assert context.claims[0].entity_id == "p1"
+
+
+@pytest.mark.asyncio
 async def test_custom_report_prompt_appears_in_llm_prompt():
     store = FakeReportGraphStore()
     llm = CapturingValidReportLLM()
