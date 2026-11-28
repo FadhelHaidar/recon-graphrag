@@ -88,6 +88,8 @@ def test_projection_is_scoped_by_graph_name():
     assert "WHERE r.graph_name = $graph_name" in type_query
     assert "MATCH (source:`__Entity__` {graph_name: $graph_name})" in projection_query
     assert "target:`__Entity__` {graph_name: $graph_name}" in projection_query
+    assert "MATCH (source:`__Entity__` {graph_name: $graph_name})-[r]->(target:`__Entity__` {graph_name: $graph_name})" in projection_query
+    assert "-[r]-(" not in projection_query
     assert "gds.graph.project(\n            $projection_name," in projection_query
     assert "undirectedRelationshipTypes: $relationship_types" in projection_query
     assert store.params[2] == {
@@ -111,14 +113,14 @@ def test_weighted_projection_includes_relationship_weight_property():
     params = store.params[2]
 
     assert "relationshipProperties" in projection_query
-    assert "apoc.map.fromLists" in projection_query
-    assert "$relationship_weight_property" in projection_query
+    assert "apoc" not in projection_query
     assert "r.`weight`" in projection_query
+    assert "toFloat(coalesce(r.`weight`, 1.0))" in projection_query
+    assert "undirectedRelationshipTypes: $relationship_types" in projection_query
     assert params == {
         "graph_name": "movie-graph",
         "projection_name": "run-projection",
         "relationship_types": ["ACTED_IN"],
-        "relationship_weight_property": "weight",
     }
 
 
@@ -135,7 +137,7 @@ def test_unweighted_projection_omits_relationship_properties():
     params = store.params[2]
 
     assert "relationshipProperties" not in projection_query
-    assert "apoc.map.fromLists" not in projection_query
+    assert "apoc" not in projection_query
     assert params == {
         "graph_name": "movie-graph",
         "projection_name": "run-projection",
@@ -634,3 +636,66 @@ def test_stats_are_read_inside_the_publication_transaction():
 
     assert stats[0]["community_id"] == "from-transaction"
     assert any("c.id AS community_id" in query for query, _ in store.transactions[0].queries)
+
+
+def test_repeated_community_ids_keep_every_hierarchy_level():
+    detector = CommunityDetector(cast(GraphStore, FakeGraphStore()),
+        graph_name="movie-graph",
+        max_levels=3,
+    )
+    leiden_results = [
+        {
+            "entity_element_id": "4:a",
+            "communityId": 1,
+            "intermediateCommunityIds": [5, 5, 1],
+        },
+        {
+            "entity_element_id": "4:b",
+            "communityId": 1,
+            "intermediateCommunityIds": [10, 1, 1],
+        },
+        {
+            "entity_element_id": "4:c",
+            "communityId": 1,
+            "intermediateCommunityIds": [10, 5, 1],
+        },
+    ]
+
+    membership_rows, parent_edges = detector._build_hierarchy_rows(leiden_results)
+
+    memberships: dict[str, dict[int, str]] = {}
+    for row in membership_rows:
+        memberships.setdefault(row["entity_element_id"], {})[row["level"]] = row[
+            "community_id"
+        ]
+
+    # Repeated IDs must not shorten a path, so every entity keeps levels 0..2.
+    assert memberships["4:a"] == {0: "1", 1: "5", 2: "5"}
+    assert memberships["4:b"] == {0: "1", 1: "1", 2: "10"}
+    assert memberships["4:c"] == {0: "1", 1: "5", 2: "10"}
+
+    # Every child community links to the parent of the next coarser level.
+    assert ("5", 2, "5", 1) in parent_edges
+    assert ("5", 1, "1", 0) in parent_edges
+    assert ("10", 2, "1", 1) in parent_edges
+    assert ("10", 2, "5", 1) in parent_edges
+    assert ("1", 1, "1", 0) in parent_edges
+
+
+def test_projection_traverses_relationships_in_direction():
+    store = FakeGraphStore()
+    detector = CommunityDetector(cast(GraphStore, store),
+        relationship_types=["ACTED_IN"],
+        graph_name="movie-graph",
+        relationship_weight_property="weight",
+    )
+
+    detector._project_graph("run-projection")
+
+    projection_query = store.queries[2]
+    assert projection_query.count("-[r]->") == 1
+    assert "-[r]-(" not in projection_query
+    # Each relationship is projected once, so edge weights are not doubled.
+    assert "undirectedRelationshipTypes: $relationship_types" in projection_query
+    # Weighted projection must work without the APOC plugin.
+    assert "apoc" not in projection_query

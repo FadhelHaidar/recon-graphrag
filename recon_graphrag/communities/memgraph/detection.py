@@ -7,7 +7,8 @@ Community/IN_COMMUNITY/PARENT_COMMUNITY structure used by the Neo4j backend.
 Note: in practice MAGE returns a single community level per node (verified
 against `memgraph/memgraph-mage` across several `gamma` values), so hierarchies
 and `PARENT_COMMUNITY` edges only appear on Memgraph if a future MAGE release
-reports intermediate levels. `max_levels` is therefore a Neo4j-only dimension.
+reports intermediate levels. `max_levels` caps the written depth on Memgraph and
+selects the Leiden depth on Neo4j.
 
 Note: MAGE's Leiden implementation is non-deterministic and does not expose a
 random seed parameter. `random_seed` is accepted for API symmetry with the Neo4j
@@ -27,6 +28,7 @@ from recon_graphrag.graphdb.base import GraphStore
 from recon_graphrag.graphdb.cypher import (
     escape_cypher_identifier,
 )
+from recon_graphrag.graphdb._provenance import build_uid
 from recon_graphrag.graphdb.store_base import QueryExecutor
 
 DEFAULT_GRAPH_NAME = "entity-graph"
@@ -212,10 +214,14 @@ class CommunityDetector:
         }
 
         query = f"""
-        MATCH (source:{escape_cypher_identifier(self.entity_label)} {{graph_name: $graph_name}})-[r]-(target:{escape_cypher_identifier(self.entity_label)} {{graph_name: $graph_name}})
+        MATCH (source:{escape_cypher_identifier(self.entity_label)} {{graph_name: $graph_name}})-[r]->(target:{escape_cypher_identifier(self.entity_label)} {{graph_name: $graph_name}})
         WHERE r.graph_name = $graph_name
           AND type(r) IN $relationship_types
-        WITH COLLECT(DISTINCT source) + COLLECT(DISTINCT target) AS nodes, COLLECT(DISTINCT r) AS relationships
+        WITH COLLECT(DISTINCT source) + COLLECT(DISTINCT target) AS candidates,
+             COLLECT(DISTINCT r) AS relationships
+        UNWIND candidates AS candidate
+        WITH DISTINCT candidate, relationships
+        WITH COLLECT(candidate) AS nodes, relationships
         CALL leiden_community_detection.get_subgraph(
             nodes,
             relationships,
@@ -232,11 +238,11 @@ class CommunityDetector:
 
     @staticmethod
     def _normalize_paths(leiden_results: list[dict[str, Any]]) -> dict[int, list[int]]:
-        """Return entity_id -> community path from finest to coarsest level.
+        """Return entity_id -> community path in coarsest→finest order.
 
-        MAGE returns communities in coarsest→finest order. We reverse to
-        finest→coarsest so that _write_community_hierarchy can apply the
-        same reversal logic as the Neo4j backend.
+        MAGE already reports communities coarsest→finest, so index 0 is level 0
+        (coarsest). Repeated community IDs stay in the path. Collapsing them
+        would shorten some entities' paths and shift their level indices.
         """
         paths: dict[int, list[int]] = {}
         for row in leiden_results:
@@ -252,16 +258,7 @@ class CommunityDetector:
             if not path or path[-1] != final_id_int:
                 path.append(final_id_int)
 
-            # Deduplicate consecutive identical IDs.
-            compact_path = []
-            for cid in path:
-                if not compact_path or compact_path[-1] != cid:
-                    compact_path.append(cid)
-
-            # Reverse: MAGE gives coarsest→finest, we want finest→coarsest.
-            compact_path.reverse()
-
-            paths[entity_id] = compact_path
+            paths[entity_id] = path
         return paths
 
     def _write_community_hierarchy(
@@ -346,33 +343,31 @@ class CommunityDetector:
     def _build_hierarchy_rows(
         self, paths: dict[int, list[int]]
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-        """Build and validate every row before any write happens."""
+        """Build and validate every row before any write happens.
+
+        Paths arrive coarsest→finest, so ``path[index]`` is level ``index``.
+        Level 0 is always the coarsest community and the deepest written level
+        is ``min(len(path), max_levels) - 1``.
+        """
         if not paths:
             raise RuntimeError("No community paths to write.")
 
-        # Limit to max_levels (finest first in path).
-        max_depth = max(len(p) for p in paths.values())
-        levels_to_write = min(max_depth, self.max_levels)
-
-        # Level assignment is reversed: path[0] (finest) → highest level,
-        # path[-1] (coarsest) → level 0.  This matches Microsoft GraphRAG
-        # semantics where level 0 = coarsest.
-        max_level = levels_to_write - 1
+        # Cap the hierarchy depth at max_levels.
+        levels_to_write = min(max(len(p) for p in paths.values()), self.max_levels)
 
         # Create Community nodes for each path index.
         community_rows = []
-        for index in range(levels_to_write):
-            level = max_level - index
+        for level in range(levels_to_write):
             level_communities = set()
             for path in paths.values():
-                if index < len(path):
-                    level_communities.add(path[index])
+                if level < len(path):
+                    level_communities.add(path[level])
             for community_id in sorted(level_communities):
                 community_rows.append({
                     "community_id": str(community_id),
                     "level": level,
                     "graph_name": self.graph_name,
-                    "uid": f"{self.graph_name}:{level}:{community_id}",
+                    "uid": build_uid(self.graph_name, f"{level}:{community_id}"),
                 })
 
         # Sort for deterministic MERGE order.
@@ -381,25 +376,22 @@ class CommunityDetector:
         # Create IN_COMMUNITY relationships.
         membership_rows = []
         for entity_id, path in sorted(paths.items()):
-            for index in range(min(len(path), levels_to_write)):
-                level = max_level - index
+            for level in range(min(len(path), levels_to_write)):
                 membership_rows.append({
                     "entity_id": entity_id,
-                    "community_id": str(path[index]),
+                    "community_id": str(path[level]),
                     "level": level,
                 })
 
-        # Create PARENT_COMMUNITY edges between adjacent levels.
-        # After reversal: path[index] (finer) → level=max_level-index,
-        # path[index+1] (coarser) → level=max_level-(index+1).
-        # PARENT_COMMUNITY points from child (finer) to parent (coarser).
+        # PARENT_COMMUNITY points from child (finer, level = index + 1) to
+        # parent (coarser, level = index).
         parent_edges: set[tuple[str, int, str, int]] = set()
         for path in paths.values():
-            for index in range(min(len(path) - 1, levels_to_write - 1)):
-                child_id = str(path[index])
-                child_level = max_level - index
-                parent_id = str(path[index + 1])
-                parent_level = max_level - (index + 1)
+            for index in range(min(len(path), levels_to_write) - 1):
+                child_id = str(path[index + 1])
+                child_level = index + 1
+                parent_id = str(path[index])
+                parent_level = index
                 parent_edges.add((child_id, child_level, parent_id, parent_level))
 
         if parent_edges:

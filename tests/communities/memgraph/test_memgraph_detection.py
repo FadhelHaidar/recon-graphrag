@@ -115,10 +115,12 @@ def test_community_rows_include_uid():
     )
     assert "c.uid = row.uid" in community_create_query
 
-    # Verify the rows passed to the query contain uid values keyed by graph/level/id.
+    # Verify the rows passed to the query contain length-prefixed uid values
+    # keyed by graph/level/id.
     params = next(p for q, p in store.queries if "MERGE (c:`Community`" in q)
     for row in params["rows"]:
-        expected_uid = f"{row['graph_name']}:{row['level']}:{row['community_id']}"
+        graph_name = row["graph_name"]
+        expected_uid = f"{len(graph_name)}:{graph_name}:{row['level']}:{row['community_id']}"
         assert row["uid"] == expected_uid
 
 
@@ -469,3 +471,145 @@ def test_stats_are_read_inside_the_publication_transaction():
 
     assert stats[0]["community_id"] == "from-transaction"
     assert any("c.id AS community_id" in query for query, _ in store.transactions[0].queries)
+
+
+def test_repeated_community_ids_keep_every_hierarchy_level():
+    detector = CommunityDetector(cast(GraphStore, FakeGraphStore()),
+        graph_name="test-graph",
+        max_levels=3,
+    )
+    paths = detector._normalize_paths(
+        [
+            {"entity_id": 1, "community_id": 5, "communities": [1, 5, 5]},
+            {"entity_id": 2, "community_id": 5, "communities": [1, 5]},
+        ]
+    )
+
+    # MAGE order is coarsest→finest; repeated IDs stay in place.
+    assert paths == {1: [1, 5, 5], 2: [1, 5]}
+
+    community_rows, membership_rows, parent_rows = detector._build_hierarchy_rows(paths)
+
+    memberships: dict[int, dict[int, str]] = {}
+    for row in membership_rows:
+        memberships.setdefault(row["entity_id"], {})[row["level"]] = row["community_id"]
+
+    assert memberships[1] == {0: "1", 1: "5", 2: "5"}
+    assert memberships[2] == {0: "1", 1: "5"}
+    assert [(row["level"], row["community_id"]) for row in community_rows] == [
+        (0, "1"),
+        (1, "5"),
+        (2, "5"),
+    ]
+    assert {
+        "child_id": "5",
+        "child_level": 2,
+        "parent_id": "5",
+        "parent_level": 1,
+    } in parent_rows
+    assert {
+        "child_id": "5",
+        "child_level": 1,
+        "parent_id": "1",
+        "parent_level": 0,
+    } in parent_rows
+
+
+def test_short_paths_align_with_level_zero_coarsest():
+    detector = CommunityDetector(cast(GraphStore, FakeGraphStore()),
+        graph_name="test-graph",
+        max_levels=3,
+    )
+
+    community_rows, membership_rows, _ = detector._build_hierarchy_rows(
+        {1: [10], 2: [10, 52, 87]}
+    )
+
+    memberships: dict[int, dict[int, str]] = {}
+    for row in membership_rows:
+        memberships.setdefault(row["entity_id"], {})[row["level"]] = row["community_id"]
+
+    assert memberships[1] == {0: "10"}
+    assert memberships[2] == {0: "10", 1: "52", 2: "87"}
+    assert {(row["level"], row["community_id"]) for row in community_rows} == {
+        (0, "10"),
+        (1, "52"),
+        (2, "87"),
+    }
+
+
+def test_hierarchy_depth_is_capped_by_max_levels():
+    detector = CommunityDetector(cast(GraphStore, FakeGraphStore()),
+        graph_name="test-graph",
+        max_levels=2,
+    )
+
+    community_rows, membership_rows, parent_rows = detector._build_hierarchy_rows(
+        {1: [10, 52, 87]}
+    )
+
+    assert {(row["level"], row["community_id"]) for row in community_rows} == {
+        (0, "10"),
+        (1, "52"),
+    }
+    assert {(row["community_id"], row["level"]) for row in membership_rows} == {
+        ("10", 0),
+        ("52", 1),
+    }
+    assert parent_rows == [
+        {
+            "child_id": "52",
+            "child_level": 1,
+            "parent_id": "10",
+            "parent_level": 0,
+        }
+    ]
+
+
+def test_leiden_query_uses_directed_match_and_deduplicated_nodes():
+    store = FakeGraphStore()
+    detector = CommunityDetector(cast(GraphStore, store), graph_name="test-graph")
+
+    detector._run_leiden()
+
+    leiden_query = next(
+        query for query, _ in store.queries if "leiden_community_detection.get" in query
+    )
+    # One pass per relationship keeps weights from being counted twice.
+    assert "-[r]->" in leiden_query
+    assert "-[r]-(" not in leiden_query
+    # A node that is both a source and a target must appear once in the subgraph.
+    assert (
+        "COLLECT(DISTINCT source) + COLLECT(DISTINCT target) AS candidates"
+        in leiden_query
+    )
+    assert "UNWIND candidates AS candidate" in leiden_query
+    assert "WITH DISTINCT candidate, relationships" in leiden_query
+    assert "WITH COLLECT(candidate) AS nodes, relationships" in leiden_query
+    assert leiden_query.split("CALL leiden_community_detection.get_subgraph(", 1)[
+        1
+    ].lstrip().startswith("nodes,")
+    assert "apoc" not in leiden_query
+
+
+def test_colon_graph_names_keep_community_uids_distinct():
+    detector = CommunityDetector(cast(GraphStore, FakeGraphStore()),
+        graph_name="graph:0",
+        max_levels=1,
+    )
+
+    community_rows, _, _ = detector._build_hierarchy_rows({1: [7]})
+    uid = community_rows[0]["uid"]
+
+    # The length prefix makes the graph name unambiguous to parse.
+    assert uid == f"{len('graph:0')}:graph:0:0:7"
+    prefix, remainder = uid.split(":", 1)
+    assert int(prefix) == len("graph:0")
+    assert remainder.startswith("graph:0:")
+
+    other_detector = CommunityDetector(cast(GraphStore, FakeGraphStore()),
+        graph_name="graph",
+        max_levels=1,
+    )
+    other_rows, _, _ = other_detector._build_hierarchy_rows({1: [7]})
+    assert other_rows[0]["uid"] != uid

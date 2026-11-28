@@ -153,18 +153,20 @@ class CommunityDetector:
             escaped_weight = self._escape_cypher_identifier(
                 self.relationship_weight_property
             )
-            relationship_config = f"""{{
-                relationshipType: type(r),
-                relationshipProperties: apoc.map.fromLists(
-                    [$relationship_weight_property],
-                    [coalesce(r.{escaped_weight}, 1.0)]
-                )
-            }}"""
+            # A native map literal keeps weighted projections free of APOC.
+            relationship_config = (
+                "{"
+                "relationshipType: type(r), "
+                "relationshipProperties: {"
+                f"{escaped_weight}: toFloat(coalesce(r.{escaped_weight}, 1.0))"
+                "}"
+                "}"
+            )
         else:
             relationship_config = "{relationshipType: type(r)}"
 
         query = f"""
-        MATCH (source:{entity_label} {{graph_name: $graph_name}})-[r]-(target:{entity_label} {{graph_name: $graph_name}})
+        MATCH (source:{entity_label} {{graph_name: $graph_name}})-[r]->(target:{entity_label} {{graph_name: $graph_name}})
         WHERE r.graph_name = $graph_name
           AND type(r) IN $relationship_types
         WITH gds.graph.project(
@@ -183,8 +185,6 @@ class CommunityDetector:
             "projection_name": projection_name,
             "relationship_types": valid_types,
         }
-        if self.relationship_weight_property:
-            params["relationship_weight_property"] = self.relationship_weight_property
 
         result = self.graph_store.execute_query(query, params)
 
@@ -278,8 +278,12 @@ class CommunityDetector:
         """Return community IDs from finest level to coarsest level.
 
         The path is ordered finest-first internally; level assignment in
-        _write_community_hierarchy reverses it so level 0 = coarsest
+        _build_hierarchy_rows reverses it so level 0 = coarsest
         (Microsoft-compatible).
+
+        Repeated community IDs stay in the path. Collapsing them would shorten
+        the path for some entities only, so entities with the same Leiden depth
+        would land on different levels.
         """
         ids = rec.get("intermediateCommunityIds")
         if ids:
@@ -288,14 +292,9 @@ class CommunityDetector:
             path = [str(rec["communityId"])]
 
         final_id = str(rec["communityId"])
-        if path[-1] != final_id:
+        if not path or path[-1] != final_id:
             path.append(final_id)
-
-        compact_path = []
-        for community_id in path:
-            if not compact_path or compact_path[-1] != community_id:
-                compact_path.append(community_id)
-        return compact_path
+        return path
 
     def _write_community_hierarchy(
         self, leiden_results: list[dict[str, Any]], token: str
@@ -326,7 +325,12 @@ class CommunityDetector:
     def _build_hierarchy_rows(
         self, leiden_results: list[dict[str, Any]]
     ) -> tuple[list[dict[str, Any]], set[tuple[str, int, str, int]]]:
-        """Build and validate every row before any write happens."""
+        """Build and validate every row before any write happens.
+
+        Each path maps to levels ``0`` (coarsest, ``path[-1]``) through
+        ``len(path) - 1`` (finest, ``path[0]``). Entities with the same Leiden
+        depth therefore share the same level indices.
+        """
         membership_rows = []
         parent_edges = set()
 
